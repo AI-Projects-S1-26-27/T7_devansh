@@ -1,0 +1,144 @@
+{
+ "date_utc": "2026-11-08T15:59:36+00:00",
+ "git_commit": "e98a0fe872331a5932f90a902568df46e3e1753e",
+ "git_dirty": true,
+ "git_dirty_rule": "D24",
+ "argv": [
+  "scripts/lit_search.py"
+ ],
+ "seeds": [],
+ "config": {
+  "queries": {
+   "Q1": [
+    "T1 Stackelberg planning / mitigation",
+    "Stackelberg planning"
+   ],
+   "Q2": [
+    "T1 Stackelberg planning / mitigation",
+    "penetration testing mitigation analysis planning"
+   ],
+   "Q3": [
+    "T1 Stackelberg planning / mitigation",
+    "Stackelberg planning heuristic search leader follower"
+   ],
+   "Q4": [
+    "T2 learned follower models in defender search",
+    "Stackelberg planning neural network"
+   ],
+   "Q5": [
+    "T2 learned follower models in defender search",
+    "learned attacker model defender optimization attack graph"
+   ],
+   "Q6": [
+    "T2 learned follower models in defender search",
+    "bilevel optimization neural network follower value function"
+   ],
+   "Q7": [
+    "T2 learned follower models in defender search",
+    "network interdiction neural network learning"
+   ],
+   "Q8": [
+    "T2 learned follower models in defender search",
+    "Active Directory defense graph neural network"
+   ],
+   "Q9": [
+    "T2 learned follower models in defender search",
+    "honeypot placement Active Directory attack graph"
+   ],
+   "Q10": [
+    "T3 attack planning with delete effects / access loss",
+    "attack graph non-monotonic privileges"
+   ],
+   "Q11": [
+    "T3 attack planning with delete effects / access loss",
+    "penetration testing planning dynamic network"
+   ],
+   "Q12": [
+    "T4 learned heuristics / learning from search",
+    "learning heuristic functions classical planning"
+   ],
+   "Q13": [
+    "T4 learned heuristics / learning from search",
+    "bootstrap learning heuristic search planning"
+   ],
+   "Q14": [
+    "T5 AD attack paths and defence",
+    "Active Directory attack path"
+   ],
+   "Q15": [
+    "T5 AD attack paths and defence",
+    "Active Directory attack graph edge blocking"
+   ]
+  }
+ },
+ "python": "3.14.3 (main, Feb  3 2026, 15:32:20) [Clang 17.0.0 (clang-1700.6.3.2)]",
+ "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+ "machine": "arm64",
+ "processor": "arm",
+ "hardware": {
+  "cpu_model": "Apple M4",
+  "logical_cores": 10,
+  "physical_cores": 10,
+  "ram_bytes": 17179869184
+ },
+ "libraries": {
+  "Pygments": "2.21.0",
+  "RapidFuzz": "3.14.5",
+  "click": "8.5.0",
+  "cloudpickle": "3.1.2",
+  "contourpy": "1.4.0",
+  "cycler": "0.12.1",
+  "datasketch": "1.10.0",
+  "defusedxml": "0.7.1",
+  "fonttools": "4.66.1",
+  "graphifyy": "0.7.13",
+  "joblib": "1.6.0",
+  "kiwisolver": "1.5.1",
+  "markdown-it-py": "4.2.0",
+  "matplotlib": "3.11.2",
+  "mdurl": "0.1.2",
+  "narwhals": "2.27.1",
+  "networkx": "3.6.1",
+  "nltk": "3.10.3",
+  "numpy": "2.4.4",
+  "packaging": "26.3",
+  "pandas": "3.0.6",
+  "pillow": "12.3.0",
+  "pip": "26.0",
+  "pyparsing": "3.3.3",
+  "python-dateutil": "2.9.0.post0",
+  "regex": "2026.9.29",
+  "rich": "15.0.0",
+  "scikit-learn": "1.9.1",
+  "scipy": "1.17.1",
+  "seaborn": "0.13.2",
+  "six": "1.17.0",
+  "threadpoolctl": "3.7.0",
+  "tqdm": "4.70.1",
+  "tree-sitter": "0.25.2",
+  "tree-sitter-c": "0.24.2",
+  "tree-sitter-c-sharp": "0.23.5",
+  "tree-sitter-cpp": "0.23.4",
+  "tree-sitter-elixir": "0.3.5",
+  "tree-sitter-fortran": "0.6.0",
+  "tree-sitter-go": "0.25.0",
+  "tree-sitter-groovy": "0.1.2",
+  "tree-sitter-java": "0.23.5",
+  "tree-sitter-javascript": "0.25.0",
+  "tree-sitter-julia": "0.23.1",
+  "tree-sitter-kotlin": "1.1.0",
+  "tree-sitter-lua": "0.5.0",
+  "tree-sitter-objc": "3.0.2",
+  "tree-sitter-php": "0.24.1",
+  "tree-sitter-powershell": "0.26.4",
+  "tree-sitter-python": "0.25.0",
+  "tree-sitter-ruby": "0.23.1",
+  "tree-sitter-rust": "0.24.2",
+  "tree-sitter-scala": "0.26.0",
+  "tree-sitter-swift": "0.7.2",
+  "tree-sitter-typescript": "0.23.2",
+  "tree-sitter-verilog": "1.0.3",
+  "tree-sitter-zig": "1.1.2",
+  "wheel": "0.46.3"
+ }
+}
