@@ -2,7 +2,7 @@
 
 import importlib.util
 import re
-
+from datetime import date
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -28,3 +28,17 @@ def test_fetch_script_docstrings_name_the_script():
         doc = load(name).__doc__
         assert doc.lstrip().startswith(f"{name}.py"), doc[:40]
         assert "tried first" not in doc
+
+
+def test_nvd_windows_cover_range_within_api_limit():
+    w = load("fetch_nvd_cpe").windows(date(2016, 1, 1), date(2026, 10, 21))
+    assert w[0][0] == date(2016, 1, 1) and w[-1][1] == date(2026, 10, 21)
+    assert all((e - s).days + 1 <= 120 for s, e in w)  # NVD: at most 120 consecutive days per query
+    assert all((b[0] - a[1]).days == 1 for a, b in zip(w, w[1:]))  # no gap, no overlap
+
+
+def test_msrc_update_ids_in_month_range():
+    m = load("fetch_msrc")
+    index = {"value": [{"ID": i} for i in ("2023-Dec", "2024-Jan", "2024-Jan-B", "2018-FEB", "2026-Oct", "2026-Nov", "x")]}
+    assert m.ids_in_range(index, (2024, 1), (2026, 10)) == ["2024-Jan", "2024-Jan-B", "2026-Oct"]
+    assert m.update_month("2018-FEB") == (2018, 2) and m.update_month("x") is None
