@@ -1,6 +1,7 @@
 """D28 on-policy orchestration (Round 9) and cost regimes (Round 5) on a tiny synthetic task set (P9a)."""
 
 import gzip
+import hashlib
 import json
 
 import pytest
@@ -206,7 +207,7 @@ def test_run_manifest_records_regime_rounds_and_checkpoints(corpus, tmp_path):
     tr, va = corpus["uniform"]
     c = cfg("wl", "uniform")
     res = run_onpolicy(c, [tr], [va], PROTOCOL)
-    out = write_onpolicy_run(c, [tr], [va], PROTOCOL, res, root=tmp_path)
+    out = write_onpolicy_run(c, [tr], [va], PROTOCOL, res, root=tmp_path / "results", labels_root=tmp_path / "labels")
     raw = load_raw(out)
     assert raw["cost_regime"] == "uniform" and raw["config"]["cost_regime"] == "uniform"
     assert raw["protocol"] == PROTOCOL and raw["rounds_planned"] == 2 and len(raw["rounds"]) == 3
@@ -214,8 +215,11 @@ def test_run_manifest_records_regime_rounds_and_checkpoints(corpus, tmp_path):
     for k in range(3):
         _, saved = load(out / f"round{k}.pt")
         assert saved["cost_regime"] == "uniform"
-    for j, b in enumerate(res["batches"]):
-        lines = gzip.decompress((out / f"onpolicy-{j}.jsonl.gz").read_bytes()).decode().splitlines()
+    assert not list(out.glob("*.jsonl.gz"))  # labels stay out of the tracked run folder (OQ-P9a-7)
+    for rec, b in zip(raw["onpolicy_batches"], res["batches"]):
+        f = tmp_path / "labels" / f"{rec['labels_sha256']}.jsonl.gz"
+        assert rec["labels_file"] == str(f) and hashlib.sha256(f.read_bytes()).hexdigest() == rec["labels_sha256"]
+        lines = gzip.decompress(f.read_bytes()).decode().splitlines()
         assert [json.loads(x)["h"] for x in lines] == [ex.hstar for ex in b.examples]
     assert "uniform" in (out / "report.md").read_text()
     assert json.loads((out / "provenance.json").read_text())["config"]["cost_regime"] == "uniform"

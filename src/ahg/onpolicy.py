@@ -40,6 +40,8 @@ MODEL_KINDS = ("gnn", "mlp", "wl")  # the confirmatory models (Round 11)
 SEEDS = (0, 1, 2)  # the D23 seeds (Round 11 "Seeds")
 PROTOCOL_KEYS = {"search_budget", "state_budget", "oracle_max_pops", "enum_cap"}
 ONPOLICY = ROOT / "results" / "training" / "onpolicy"
+# Collected labels stay out of git (P9a2, OQ-P9a-7): data/ is untracked and goes to Zenodo with the other labels.
+ONPOLICY_LABELS = ROOT / "data" / "labels" / "onpolicy"
 
 
 def source_name(k: int) -> str:
@@ -266,6 +268,11 @@ def _batch_lines(b: LabelBatch) -> bytes:
     return gzip.compress(("\n".join(lines) + "\n").encode() if lines else b"", mtime=0)
 
 
+def _repo_path(p: Path) -> str:
+    """p relative to the repo root where it lies inside it (the default), else absolute (tests)."""
+    return str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p)
+
+
 def render(raw: dict) -> str:
     c = raw["config"]
     L = [f"# on-policy run: {c['kind']} seed {c['seed']}, cost regime `{raw['cost_regime']}`", "",
@@ -287,10 +294,25 @@ def render(raw: dict) -> str:
 
 
 def write_onpolicy_run(cfg: dict, offline: list[LabelBatch], val: list[LabelBatch], protocol: dict,
-                       result: dict, root: Path | None = None, extra: dict | None = None) -> Path:
+                       result: dict, root: Path | None = None, extra: dict | None = None,
+                       labels_root: Path | None = None) -> Path:
     """Write the run through runlog: raw.json.gz (regime, protocol, inputs, per-round statistics), report.md,
-    provenance.json, one checkpoint per round (round<k>.pt; the last is the run's model) and the collected
-    on-policy labels (onpolicy-<j>.jsonl.gz, hashed in raw). extra: more raw fields (e.g. the frozen grid file)."""
+    provenance.json and one checkpoint per round (round<k>.pt; the last is the run's model). The collected
+    on-policy labels go outside results/ (P9a2): one content-addressed file <sha256>.jsonl.gz per batch under
+    labels_root (default data/labels/onpolicy/), whose path and SHA-256 the raw record names.
+    extra: more raw fields (e.g. the frozen grid file)."""
+    labels_root = labels_root or ONPOLICY_LABELS
+    blobs = [_batch_lines(b) for b in result["batches"]]
+    shas = [hashlib.sha256(x).hexdigest() for x in blobs]
+    for sha, x in zip(shas, blobs):  # written before the run, so a run never names a missing file
+        f = labels_root / f"{sha}.jsonl.gz"
+        if not f.exists():
+            f.parent.mkdir(parents=True, exist_ok=True)
+            tmp = f.with_suffix(".tmp")
+            tmp.write_bytes(x)
+            tmp.replace(f)
+        elif hashlib.sha256(f.read_bytes()).hexdigest() != sha:
+            raise ValueError(f"{f} exists with other contents")
     raw = {"cost_regime": cfg["cost_regime"], "config": cfg, "protocol": protocol, "rounds_planned": ROUNDS,
            "offline_batches": [b.manifest["batch_id"] for b in offline],
            "offline_content_sha256": [b.manifest["content_sha256"] for b in offline],
@@ -299,11 +321,11 @@ def write_onpolicy_run(cfg: dict, offline: list[LabelBatch], val: list[LabelBatc
            "rounds": result["rounds"],
            "onpolicy_batches": [{"batch_id": b.manifest["batch_id"], "parent": b.manifest["parent"],
                                  "content_sha256": b.manifest["content_sha256"], "examples": len(b.examples),
-                                 "failures": b.failures} for b in result["batches"]], **(extra or {})}
+                                 "failures": b.failures, "labels_sha256": sha,
+                                 "labels_file": _repo_path(labels_root / f"{sha}.jsonl.gz")}
+                                for b, sha in zip(result["batches"], shas)], **(extra or {})}
     name = f"{cfg['cost_regime']}-{cfg['kind']}-s{cfg['seed']}"
     out = write_run(name, raw, render(raw), [cfg["seed"]], cfg, root=root or ONPOLICY)
     for k, model in enumerate(result["models"]):
         save(model, cfg, out / f"round{k}.pt")
-    for j, b in enumerate(result["batches"]):
-        (out / f"onpolicy-{j}.jsonl.gz").write_bytes(_batch_lines(b))
     return out
