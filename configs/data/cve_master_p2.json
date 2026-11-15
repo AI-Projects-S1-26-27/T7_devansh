@@ -281,48 +281,48 @@
   },
   "mysql:mysql": {
    "server": [
+    "\\((?:sub)?component: Server\\b",
     "\\bmysqld\\b",
-    "\\bMySQL Server\\b",
     "\\bmariadbd\\b",
     "\\bMariaDB Server\\b"
    ],
    "client": [
+    "\\((?:sub)?component: (?:Client|C API|Connector)",
     "\\bmysqldump\\b",
     "\\blibmysqlclient\\b",
     "\\bMySQL Connectors?\\b",
-    "\\bC API\\b",
     "\\bmysql client\\b",
     "\\bmariadb client\\b"
    ]
   },
   "oracle:mysql": {
    "server": [
+    "\\((?:sub)?component: Server\\b",
     "\\bmysqld\\b",
-    "\\bMySQL Server\\b",
     "\\bmariadbd\\b",
     "\\bMariaDB Server\\b"
    ],
    "client": [
+    "\\((?:sub)?component: (?:Client|C API|Connector)",
     "\\bmysqldump\\b",
     "\\blibmysqlclient\\b",
     "\\bMySQL Connectors?\\b",
-    "\\bC API\\b",
     "\\bmysql client\\b",
     "\\bmariadb client\\b"
    ]
   },
   "mariadb:mariadb": {
    "server": [
+    "\\((?:sub)?component: Server\\b",
     "\\bmysqld\\b",
-    "\\bMySQL Server\\b",
     "\\bmariadbd\\b",
     "\\bMariaDB Server\\b"
    ],
    "client": [
+    "\\((?:sub)?component: (?:Client|C API|Connector)",
     "\\bmysqldump\\b",
     "\\blibmysqlclient\\b",
     "\\bMySQL Connectors?\\b",
-    "\\bC API\\b",
     "\\bmysql client\\b",
     "\\bmariadb client\\b"
    ]
@@ -385,7 +385,8 @@
     "\\bNative Client\\b",
     "\\bOLE DB\\b",
     "\\bODBC\\b",
-    "\\bJDBC\\b"
+    "\\bJDBC\\b",
+    "\\bSqlClient\\b"
    ]
   },
   "SQL Server": {
@@ -399,7 +400,8 @@
     "\\bNative Client\\b",
     "\\bOLE DB\\b",
     "\\bODBC\\b",
-    "\\bJDBC\\b"
+    "\\bJDBC\\b",
+    "\\bSqlClient\\b"
    ]
   }
  }

@@ -185,17 +185,21 @@ def main() -> None:
             texts.append(("nvd_description", " ".join(d["value"] for d in cve["descriptions"] if d["lang"] == "en"), False))
             for gid in sorted({m.group(0) for r in cve.get("references", []) for m in [re.search(r"GHSA(?:-[\w]{4}){3}", r["url"])] if m}):
                 texts += [(f"ghsa:{n}", t, False) for n, t in ghsa.get(gid, [])]
+        ms_texts = []
         if ms:
-            texts += [("msrc_title", ms["title"] or "", True), ("msrc_faq", ms["faq"], False)]
-            texts += [(f"msrc_tag:{t}", t, True) for t in ms["tags"]]
-        signals = [s for src, t, short in texts for s in cd.role_signals(t, src, short)]
+            ms_texts += [("msrc_title", ms["title"] or "", True), ("msrc_faq", ms["faq"], False)]
+            ms_texts += [(f"msrc_tag:{t}", t, True) for t in ms["tags"]]
         for u in units:
+            # MSRC wording is Microsoft's own only for Windows units; for Linux products MSRC carries copies
+            # of third-party CVE text (Azure Linux packages), which must not be read as component names.
+            u_texts = texts + (ms_texts if u["os"] == "windows" else [])
+            signals = [s for src, t, short in u_texts for s in cd.role_signals(t, src, short)]
             vendor_prod = u["product"].split(":")
             cpe_sig = [{"role": r, "source": "cpe", "pattern": f"CPE field says {r}", "match": m["criteria"]}
                        for m in matches if m["role"] == "vulnerable" and [m["vendor"], m["product"]] == vendor_prod
                        for r in ("client", "server") if re.search(rf"\b{r}\b", m["criteria"].split(":", 5)[5].replace("_", " "))]  # fmt: skip
             vocab = cfg["role_vocabulary"].get(u["product"], {})
-            voc_sig = [s for src, t, _ in texts for s in cd.vocab_signals(t, vocab, src)]
+            voc_sig = [s for src, t, _ in u_texts for s in cd.vocab_signals(t, vocab, src)]
             ev = signals + cpe_sig + voc_sig
             u["role"], u["role_reason"] = cd.decide_role(ev, u["prior"])
             u["role_evidence"] = ev
