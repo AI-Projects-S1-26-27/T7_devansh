@@ -22,6 +22,8 @@ results/raw/*
 !results/analysis/
 !results/cve_semantics/
 !results/lit_search/
+# D28 data builds (P2 onward): runlog outputs only; the datasets themselves stay under data/ (Zenodo).
+!results/d28_data/
 # WL checkpoints are ~70 MB (1.9M-colour vocabulary); local only, SHA-256 in D21 amendment 2.
 results/training/**/wl-*/**/model.pt
 # Every read of a test split (D17 §4, D19 §1) is tracked.
