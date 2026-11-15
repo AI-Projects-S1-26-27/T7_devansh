@@ -30,6 +30,11 @@ def test_header_within_limits(path):
     assert hh * 3600 + mm * 60 + ss <= 48 * 3600  # partition MaxTime 2 days
 
 
+def test_smoke_job_imports_the_repo_from_its_locked_environment():
+    text = (SLURM / "smoke.sbatch").read_text()
+    assert "import ahg" in text and "uv run --frozen python" in text and "nlp/.venv" not in text
+
+
 def test_half_card_jobs_cap_mps_threads_and_memory():
     for name in ("train.sbatch", "smoke.sbatch"):
         text = (SLURM / name).read_text()
