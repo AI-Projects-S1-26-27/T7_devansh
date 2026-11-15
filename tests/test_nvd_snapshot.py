@@ -42,3 +42,40 @@ def test_missing_page_duplicate_and_total_drift_fail():
     assert any("duplicate CVE IDs" in e for e in validate(dup)["errors"])
     drift = [page("a", 0, ["C1", "C2"], 3), page("a", 2, ["C3"], 4)]
     assert any("totalResults differ" in e for e in validate(drift)["errors"])
+
+
+def test_request_plan_check_against_recorded_commit(tmp_path):
+    """Inventory #20: the snapshot is checked against the fetching code at its commit; dirty stays unresolved."""
+    import gzip
+    import json
+    import subprocess
+    import urllib.parse
+
+    from ahg.nvd_snapshot import request_plan_check
+
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "src" / "ahg").mkdir(parents=True)
+    (repo / "scripts" / "fetch_nvd.py").write_text('API = "https://x/api"\nPAGE_SIZE = 2\nPACE = 6.5\n')
+    (repo / "src" / "ahg" / "cve.py").write_text('FAMILY_PRODUCTS: dict = {"ssh": ("openbsd:openssh",)}\n')
+    git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()  # noqa: E731
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c")
+    commit = git("rev-parse", "HEAD")
+
+    def snapshot(dirty, start=0):
+        snap = tmp_path / f"snap{dirty}{start}"
+        snap.mkdir()
+        params = {"virtualMatchString": "cpe:2.3:*:openbsd:openssh", "resultsPerPage": 2, "startIndex": start}
+        url = "https://x/api?" + urllib.parse.urlencode(params, safe=":/*")
+        (snap / "p.json.gz").write_bytes(gzip.compress(json.dumps({"url": url, "params": params}).encode()))
+        files = [{"path": "p.json.gz", "family": "ssh", "product": "openbsd:openssh", "startIndex": 0, "url": url}]
+        (snap / "manifest.json").write_text(json.dumps({"api": "https://x/api", "page_size": 2, "pace_seconds": 6.5,
+                                                        "git_commit": commit, "git_dirty_src_or_scripts": dirty, "files": files}))
+        return snap
+
+    assert request_plan_check(snapshot(False), repo)["status"] == "CONSISTENT_CLEAN"
+    assert request_plan_check(snapshot(True), repo)["status"] == "CONSISTENT_DIRTY_UNRESOLVABLE"
+    bad = request_plan_check(snapshot(False, start=5), repo)
+    assert bad["status"] == "INCONSISTENT" and "differs" in bad["errors"][0]

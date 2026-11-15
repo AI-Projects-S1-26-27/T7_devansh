@@ -17,9 +17,11 @@ Across queries, CVE IDs that occur in several queries are counted (expected when
 query per product) but are not errors. The report lists every failed check; ok is True only if none failed.
 """
 
+import ast
 import gzip
 import hashlib
 import json
+import subprocess
 import urllib.parse
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -97,3 +99,54 @@ def load_pages(snap_dir) -> list[dict]:
             q = " ".join(f"{k}={v}" for k, v in sorted(params.items()))
         pages.append({"query": q, "file": name, "requested_start": start, "page_size": size, "response": resp})
     return pages
+
+
+def request_plan_check(snap_dir, repo_root) -> dict:
+    """Inventory #20: machine check of a scripts/fetch_nvd.py snapshot against the code at its recorded commit.
+
+    Replaces the hand-written PROVENANCE_NOTES override. It reads scripts/fetch_nvd.py and src/ahg/cve.py at
+    the manifest's git_commit (git show) and checks that the snapshot is exactly that code's request plan:
+    API, page size and pace match its constants; the (family, product) queries are its FAMILY_PRODUCTS; and
+    every page's URL and parameters are the ones it builds for that product and startIndex.
+
+    What it cannot check: which files were on disk at fetch time. A git_dirty flag of true therefore stays
+    unresolved (status CONSISTENT_DIRTY_UNRESOLVABLE), never overridden.
+    """
+    snap = Path(snap_dir)
+    m = json.loads((snap / "manifest.json").read_text())
+    commit = m["git_commit"]
+
+    def show(path):
+        r = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=repo_root, capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else None
+
+    fetch_src, cve_src = show("scripts/fetch_nvd.py"), show("src/ahg/cve.py")
+    if fetch_src is None or cve_src is None:
+        return {"status": "COMMIT_NOT_AVAILABLE", "commit": commit, "errors": []}
+
+    def const(src, name):
+        for node in ast.parse(src).body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+                    return ast.literal_eval(node.value)
+        raise KeyError(name)
+
+    api, size, pace = const(fetch_src, "API"), const(fetch_src, "PAGE_SIZE"), const(fetch_src, "PACE")
+    products = {(f, p) for f, ps in const(cve_src, "FAMILY_PRODUCTS").items() for p in ps}
+    errors = []
+    if (m["api"], m["page_size"], m["pace_seconds"]) != (api, size, pace):
+        errors.append(f"manifest api/page_size/pace {(m['api'], m['page_size'], m['pace_seconds'])} != code {(api, size, pace)}")
+    got = {(e["family"], e["product"]) for e in m["files"]}
+    if got != products:
+        errors.append(f"queried products differ from FAMILY_PRODUCTS: extra {sorted(got - products)}, missing {sorted(products - got)}")
+    for e in m["files"]:
+        env = json.loads(gzip.decompress((snap / e["path"]).read_bytes()))
+        params = {"virtualMatchString": f"cpe:2.3:*:{e['product']}", "resultsPerPage": size, "startIndex": e["startIndex"]}
+        url = api + "?" + urllib.parse.urlencode(params, safe=":/*")
+        if env["params"] != params or env["url"] != url or e["url"] != url:
+            errors.append(f"{e['path']}: request differs from the code's plan")
+    dirty = m.get("git_dirty_src_or_scripts")
+    status = "INCONSISTENT" if errors else ("CONSISTENT_DIRTY_UNRESOLVABLE" if dirty else "CONSISTENT_CLEAN")
+    return {"status": status, "commit": commit, "git_dirty_src_or_scripts": dirty, "pages_checked": len(m["files"]),
+            "errors": errors}  # fmt: skip

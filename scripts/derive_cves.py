@@ -20,20 +20,9 @@ import sys
 from pathlib import Path
 
 from ahg.cve import OUTCOMES, WINDOW, derive, write_table
+from ahg.nvd_snapshot import request_plan_check
 
 ROOT = Path(__file__).resolve().parent.parent
-
-# Provenance annotations for specific snapshots. The manifest is final raw
-# data and is never edited, so facts learned about a snapshot after it was
-# written are recorded here and copied into the build log.
-PROVENANCE_NOTES = {
-    "2026-10-21": (
-        "The manifest's git_dirty_src_or_scripts flag is true only because new untracked files "
-        "(scripts/derive_cves.py, src/ahg/cost.py, src/ahg/assign.py) existed under scripts/ and src/ during the fetch. "
-        "The code that ran (scripts/fetch_nvd.py, src/ahg/cve.py) was byte-identical to the recorded commit bcf91c8 "
-        "(empty git diff), so the snapshot's provenance is clean."
-    ),
-}
 
 ap = argparse.ArgumentParser()
 ap.add_argument("snapshot", nargs="?")
@@ -74,7 +63,8 @@ log = {
     "fetch_git_commit": manifest["git_commit"],
     "window": [WINDOW[0].isoformat(), WINDOW[1].isoformat()],
     "rows": len(records),
-    "provenance_note": PROVENANCE_NOTES.get(manifest["snapshot_date"]),
+    # Inventory #20: a machine check against the recorded commit replaces the hand-written note.
+    "provenance_check": request_plan_check(snap, ROOT),
     "counts": per_family,  # family -> reason -> CVEs; "included" + one exclusion reason per (CVE, family)
 }
 log["table"] = table.name
