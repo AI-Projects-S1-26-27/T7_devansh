@@ -9,8 +9,11 @@ how a node's priority f is computed from its path cost g and heuristic h:
     greedy best-first     f = h          (w_g = 0)
 
 Ties on f are broken towards lower h (nodes believed closer to the goal),
-then towards the node generated first. Tie-breaking changes node counts a lot
-on these tasks, so it is fixed here and documented.
+then by generation order. Tie-breaking changes node counts a lot on these
+tasks, so it is fixed here and documented. Two rules are available (D28
+Round 7: a second, pre-registered tie rule, conclusions checked under both):
+    "fifo"  (f, h, FIFO)  the D3 rule: the node generated first
+    "lifo"  (f, h, LIFO)  the node generated last
 
 Reopening (D28 Round 7) follows the pinned Fast Downward 24.06.1 defaults:
 A* and weighted A* reopen closed nodes, GBFS does not. Sources, in the pinned
@@ -50,37 +53,50 @@ class SearchResult:
     seconds: float
     budget_hit: bool  # stopped by max_expansions, not by exhausting the space
     reopened: int  # closed nodes reinserted after a cheaper path was found (0 when reopen=False)
+    # Peak sizes (D28 Round 7, memory). Open: heap entries, stale duplicates included, as in Fast Downward's
+    # open list, which also keeps superseded entries. Closed: distinct states expanded so far.
+    peak_open: int
+    peak_closed: int
 
     @property
     def solved(self) -> bool:
         return self.plan is not None
 
 
-def best_first_search(task: Task, h, *, reopen: bool, w_g=1.0, w_h=1.0, start: State | None = None,
-                      max_expansions: int | None = None, trace: list[State] | None = None) -> SearchResult:
+TIE_RULES = ("fifo", "lifo")
+
+
+def best_first_search(task: Task, h, *, reopen: bool, w_g=1.0, w_h=1.0, tie_break: str = "fifo",
+                      start: State | None = None, max_expansions: int | None = None,
+                      trace: list[State] | None = None) -> SearchResult:
     """h(task, state) -> estimated remaining cost (INF means dead end).
 
     reopen: re-expand a closed node reached by a cheaper path (module docstring);
     required, so no caller gets a reopening policy by accident.
+    tie_break: "fifo" (the D3 rule) or "lifo", the last key after f and h.
 
     trace: if given, every expanded state is appended to it in expansion
     order, at the point where it is counted, so len(trace) == expanded. A
     reopened state appears once per expansion. Tracing only observes: it
     never changes the order, the counts or the result.
     """
+    if tie_break not in TIE_RULES:
+        raise ValueError(f"tie_break must be one of {TIE_RULES}, not {tie_break!r}")
     t0 = time.perf_counter()
     s0 = task.init if start is None else start
     h_cache = {s0: h(task, s0)}
-    tie = itertools.count()
+    # The third heap key: increasing for FIFO, decreasing for LIFO, so heapq pops the oldest or newest.
+    tie = itertools.count() if tie_break == "fifo" else itertools.count(0, -1)
     g_best = {s0: 0}
     parent: dict[State, tuple[State, int] | None] = {s0: None}
     closed: dict[State, float] = {}  # state -> g at which it was expanded
     open_list = [(w_h * h_cache[s0], h_cache[s0], next(tie), 0, s0)]
     expanded = generated = reopened = 0
+    peak_open = len(open_list)
 
     def result(plan, cost, budget_hit=False):
         return SearchResult(plan, cost, expanded, generated, len(h_cache),
-                            time.perf_counter() - t0, budget_hit, reopened)
+                            time.perf_counter() - t0, budget_hit, reopened, peak_open, len(closed))
 
     if h_cache[s0] == INF:
         return result(None, INF)
@@ -119,6 +135,7 @@ def best_first_search(task: Task, h, *, reopen: bool, w_g=1.0, w_h=1.0, start: S
             if h2 == INF:
                 continue
             heapq.heappush(open_list, (w_g * g2 + w_h * h2, h2, next(tie), g2, s2))
+            peak_open = max(peak_open, len(open_list))
 
     return result(None, INF)
 

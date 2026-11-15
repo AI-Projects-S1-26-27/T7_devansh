@@ -99,3 +99,68 @@ def test_evaluation_searches_use_the_same_policy():
     b = gbfs(t, hadd)
     assert (a.plan, a.expanded, a.generated) == (b.plan, b.expanded, b.generated)
     assert uniform_cost(t).cost == astar(t, HEURISTICS["lmcut"]).cost
+
+
+# Two cost-1 branches from a, each one step from the goal: every node on a level ties on (f, h).
+TIE_TASK = Task.from_names(["a", "p", "q", "g"], ["a"], ["g"],
+                           [("ap", ["a"], ["p"], 1), ("aq", ["a"], ["q"], 1), ("pg", ["p"], ["g"], 1),
+                            ("qg", ["q"], ["g"], 1)])
+A, P, Q, PQ = 0b0001, 0b0011, 0b0101, 0b0111
+
+# By hand, UCS (f = g, h = 0), heap key (f, h, tie):
+# FIFO: expand A -> P(1), Q(1). Expand P (older) -> PQ(2), PG(2) [open: Q, PQ, PG = 3]. Expand Q -> QG(2)
+#   (PQ via ap is not cheaper). f = 2 ties: PQ is oldest, expanded; then PG, the goal.
+#   Trace A, P, Q, PQ; peak open 3; closed 4.
+# LIFO: expand A -> P, Q. Expand Q (newer) -> PQ(2), QG(2) [open: P, PQ, QG = 3]. Expand P -> PG(2), the
+#   newest f = 2 node, popped next: the goal. Trace A, Q, P; peak open 3; closed 3.
+
+
+def test_tie_rules_order_equal_keys_by_generation():
+    fifo, lifo = [], []
+    rf = uniform_cost(TIE_TASK, tie_break="fifo", trace=fifo)
+    rl = uniform_cost(TIE_TASK, tie_break="lifo", trace=lifo)
+    assert fifo == [A, P, Q, PQ] and lifo == [A, Q, P]
+    assert rf.cost == rl.cost == 2
+
+
+def test_default_is_the_d3_rule():
+    a, b = uniform_cost(TIE_TASK, trace=(ta := [])), uniform_cost(TIE_TASK, tie_break="fifo", trace=(tb := []))
+    assert ta == tb and a.plan == b.plan
+
+
+def test_unknown_tie_rule_is_refused():
+    with pytest.raises(ValueError):
+        astar(TIE_TASK, HEURISTICS["hmax"], tie_break="random")
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_both_tie_rules_are_optimal_with_admissible_h(seed):
+    t = random_task(seed)
+    for name in ("hmax", "lmcut"):
+        assert astar(t, HEURISTICS[name], tie_break="fifo").cost == astar(t, HEURISTICS[name], tie_break="lifo").cost
+
+
+def test_peak_sizes_by_hand():
+    """The derivation above TIE_TASK."""
+    f, l = uniform_cost(TIE_TASK, tie_break="fifo"), uniform_cost(TIE_TASK, tie_break="lifo")
+    assert (f.peak_open, f.peak_closed) == (3, 4)
+    assert (l.peak_open, l.peak_closed) == (3, 3)
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_peak_sizes_are_consistent_with_the_trace(seed):
+    t = random_task(seed)
+    for run in (lambda **kw: astar(t, HEURISTICS["lmcut"], **kw), lambda **kw: gbfs(t, hadd, **kw),
+                lambda **kw: weighted_astar(t, hadd, 2.0, **kw)):
+        for tie in ("fifo", "lifo"):
+            tr = []
+            r = run(tie_break=tie, trace=tr)
+            assert r.peak_closed == len(set(tr))
+            assert 1 <= r.peak_open <= r.generated + 1
+
+
+def test_evaluation_records_peaks_and_passes_the_tie_rule():
+    from ahg.evaluate import _run
+    f, l = _run(TIE_TASK, lambda t, s: 0, None), _run(TIE_TASK, lambda t, s: 0, None, tie_break="lifo")
+    assert (f["peak_open"], f["peak_closed"], f["expanded"]) == (3, 4, 4)
+    assert (l["peak_open"], l["peak_closed"], l["expanded"]) == (3, 3, 3)

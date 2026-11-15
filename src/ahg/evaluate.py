@@ -76,16 +76,19 @@ def sibling_order(groups, h: dict) -> dict:
     return {"pairs": pairs, "concordant": concordant, "ties": ties}
 
 
-def _run(task, h, budget, w_g=1.0, w_h=1.0, reopen=True):
-    r = best_first_search(task, h, w_g=w_g, w_h=w_h, reopen=reopen, max_expansions=budget)
+def _run(task, h, budget, w_g=1.0, w_h=1.0, reopen=True, tie_break="fifo"):
+    r = best_first_search(task, h, w_g=w_g, w_h=w_h, reopen=reopen, tie_break=tie_break, max_expansions=budget)
     if r.solved:
         assert plan_cost(task, r.plan) == r.cost  # the plan is executable and its cost is what search says
     return {"expanded": r.expanded, "generated": r.generated, "evaluations": r.evaluations,
-            "cost": r.cost if r.solved else None, "seconds": r.seconds, "budget_hit": r.budget_hit}
+            "cost": r.cost if r.solved else None, "seconds": r.seconds, "budget_hit": r.budget_hit,
+            "peak_open": r.peak_open, "peak_closed": r.peak_closed, "reopened": r.reopened}
 
 
-def evaluate(batches, learned: list, budget: int = 200_000) -> list[dict]:
-    """One record per labelled instance. learned: list of learning.heuristic.Learned."""
+def evaluate(batches, learned: list, budget: int = 200_000, tie_break: str = "fifo") -> list[dict]:
+    """One record per labelled instance. learned: list of learning.heuristic.Learned.
+
+    tie_break: search.TIE_RULES, the same for every method of the run (D28 Round 7); recorded per record."""
     records = []
     for batch in batches:
         by_inst: dict[int, list] = {}
@@ -98,18 +101,18 @@ def evaluate(batches, learned: list, budget: int = 200_000) -> list[dict]:
             task = inst.task
             rec = {"batch": batch.manifest["batch_id"], "seed": inst_rec["spec"]["seed"],
                    "cell": {k: inst_rec["spec"][k] for k in ("variant", "n", "D", "rho", "m")},
-                   "hstar": hstar, "runs": {}, "over": {}, "order": {}}
+                   "hstar": hstar, "tie_break": tie_break, "runs": {}, "over": {}, "order": {}}
             for name, h in BASELINES.items():
-                rec["runs"][name] = _run(task, h, budget)
+                rec["runs"][name] = _run(task, h, budget, tie_break=tie_break)
                 got = rec["runs"][name]["cost"]
                 if name in ADMISSIBLE and not rec["runs"][name]["budget_hit"] and got != hstar:
                     raise HardFailure(f"seed {rec['seed']}: A*+{name} cost {got} != label h* {hstar}")
             for name, w in HADD_SEARCHES.items():
-                rec["runs"][name] = _run(task, hadd, budget, **w)
+                rec["runs"][name] = _run(task, hadd, budget, tie_break=tie_break, **w)
             exs = by_inst[i]
             groups = sibling_groups(task, exs)
             for model in learned:
-                rec["runs"][model.name] = _run(task, model.bind(inst), budget)
+                rec["runs"][model.name] = _run(task, model.bind(inst), budget, tie_break=tie_break)
                 preds = model.predict_states(inst, [ex.state for ex in exs])
                 rec["over"][model.name] = {
                     g: [p - ex.hstar / SCALE for p, ex in zip(preds, exs) if set(ex.sources) & srcs]
