@@ -51,15 +51,56 @@ class MLP(nn.Module):
         return self.net((x - self.mean) / self.std).squeeze(-1)
 
 
+# The pre-registered aggregator grid (D28 Round 11, AUDIT_4 inventory #4): how an action combines its
+# preconditions (the AND side) x how the graph is read out. mean/mean is the D21 architecture.
+PRE_AGGS = ("mean", "sum", "max")
+READOUTS = ("mean", "sum")
+AGGREGATOR_GRID = tuple((p, r) for p in PRE_AGGS for r in READOUTS)
+
+
+def aggregate_pre(f: torch.Tensor, g: dict, mode: str) -> torch.Tensor:
+    """[B, actions, H] message to each action from its preconditions' fact embeddings f [B, facts, H].
+
+    mean / sum / max over the preconditions; an action without preconditions gets 0 in every mode.
+    max is an elementwise maximum (scatter_reduce "amax"), the closest smooth-free analogue of h_max's AND.
+    """
+    b, n_a, hdim = f.shape[0], g["act_x"].shape[0], f.shape[2]
+    src = f[:, g["pre_src"]]  # [B, edges, H]
+    out = f.new_zeros(b, n_a, hdim)
+    if mode == "max":
+        idx = g["pre_dst"].view(1, -1, 1).expand_as(src)
+        return out.scatter_reduce(1, idx, src, "amax", include_self=False)
+    out = out.index_add(1, g["pre_dst"], src)
+    if mode == "mean":
+        return out * g["inv_deg_pre"]
+    if mode == "sum":
+        return out
+    raise ValueError(f"pre_agg must be one of {PRE_AGGS}, not {mode!r}")
+
+
+def readout(x: torch.Tensor, mode: str) -> torch.Tensor:
+    """[B, H] graph-level pooling of node embeddings x [B, nodes, H]."""
+    if mode == "mean":
+        return x.mean(1)
+    if mode == "sum":
+        return x.sum(1)
+    raise ValueError(f"readout must be one of {READOUTS}, not {mode!r}")
+
+
 class GNN(nn.Module):
     """Message passing over the fact-action graph; one instance's states per call (shared graph).
 
     fact_dim/global_dim > their defaults give the D22 residual model its h_max inputs (per-fact and
     global). forward returns the raw output; h = output_transform(raw, is_goal[, h_max]).
+    pre_agg / readout: one cell of AGGREGATOR_GRID.
     """
 
-    def __init__(self, hidden: int, layers: int, fact_dim: int = FACT_DIM, global_dim: int = 0):
+    def __init__(self, hidden: int, layers: int, fact_dim: int = FACT_DIM, global_dim: int = 0,
+                 pre_agg: str = "mean", readout: str = "mean"):
         super().__init__()
+        if (pre_agg, readout) not in AGGREGATOR_GRID:
+            raise ValueError(f"(pre_agg, readout) = {(pre_agg, readout)} is not in the grid {AGGREGATOR_GRID}")
+        self.pre_agg, self.readout = pre_agg, readout
         self.enc_f = nn.Linear(fact_dim, hidden)
         self.enc_a = nn.Linear(ACTION_DIM, hidden)
         self.up_a = nn.ModuleList(nn.Linear(2 * hidden, hidden) for _ in range(layers))
@@ -68,17 +109,18 @@ class GNN(nn.Module):
 
     def forward(self, fx, g, glob=None):
         """fx: [B, facts, fact_dim]; g: dataset.static_graph of the instance; glob: [B, global_dim] or None."""
-        b, n_f, n_a = fx.shape[0], fx.shape[1], g["act_x"].shape[0]
+        b, n_f = fx.shape[0], fx.shape[1]
         f = torch.relu(self.enc_f(fx))
         a = torch.relu(self.enc_a(g["act_x"])).expand(b, -1, -1)
         for up_a, up_f in zip(self.up_a, self.up_f):
-            # An action sees the mean of its preconditions: the AND side of the graph.
-            m_a = f.new_zeros(b, n_a, f.shape[2]).index_add_(1, g["pre_dst"], f[:, g["pre_src"]]) * g["inv_deg_pre"]
+            # An action sees the mean / sum / max of its preconditions: the AND side of the graph.
+            m_a = aggregate_pre(f, g, self.pre_agg)
             a = torch.relu(up_a(torch.cat([a, m_a], -1)))
             # A fact sees the mean of the actions that add it: the OR side.
             m_f = f.new_zeros(b, n_f, f.shape[2]).index_add_(1, g["add_dst"], a[:, g["add_src"]]) * g["inv_deg_add"]
             f = torch.relu(up_f(torch.cat([f, m_f], -1)))
-        pooled = [f.mean(1), a.mean(1), f[:, g["goal"]].mean(1)] + ([glob] if glob is not None else [])
+        pooled = [readout(f, self.readout), readout(a, self.readout), readout(f[:, g["goal"]], self.readout)]
+        pooled += [glob] if glob is not None else []
         return self.head(torch.cat(pooled, -1)).squeeze(-1)
 
 

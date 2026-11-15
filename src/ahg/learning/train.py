@@ -164,10 +164,14 @@ def _train_gnn(cfg, train, val, history, deadline=None):
 
 
 def new_gnn(cfg: dict) -> GNN:
-    """The GNN a config describes; the residual target (D22 a, d) adds the h_max inputs and a raw output."""
+    """The GNN a config describes; the residual target (D22 a, d) adds the h_max inputs.
+
+    pre_agg / readout pick the aggregator grid cell (D28 Round 11). A config without them is a pre-D28 one,
+    whose only architecture was mean / mean; that is what they mean when absent."""
+    agg = {"pre_agg": cfg.get("pre_agg", "mean"), "readout": cfg.get("readout", "mean")}
     if cfg.get("target", "hstar") == "residual":
-        return GNN(cfg["hidden"], cfg["layers"], fact_dim=4, global_dim=1)
-    return GNN(cfg["hidden"], cfg["layers"])
+        return GNN(cfg["hidden"], cfg["layers"], fact_dim=4, global_dim=1, **agg)
+    return GNN(cfg["hidden"], cfg["layers"], **agg)
 
 
 def _early_stop(model, epoch, validate, cfg, history, deadline=None):

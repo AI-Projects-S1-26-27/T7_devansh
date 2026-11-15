@@ -19,9 +19,12 @@ TRAINING = ROOT / "results" / "training"
 DEFAULTS = json.loads((ROOT / "configs" / "training" / "d21.json").read_text())
 
 
+OPTIONAL = {"pre_agg", "readout"}  # GNN aggregator grid cell (D28 Round 11); absent = the D21 mean / mean
+
+
 def make_config(**over) -> dict:
     cfg = {**DEFAULTS, **over}
-    unknown = set(over) - set(DEFAULTS)
+    unknown = set(over) - set(DEFAULTS) - OPTIONAL
     if unknown:
         raise ValueError(f"unknown training config keys {sorted(unknown)}")
     return cfg
