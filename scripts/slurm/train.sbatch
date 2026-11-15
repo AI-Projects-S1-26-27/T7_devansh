@@ -45,4 +45,5 @@ export CUDA_MPS_PINNED_DEVICE_MEM_LIMIT="0=48G"
 export PYTHONHASHSEED=0 OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 args=(--set "seed=$SEED" --set device=cuda)
 for kv in $SET; do args+=(--set "$kv"); done
-uv run --frozen python scripts/train.py run "${args[@]}"
+# uv is on the login node only (P9a2: exit 127 on gpunode8), so jobs run the env `uv sync --locked` built there.
+.venv/bin/python scripts/train.py run "${args[@]}"

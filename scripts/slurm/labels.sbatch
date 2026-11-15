@@ -39,5 +39,6 @@ if [[ -n "$(git status --porcelain --untracked-files=no)$(git status --porcelain
     exit 1
 fi
 export PYTHONHASHSEED=0 OMP_NUM_THREADS=1 CUDA_VISIBLE_DEVICES=""  # CPU only
-uv run --frozen python scripts/make_labels.py --split "$SPLIT" --config configs/labels/d19.json \
+# uv is on the login node only (P9a2: exit 127 on gpunode8), so jobs run the env `uv sync --locked` built there.
+.venv/bin/python scripts/make_labels.py --split "$SPLIT" --config configs/labels/d19.json \
     --shard "${SLURM_ARRAY_TASK_ID:?}/$N_SHARDS"

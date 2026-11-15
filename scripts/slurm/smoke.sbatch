@@ -22,7 +22,8 @@ cd "${SLURM_SUBMIT_DIR:?}"
 export CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=50
 export CUDA_MPS_PINNED_DEVICE_MEM_LIMIT="0=48G"
 echo "host $(hostname) job ${SLURM_JOB_ID:-none} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
-${PYTHON:-uv run --frozen python} - <<'PY'
+# uv is on the login node only (P9a2: exit 127 on gpunode8), so jobs run the env `uv sync --locked` built there.
+${PYTHON:-.venv/bin/python} - <<'PY'
 import subprocess
 import sys
 

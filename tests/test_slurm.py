@@ -32,10 +32,15 @@ def test_header_within_limits(path):
 
 def test_smoke_job_imports_the_repo_from_its_locked_environment():
     text = (SLURM / "smoke.sbatch").read_text()
-    assert "import ahg" in text and "uv run --frozen python" in text and "nlp/.venv" not in text
+    assert "import ahg" in text and "${PYTHON:-.venv/bin/python}" in text and "nlp/.venv" not in text
 
 
 def test_half_card_jobs_cap_mps_threads_and_memory():
     for name in ("train.sbatch", "smoke.sbatch"):
         text = (SLURM / name).read_text()
         assert "CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=50" in text and 'CUDA_MPS_PINNED_DEVICE_MEM_LIMIT="0=48G"' in text
+
+
+def test_jobs_never_call_uv_on_the_compute_node():
+    for path in FILES:
+        assert "uv run" not in path.read_text(), path.name
