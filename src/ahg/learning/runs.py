@@ -29,12 +29,14 @@ def make_config(**over) -> dict:
 
 def render(raw) -> str:
     c, h = raw["config"], [e for e in raw["history"] if "epoch" in e]
-    best = min(h, key=lambda e: e["val_loss"])
+    best = min(h, key=lambda e: (e["val_mae"], e["epoch"]))  # the selected checkpoint (F4)
     L = [f"# training {raw['name']}", "", "```", json.dumps(c, sort_keys=True), "```", "",
-         f"Best val loss {best['val_loss']:.4f} at epoch {best['epoch']} of {len(h)}; wall time "
+         f"Selected epoch {best['epoch']} of {len(h)} by macro val MAE {best['val_mae']:.4f} "
+         f"(val loss {best['val_loss']:.4f}); wall time "
          f"{raw['wall_seconds']:.1f} s (encoding {raw['encode_seconds']:.1f} s); torch threads {raw['torch_threads']}.", "",
-         "| epoch | train loss | val loss | epoch s |", "|---|---|---|---|"]
-    L += [f"| {e['epoch']} | {e['train_loss']:.4f} | {e['val_loss']:.4f} | {e['epoch_seconds']:.2f} |" for e in h]
+         "| epoch | train loss | val loss | val MAE (macro) | epoch s |", "|---|---|---|---|---|"]
+    L += [f"| {e['epoch']} | {e['train_loss']:.4f} | {e['val_loss']:.4f} | {e['val_mae']:.4f} | {e['epoch_seconds']:.2f} |"
+          for e in h]
     return "\n".join(L) + "\n"
 
 
@@ -54,6 +56,8 @@ def train_run(cfg: dict, name: str, batches=None, root: Path | None = None,
                e["epoch_seconds"] + e["val_seconds"] for e in epochs),
            "torch_threads": torch.get_num_threads(),
            "best_val_loss": min(e["val_loss"] for e in epochs),
+           "selected_epoch": min(epochs, key=lambda e: (e["val_mae"], e["epoch"]))["epoch"],
+           "best_val_mae": min(e["val_mae"] for e in epochs),
            "stopped": next((e["stopped"] for e in history if "stopped" in e), None)}
     out = write_run(name, raw, render(raw), [cfg["seed"]], cfg, root=root or TRAINING)
     save(model, cfg, out / "model.pt")

@@ -33,6 +33,26 @@ def _cat(xs):
     return torch.cat(xs) if len(xs) > 1 else xs[0]
 
 
+def network_ids(batches: list[LabelBatch]) -> torch.Tensor:
+    """[states] the validation network (batch, instance) of each example row, as consecutive integers."""
+    ids, seen = [], {}
+    for b, batch in enumerate(batches):
+        for ex in batch.examples:
+            ids.append(seen.setdefault((b, ex.instance), len(seen)))
+    return torch.tensor(ids, dtype=torch.long)
+
+
+def macro_mae(pred: torch.Tensor, y: torch.Tensor, net: torch.Tensor) -> float:
+    """Validation MAE macro-averaged over networks (D28 F4): the mean over networks of each network's mean
+    |h - h*|, so a network with many labelled states counts as much as one with few."""
+    err = (pred.double() - y.double()).abs()
+    n = int(net.max()) + 1
+    total = torch.zeros(n, dtype=torch.float64).index_add_(0, net, err)
+    count = torch.zeros(n, dtype=torch.float64).index_add_(0, net, torch.ones_like(err))
+    present = count > 0
+    return float((total[present] / count[present]).mean())
+
+
 def _train_mlp(cfg, train, val, history, deadline=None):
     X = _cat([encode.mlp_matrix(b) for b in train])
     y = _cat([encode.targets(b) for b in train])
@@ -59,12 +79,15 @@ def _train_mlp(cfg, train, val, history, deadline=None):
             total += float(loss) * len(idx)
         return total / len(y)
 
-    def val_loss():
+    net = network_ids(val).to(dev)
+
+    def validate():
         model.eval()
         with torch.no_grad():
-            return float(loss_fn(output_transform(model(Xv), Gv), yv, cfg["loss"], cfg["w_over"]))
+            pv = output_transform(model(Xv), Gv)
+            return float(loss_fn(pv, yv, cfg["loss"], cfg["w_over"])), macro_mae(pv, yv, net)
 
-    return _early_stop(model, epoch, val_loss, cfg, history, deadline)
+    return _early_stop(model, epoch, validate, cfg, history, deadline)
 
 
 def rank_loss(h, g):
@@ -89,6 +112,8 @@ def _train_gnn(cfg, train, val, history, deadline=None):
     enc = encode.rank_groups if rank else encode.gnn_groups
     groups = [move(g) for b in train for g in enc(b, residual=residual)]
     vgroups = [move(g) for b in val for g in enc(b, residual=residual)]
+    # Checkpoints are selected by h vs h* on every model, whatever its loss (F4): the labelled val states.
+    mgroups = vgroups if not rank else [move(g) for b in val for g in encode.gnn_groups(b, residual=residual)]
     model = new_gnn(cfg).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
     rng = random.Random(f"train:{cfg['seed']}")
@@ -121,7 +146,7 @@ def _train_gnn(cfg, train, val, history, deadline=None):
                 total, n = total + float(loss) * len(g["y"][sl]), n + len(g["y"][sl])
         return total / n
 
-    def val_loss():
+    def validate():
         model.eval()
         total = n = 0
         with torch.no_grad():
@@ -131,9 +156,11 @@ def _train_gnn(cfg, train, val, history, deadline=None):
                 else:
                     total += float(loss_fn(gnn_pred(model, g, residual), g["y"], cfg["loss"], cfg["w_over"])) * len(g["y"])
                     n += len(g["y"])
-        return total / n
+            # One group per validation network, so the mean of group MAEs is the macro average.
+            mae = sum(float((gnn_pred(model, g, residual) - g["y"]).abs().double().mean()) for g in mgroups) / len(mgroups)
+        return total / n, mae
 
-    return _early_stop(model, epoch, val_loss, cfg, history, deadline)
+    return _early_stop(model, epoch, validate, cfg, history, deadline)
 
 
 def new_gnn(cfg: dict) -> GNN:
@@ -143,9 +170,12 @@ def new_gnn(cfg: dict) -> GNN:
     return GNN(cfg["hidden"], cfg["layers"])
 
 
-def _early_stop(model, epoch, val_loss, cfg, history, deadline=None):
-    """Train up to max_epochs; keep the weights of the best validation loss; stop after `patience` bad epochs.
+def _early_stop(model, epoch, validate, cfg, history, deadline=None):
+    """Train up to max_epochs; keep the checkpoint with the lowest validation MAE, macro-averaged over
+    networks (D28 F4); stop after `patience` epochs without a strictly lower MAE.
 
+    Tie rule: a later epoch replaces the kept one only with a strictly lower MAE, so among equal MAEs the
+    earliest epoch is kept. validate() returns (val loss, macro val MAE); the loss is recorded only.
     deadline: a time.time() past which no new epoch starts (the D21 §5 search budget).
     """
     best, best_state, bad = float("inf"), None, 0
@@ -156,16 +186,18 @@ def _early_stop(model, epoch, val_loss, cfg, history, deadline=None):
         t0 = time.perf_counter()
         tr = epoch()
         t_train = time.perf_counter() - t0
-        vl = val_loss()
-        history.append({"epoch": e, "train_loss": tr, "val_loss": vl, "epoch_seconds": t_train,
+        vl, mae = validate()
+        history.append({"epoch": e, "train_loss": tr, "val_loss": vl, "val_mae": mae, "epoch_seconds": t_train,
                         "val_seconds": time.perf_counter() - t0 - t_train})
-        if vl < best:
-            best, bad = vl, 0
+        if mae < best:
+            best, bad = mae, 0
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         else:
             bad += 1
             if bad >= cfg["patience"]:
                 break
+    if best_state is None:
+        raise ValueError("no finite validation MAE: no checkpoint to select")
     model.load_state_dict(best_state)
     return model.cpu().eval()
 
@@ -185,7 +217,8 @@ def _train_wl(cfg, train, val, history, deadline=None):
     Xv = sparse_matrix([h for b in val for h in encode.wl_histograms(b)], vocab)
     yv = _cat([encode.targets(b) for b in val]).double()
     Gv = _cat([encode.goal_flags(b) for b in val])
-    w = None
+    net = network_ids(val)
+    w, best = None, None
     rounds = cfg["irls_rounds"] if cfg["loss"] == "asym" else 1
     for r in range(rounds):
         if r > 0 and deadline is not None and time.time() >= deadline:
@@ -197,11 +230,16 @@ def _train_wl(cfg, train, val, history, deadline=None):
         # IRLS for the asymmetric loss: reweight by which side of h* each state now falls on.
         w = torch.where(pred > y, torch.full_like(y, cfg["w_over"]), torch.ones_like(y))
         pv = wl_transform(Xv @ beta + bias, Gv)
+        mae = macro_mae(pv, yv, net)
         history.append({"epoch": r, "train_loss": float(loss_fn(pred, y, cfg["loss"], cfg["w_over"])),
-                        "val_loss": float(loss_fn(pv, yv, cfg["loss"], cfg["w_over"])),
+                        "val_loss": float(loss_fn(pv, yv, cfg["loss"], cfg["w_over"])), "val_mae": mae,
                         "epoch_seconds": time.perf_counter() - t0, "val_seconds": 0.0})
-    history.append({"vocab_size": len(vocab)})
-    return WLLinear(vocab, beta, bias)
+        # F4 / AUDIT_4 inventory #3: keep the IRLS round with the lowest macro val MAE, not the last one;
+        # strict < keeps the earliest round among equal MAEs (deterministic tie rule).
+        if best is None or mae < best[0]:
+            best = (mae, r, beta.clone(), bias)
+    history.append({"vocab_size": len(vocab), "selected_round": best[1]})
+    return WLLinear(vocab, best[2], best[3])
 
 
 def train_model(cfg: dict, train: list[LabelBatch], val: list[LabelBatch], deadline: float | None = None):
