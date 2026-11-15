@@ -169,7 +169,7 @@ def main() -> None:
         if cve:
             published, published_source = cve["published"], "nvd"
         else:
-            published, published_source = ms["release_date"] or min(ms["revision_dates"]), "msrc"
+            published, published_source = ms["release_date"] or ms["initial_release"], "msrc"
             build["msrc_only_rows"] += 1
         coh = cd.cohort(published, cohorts)
 
@@ -194,8 +194,11 @@ def main() -> None:
             cpe_sig = [{"role": r, "source": "cpe", "pattern": f"CPE field says {r}", "match": m["criteria"]}
                        for m in matches if m["role"] == "vulnerable" and [m["vendor"], m["product"]] == vendor_prod
                        for r in ("client", "server") if re.search(rf"\b{r}\b", m["criteria"].split(":", 5)[5].replace("_", " "))]  # fmt: skip
-            u["role"], u["role_reason"] = cd.decide_role(signals + cpe_sig, u["prior"])
-            u["role_evidence"] = signals + cpe_sig
+            vocab = cfg["role_vocabulary"].get(u["product"], {})
+            voc_sig = [s for src, t, _ in texts for s in cd.vocab_signals(t, vocab, src)]
+            ev = signals + cpe_sig + voc_sig
+            u["role"], u["role_reason"] = cd.decide_role(ev, u["prior"])
+            u["role_evidence"] = ev
             u["cohort"] = coh
             u["stage"] = cd.funnel_stage(res, u["role"]) if coh else None
 
@@ -212,7 +215,7 @@ def main() -> None:
             "platform_conditions": sorted({m["criteria"] for m in matches if m["role"] == "platform"}),
             "cpe_part_mismatch": part_mismatch, "configurations": cve.get("configurations", []) if cve else [],
             "references": [{"url": r["url"], "tags": r.get("tags", [])} for r in (cve or {}).get("references", [])],
-            "msrc": {k: ms[k] for k in ("doc", "title", "tags", "faq", "cwe", "release_date", "revision_dates", "products", "cna_note")}
+            "msrc": {k: ms[k] for k in ("doc", "title", "tags", "faq", "cwe", "release_date", "initial_release", "revision_dates", "products", "cna_note")}
                     | {"docs": sorted(e["doc"] for e in msrc[cid]),
                        "impacts": sorted({p.get("impact") for p in ms["products"].values() if p.get("impact")})} if ms else None,
             "units": units,
