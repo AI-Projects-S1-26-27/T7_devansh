@@ -48,6 +48,11 @@ def targets(batch: LabelBatch) -> torch.Tensor:
     return torch.tensor([ex.hstar / SCALE for ex in batch.examples], dtype=torch.float32)
 
 
+def goal_flags(batch: LabelBatch) -> torch.Tensor:
+    """[states] True where the state is a goal state; output_transform sets h = 0 there (D28 LRN7)."""
+    return torch.tensor([batch.task(ex).is_goal(ex.state) for ex in batch.examples], dtype=torch.bool)
+
+
 def mlp_matrix(batch: LabelBatch, cache=None) -> torch.Tensor:
     """[states, 7] hand-built features, unstandardised (standardisation is fitted on train by the model)."""
     return _cached(batch, "mlp", lambda: torch.tensor([mlp_features(batch.task(ex), ex.state)
@@ -88,8 +93,9 @@ def gnn_inputs(task, states: list[int], residual: bool) -> dict:
 
 
 def gnn_groups(batch: LabelBatch, cache=None, residual: bool = False) -> list[dict]:
-    """Per labelled instance: its static graph, the inputs of its labelled states, and their targets.
-    residual: y is h* - h_max (effort units), the D22 variant a target, which is >= 0 (h_max is admissible)."""
+    """Per labelled instance: its static graph, the inputs of its labelled states, and their targets y = h*
+    (effort units). residual adds the h_max inputs; the residual model is trained through
+    output_transform(raw, goal, h_max) against h* itself (D28 LRN7)."""
     def build():
         by_inst: dict[int, list[int]] = {}
         for k, ex in enumerate(batch.examples):
@@ -99,8 +105,7 @@ def gnn_groups(batch: LabelBatch, cache=None, residual: bool = False) -> list[di
         for i, ks in sorted(by_inst.items()):
             inst = batch.instances[i]
             x = gnn_inputs(inst.task, [batch.examples[k].state for k in ks], residual)
-            yi = y[ks] - x["hm"] if residual else y[ks]
-            out.append({"instance": i, "graph": static_graph(inst), **x, "y": yi, "rows": torch.tensor(ks)})
+            out.append({"instance": i, "graph": static_graph(inst), **x, "y": y[ks], "rows": torch.tensor(ks)})
         return out
     return _cached(batch, "gnn_res" if residual else "gnn", build, cache)
 

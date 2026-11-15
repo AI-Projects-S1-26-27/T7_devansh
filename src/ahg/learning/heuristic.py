@@ -13,8 +13,7 @@ from ..cost import SCALE
 from ..dataset import mlp_features, static_graph, wl_colours
 from ..heuristics import hmax
 from .encode import fact_bits, gnn_inputs
-from .models import WLLinear
-from .train import residual_h
+from .models import WLLinear, goal_mask, output_transform, wl_transform
 
 
 class Learned:
@@ -32,31 +31,33 @@ class Learned:
 
     def _bind(self, inst):
         kind, model = self.cfg["kind"], self.model
+        # Every branch maps the raw output through the same transform training uses (D28 LRN7), h(goal) = 0.
         if kind == "wl":
             assert isinstance(model, WLLinear)
-            return lambda task, s: SCALE * model.predict_one(wl_colours(task, s))
+
+            def h(task, s):
+                raw = torch.tensor([model.raw_one(wl_colours(task, s))], dtype=torch.float64)
+                return SCALE * float(wl_transform(raw, torch.tensor([task.is_goal(s)]))[0])
+            return h
         if kind == "mlp":
             def h(task, s):
                 with torch.no_grad():
-                    return SCALE * float(model(torch.tensor([mlp_features(task, s)], dtype=torch.float32)))
+                    raw = model(torch.tensor([mlp_features(task, s)], dtype=torch.float32))
+                    return SCALE * float(output_transform(raw, torch.tensor([task.is_goal(s)]))[0])
             return h
         graph = {}
-        if self.cfg.get("target", "hstar") == "residual":
-            loss = self.cfg["loss"]
+        residual = self.cfg.get("target", "hstar") == "residual"
 
-            def h(task, s):  # D24 §1: the training transform (residual_h), with h_max computed here, inside the timing
-                if not graph:
-                    graph.update(static_graph(inst))
-                x = gnn_inputs(task, [s], residual=True)
-                with torch.no_grad():
-                    return SCALE * float(residual_h(x["hm"], model(x["fx"], graph, x["glob"]), loss)[0])
-            return h
-
-        def h(task, s):
+        def h(task, s):  # the static graph and (residual) h_max are computed here, inside the timing
             if not graph:
                 graph.update(static_graph(inst))
             with torch.no_grad():
-                return SCALE * float(model(fact_bits(task, [s]), graph))
+                if residual:
+                    x = gnn_inputs(task, [s], residual=True)
+                    raw = model(x["fx"], graph, x["glob"])
+                    return SCALE * float(output_transform(raw, goal_mask(x["fx"]), x["hm"])[0])
+                fx = fact_bits(task, [s])
+                return SCALE * float(output_transform(model(fx, graph), goal_mask(fx))[0])
         return h
 
     def predict_states(self, inst, states: list[int]) -> list[float]:

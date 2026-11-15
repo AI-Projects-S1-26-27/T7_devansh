@@ -4,10 +4,18 @@ h* of a state is computed by A*+LM-cut and cross-checked against A*+h_max.
 Both are admissible, so the two optimal costs must be equal; a mismatch, or
 an admissible heuristic above h*, raises HardFailure, and the calling script
 aborts before writing anything. enumerate_exact gives a third, independent
-h* by backward induction where the reachable space is small enough.
+h* from the reference solver (refsolver.py) where the reachable space is
+small enough.
+
+The C1 admissibility check (D28 Round 8) is audit_admissibility: every
+heuristic claimed admissible against the reference solver's h*, on every
+reachable state. check_admissible below is only a consistency check against
+a caller-supplied h*; when that h* comes from A*+LM-cut it is circular for
+LM-cut (AUDIT_4 inventory #1), so it never counts as the C1 check.
 """
 
-from .heuristics import hmax, lmcut
+from . import refsolver
+from .heuristics import ADMISSIBLE, hmax, lmcut
 from .search import INF, astar
 
 
@@ -35,6 +43,7 @@ def exact_cost(task, start, budget, traces=None):
 
 
 def check_admissible(task, s, hstar):
+    """h_max and LM-cut at s against a caller-supplied h* (consistency check only; see the module docstring)."""
     vals = (hmax(task, s), lmcut(task, s))
     for name, v in zip(("h_max", "LM-cut"), vals):
         if v > hstar:
@@ -70,27 +79,64 @@ def sample_states(task, rng, cap, walks_per_sample):
 
 
 def enumerate_exact(task, cap):
-    """h* of every reachable state by backward induction; None if more than cap states.
+    """h* of every reachable state, keyed by bitmask; None if more than cap states.
 
-    Independent of A*: states of a delete-free task form a DAG (every useful
-    action strictly grows the state), so processing states from most facts to
-    fewest gives h*(s) = min over successors s' of c(a) + h*(s').
+    Computed by the independent reference solver (exhaustive backward
+    Dijkstra on fact-name sets), so it shares no transition code with
+    task.py or search.py (AUDIT_4 inventory #1).
     """
-    seen, stack = {task.init}, [task.init]
-    while stack:
-        for _, s2 in task.successors(stack.pop()):
-            if s2 not in seen:
-                if len(seen) >= cap:
-                    return None
-                seen.add(s2)
-                stack.append(s2)
-    hstar = {}
-    for s in sorted(seen, key=lambda s: -bin(s).count("1")):
-        if task.is_goal(s):
-            hstar[s] = 0
-            continue
-        hstar[s] = min((task.actions[ai].cost + hstar[s2] for ai, s2 in task.successors(s)), default=INF)
-    return hstar
+    st = refsolver.serialize(task)
+    h = refsolver.hstar_all(st, cap=cap)
+    return None if h is None else {refsolver.to_bits(st, s): v for s, v in h.items()}
+
+
+def _reference_values(task, heuristics: dict, cap: int):
+    """(state bitmask, reference h*, {name: h(state)}) for every reachable state. Refuses any heuristic
+    not claimed admissible: a learned heuristic is never treated as admissible (D28 Round 8, rule 8)."""
+    unclaimed = set(heuristics) - ADMISSIBLE
+    if unclaimed:
+        raise ValueError(f"not claimed admissible, so never audited as admissible: {sorted(unclaimed)}")
+    exact = enumerate_exact(task, cap)
+    if exact is None:
+        raise HardFailure(f"more than {cap} reachable states: too large for the exhaustive check")
+    for s, hs in sorted(exact.items()):
+        yield s, hs, {name: h(task, s) for name, h in heuristics.items()}
+
+
+def audit_admissibility(task, heuristics: dict, cap: int = 100_000) -> dict:
+    """C1: h(s) <= h*(s) for every reachable state s and every heuristic claimed admissible.
+
+    h* comes from the reference solver, never from a search that uses one of
+    the heuristics checked. Raises HardFailure on the first violation; returns
+    per-heuristic counts (states, states with h < h*) otherwise.
+    """
+    out = {name: {"states": 0, "below": 0} for name in heuristics}
+    for s, hs, vals in _reference_values(task, heuristics, cap):
+        for name, v in vals.items():
+            if v > hs:
+                raise HardFailure(f"{name}={v} > h*={hs} at state {s:#x}")
+            out[name]["states"] += 1
+            out[name]["below"] += v < hs
+    return out
+
+
+def audit_dead_end_detection(task, heuristics: dict, cap: int = 100_000) -> int:
+    """Unreachable-goal detection, tested separately from admissibility (D28 Round 8, C1).
+
+    A heuristic claimed admissible must return INF exactly at the reachable
+    states whose reference h* is INF: INF where h* is finite would prune a
+    solvable state, and a finite value where h* is INF would let the common
+    reachability pre-check (h_max = INF, Round 7) pass an unsolvable task.
+    In a delete-free task h_max and LM-cut are exact on this question.
+    Returns the number of dead-end states seen; raises HardFailure otherwise.
+    """
+    dead = 0
+    for s, hs, vals in _reference_values(task, heuristics, cap):
+        dead += hs == INF
+        for name, v in vals.items():
+            if (v == INF) != (hs == INF):
+                raise HardFailure(f"{name}={v} but h*={hs} at state {s:#x}")
+    return dead
 
 
 def gap_stats(triples):

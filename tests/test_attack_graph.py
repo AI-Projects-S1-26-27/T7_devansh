@@ -270,5 +270,5 @@ def test_every_method_runs_through_the_shared_search(monkeypatch):
     gbfs(t, HEURISTICS["hff"])
     assert len(calls) == len(HEURISTICS) + 3
     # A* with h0 is UCS, node for node.
-    a, u = real(t, h0), real(t, lambda task, s: 0)
+    a, u = real(t, h0, reopen=True), real(t, lambda task, s: 0, reopen=True)
     assert (a.plan, a.cost, a.expanded, a.generated) == (u.plan, u.cost, u.expanded, u.generated)
