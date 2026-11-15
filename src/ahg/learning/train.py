@@ -12,7 +12,7 @@ import time
 import torch
 from torch.nn.functional import softplus
 
-from ..cost import SCALE
+from ..cost import SCALE, check_regime
 from ..dataset import LabelBatch
 from . import encode
 from .models import GNN, MLP, WLLinear, fit_ridge, goal_mask, output_transform, sparse_matrix, wl_transform
@@ -250,6 +250,14 @@ def train_model(cfg: dict, train: list[LabelBatch], val: list[LabelBatch], deadl
     """Train one model; returns (model, history). cfg["kind"] in KINDS, cfg["loss"] in LOSSES."""
     if any(b.manifest["split"] != "train" for b in train) or any(b.manifest["split"] != "val" for b in val):
         raise ValueError("train_model takes train batches to fit and val batches to stop on, nothing else")
+    # D28 Round 5: labels of one cost regime are never used for the other. A config and every batch it
+    # reads must name the same regime; pre-D28 configs and batches name none, and still match each other.
+    regime = cfg.get("cost_regime")
+    if regime is not None:
+        check_regime(regime)
+    mismatched = sorted({str(b.manifest.get("cost_regime")) for b in train + val} - {str(regime)})
+    if mismatched:
+        raise ValueError(f"config cost regime {regime!r} differs from the batches' regime(s) {mismatched}")
     if cfg["kind"] != "gnn" and (cfg["loss"] == "rank" or cfg.get("target", "hstar") != "hstar"):
         raise ValueError("the ranking loss and the residual target are implemented for the GNN only (D22)")
     torch.manual_seed(cfg["seed"])

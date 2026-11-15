@@ -19,7 +19,8 @@ TRAINING = ROOT / "results" / "training"
 DEFAULTS = json.loads((ROOT / "configs" / "training" / "d21.json").read_text())
 
 
-OPTIONAL = {"pre_agg", "readout"}  # GNN aggregator grid cell (D28 Round 11); absent = the D21 mean / mean
+OPTIONAL = {"pre_agg", "readout",  # GNN aggregator grid cell (D28 Round 11); absent = the D21 mean / mean
+            "cost_regime"}  # D28 Round 5 "ac" or "uniform"; absent only in pre-D28 configs
 
 
 def make_config(**over) -> dict:
