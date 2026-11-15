@@ -25,6 +25,7 @@ from .heuristics import ADMISSIBLE, INF, h0, hadd, hff, hmax, hsp, lmcut
 from .measure import HardFailure
 from .search import best_first_search
 from .task import plan_cost
+from .timing import InvalidMeasurement, Timing, log_ratio, timed
 
 # Each in A*. h_FF added by D28 Round 7 (H1); it is inadmissible, so only its plan cost is measured.
 BASELINES = {"h0": h0, "hmax": hmax, "hsp": hsp, "hadd": hadd, "hff": hff, "lmcut": lmcut}
@@ -77,19 +78,32 @@ def sibling_order(groups, h: dict) -> dict:
     return {"pairs": pairs, "concordant": concordant, "ties": ties}
 
 
-def _run(task, h, budget, w_g=1.0, w_h=1.0, reopen=True, tie_break="fifo"):
-    r = best_first_search(task, h, w_g=w_g, w_h=w_h, reopen=reopen, tie_break=tie_break, max_expansions=budget)
+def _run(task, make_h, budget, repeats: int, w_g=1.0, w_h=1.0, reopen=True, tie_break="fifo"):
+    """One method on one task, repeated `repeats` times for timing (D28 Round 12).
+
+    make_h() returns a fresh heuristic each repeat, so per-instance set-up a
+    learned heuristic does lazily (its static graph) is inside every timed
+    repeat, not only the first. The search is deterministic: every repeat must
+    give the same plan and counts, or the run aborts.
+    """
+    runs, timing = timed(lambda: best_first_search(task, make_h(), w_g=w_g, w_h=w_h, reopen=reopen,
+                                                   tie_break=tie_break, max_expansions=budget), repeats)
+    key = lambda r: (r.plan, r.expanded, r.generated, r.evaluations, r.peak_open, r.peak_closed, r.reopened)
+    if any(key(r) != key(runs[0]) for r in runs):
+        raise HardFailure("a repeated search gave different results: the timing repeats are not the same run")
+    r = runs[0]
     if r.solved:
         assert plan_cost(task, r.plan) == r.cost  # the plan is executable and its cost is what search says
     return {"expanded": r.expanded, "generated": r.generated, "evaluations": r.evaluations,
-            "cost": r.cost if r.solved else None, "seconds": r.seconds, "budget_hit": r.budget_hit,
+            "cost": r.cost if r.solved else None, "time": timing.record(), "budget_hit": r.budget_hit,
             "peak_open": r.peak_open, "peak_closed": r.peak_closed, "reopened": r.reopened}
 
 
-def evaluate(batches, learned: list, budget: int = 200_000, tie_break: str = "fifo") -> list[dict]:
+def evaluate(batches, learned: list, budget: int = 200_000, tie_break: str = "fifo", *, repeats: int) -> list[dict]:
     """One record per labelled instance. learned: list of learning.heuristic.Learned.
 
-    tie_break: search.TIE_RULES, the same for every method of the run (D28 Round 7); recorded per record."""
+    tie_break: search.TIE_RULES, the same for every method of the run (D28 Round 7); recorded per record.
+    repeats: timing repeats per search (timing.py); required, since D28 fixes no number."""
     records = []
     for batch in batches:
         by_inst: dict[int, list] = {}
@@ -104,16 +118,16 @@ def evaluate(batches, learned: list, budget: int = 200_000, tie_break: str = "fi
                    "cell": {k: inst_rec["spec"][k] for k in ("variant", "n", "D", "rho", "m")},
                    "hstar": hstar, "tie_break": tie_break, "runs": {}, "over": {}, "order": {}}
             for name, h in BASELINES.items():
-                rec["runs"][name] = _run(task, h, budget, tie_break=tie_break)
+                rec["runs"][name] = _run(task, lambda h=h: h, budget, repeats, tie_break=tie_break)
                 got = rec["runs"][name]["cost"]
                 if name in ADMISSIBLE and not rec["runs"][name]["budget_hit"] and got != hstar:
                     raise HardFailure(f"seed {rec['seed']}: A*+{name} cost {got} != label h* {hstar}")
             for name, w in HADD_SEARCHES.items():
-                rec["runs"][name] = _run(task, hadd, budget, tie_break=tie_break, **w)
+                rec["runs"][name] = _run(task, lambda: hadd, budget, repeats, tie_break=tie_break, **w)
             exs = by_inst[i]
             groups = sibling_groups(task, exs)
             for model in learned:
-                rec["runs"][model.name] = _run(task, model.bind(inst), budget, tie_break=tie_break)
+                rec["runs"][model.name] = _run(task, lambda: model.bind(inst), budget, repeats, tie_break=tie_break)
                 preds = model.predict_states(inst, [ex.state for ex in exs])
                 rec["over"][model.name] = {
                     g: [p - ex.hstar / SCALE for p, ex in zip(preds, exs) if set(ex.sources) & srcs]
@@ -125,10 +139,12 @@ def evaluate(batches, learned: list, budget: int = 200_000, tie_break: str = "fi
 
 
 def _geo_ci(logs: list[float], key: str):
-    """Geometric mean of exp(logs) with a bootstrap 95% CI over instances."""
+    """Geometric mean of exp(logs) with a bootstrap 95% CI over instances. logs must be finite."""
     n = len(logs)
     if not n:
         return None
+    if not all(math.isfinite(x) for x in logs):
+        raise InvalidMeasurement(f"{key}: non-finite log value")
     rng = random.Random(f"bootstrap:{key}")
     means = sorted(sum(rng.choices(logs, k=n)) / n for _ in range(BOOTSTRAP))
     return [math.exp(sum(logs) / n), math.exp(means[int(0.025 * BOOTSTRAP)]), math.exp(means[int(0.975 * BOOTSTRAP) - 1])]
@@ -147,27 +163,38 @@ def summarise_searches(records: list[dict]) -> dict:
         out[m] = {"instances": len(records), "solved": len(solved),
                   "budget_hits": sum(r["runs"][m]["budget_hit"] for r in records),
                   "optimal": sum(r["runs"][m]["cost"] == r["hstar"] for r in solved),
-                  "plan_cost": _geo_ci([math.log(r["runs"][m]["cost"] / r["hstar"]) for r in solved], f"{m}:cost")}
+                  "plan_cost": _geo_ci([log_ratio(r["runs"][m]["cost"], r["hstar"], m) for r in solved], f"{m}:cost")}
     return out
 
 
 def summarise(records: list[dict], models: list[str], budget: int) -> dict:
-    """Per model: expansion and time ratios against every comparator, plan-cost ratio, overestimation by group."""
+    """Per model: expansion and time ratios against every comparator, plan-cost ratio, overestimation by group.
+
+    Ratios are over the tasks both methods solved; a zero count, a zero h* or a censored time in a log
+    ratio raises InvalidMeasurement rather than being clamped (D28 Round 12, AUDIT_4 inventory #5)."""
     out = {}
     comps = comparators(records)
     for m in models:
         s = {"instances": len(records), "budget_hits": sum(r["runs"][m]["budget_hit"] for r in records),
              "vs": {}}
-        exp = lambda r, h: max(1, r["runs"][h]["expanded"] if not r["runs"][h]["budget_hit"] else budget)
         for b in comps:
+            # Commonly solved tasks only (D28 Round 12): an unsolved or budget-stopped run has no expansion
+            # count to compare, and is never replaced by the budget or any other value.
+            both = [r for r in records if r["runs"][m]["cost"] is not None and r["runs"][b]["cost"] is not None]
+            timed_ = [r for r in both if not (Timing.from_record(r["runs"][m]["time"]).censored
+                                              or Timing.from_record(r["runs"][b]["time"]).censored)]
             s["vs"][b] = {
-                "expansions": _geo_ci([math.log(exp(r, m) / exp(r, b)) for r in records], f"{m}:{b}:exp"),
-                "time": _geo_ci([math.log(r["runs"][m]["seconds"] / r["runs"][b]["seconds"]) for r in records],
-                                f"{m}:{b}:time"),
-                "fewer": sum(exp(r, m) < exp(r, b) for r in records),
-                "more": sum(exp(r, m) > exp(r, b) for r in records)}
+                "common": len(both),
+                "expansions": _geo_ci([log_ratio(r["runs"][m]["expanded"], r["runs"][b]["expanded"], f"{m}/{b} expansions")
+                                       for r in both], f"{m}:{b}:exp"),
+                "time": _geo_ci([log_ratio(Timing.from_record(r["runs"][m]["time"]),
+                                           Timing.from_record(r["runs"][b]["time"]), f"{m}/{b} time")
+                                 for r in timed_], f"{m}:{b}:time"),
+                "time_censored": len(both) - len(timed_),  # left out explicitly, and counted
+                "fewer": sum(r["runs"][m]["expanded"] < r["runs"][b]["expanded"] for r in both),
+                "more": sum(r["runs"][m]["expanded"] > r["runs"][b]["expanded"] for r in both)}
         solved = [r for r in records if r["runs"][m]["cost"] is not None]
-        s["plan_cost"] = _geo_ci([math.log(r["runs"][m]["cost"] / r["hstar"]) for r in solved], f"{m}:cost")
+        s["plan_cost"] = _geo_ci([log_ratio(r["runs"][m]["cost"], r["hstar"], m) for r in solved], f"{m}:cost")
         s["optimal"] = sum(r["runs"][m]["cost"] == r["hstar"] for r in solved)
         s["solved"] = len(solved)
         s["overestimation"] = {}

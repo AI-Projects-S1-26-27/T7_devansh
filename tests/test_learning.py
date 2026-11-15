@@ -100,7 +100,7 @@ def test_harness_checks_baselines_and_summarises(batches):
     train, val = batches
     cfg = make_config(kind="mlp", max_epochs=1, hidden=16)
     model, _ = train_model(cfg, [train], [val])
-    recs = evaluate([val], [Learned(model, cfg, "mlp")])
+    recs = evaluate([val], [Learned(model, cfg, "mlp")], repeats=2)
     assert len(recs) == val.manifest["counts"]["labelled_instances"]
     for r in recs:
         for b in ADMISSIBLE & set(BASELINES):
@@ -126,7 +126,7 @@ def test_hadd_searches_are_the_search_module_algorithms(batches):
     """D23 §2: the harness's GBFS and weighted-A* h_add runs are gbfs / weighted_astar themselves (same ties,
     reopening, counting), on every val instance; their plans are executable and cost at least h*."""
     _, val = batches
-    recs = evaluate([val], [])
+    recs = evaluate([val], [], repeats=1)
     insts = [inst for inst, rec in zip(val.instances, val.manifest["instances"]) if rec["stats"] is not None]
     for r, inst in zip(recs, insts):
         for name, direct in [("gbfs_hadd", gbfs(inst.task, hadd)), ("wastar1.5_hadd", weighted_astar(inst.task, hadd, 1.5)),

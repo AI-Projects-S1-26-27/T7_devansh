@@ -50,7 +50,7 @@ class SearchResult:
     expanded: int  # nodes taken off the open list and expanded
     generated: int  # successor nodes created
     evaluations: int  # heuristic calls
-    seconds: float
+    ns: int  # time.perf_counter_ns() inside the search, one run (evaluate.py repeats whole searches)
     budget_hit: bool  # stopped by max_expansions, not by exhausting the space
     reopened: int  # closed nodes reinserted after a cheaper path was found (0 when reopen=False)
     # Peak sizes (D28 Round 7, memory). Open: heap entries, stale duplicates included, as in Fast Downward's
@@ -61,6 +61,10 @@ class SearchResult:
     @property
     def solved(self) -> bool:
         return self.plan is not None
+
+    @property
+    def seconds(self) -> float:
+        return self.ns / 1e9
 
 
 TIE_RULES = ("fifo", "lifo")
@@ -82,7 +86,7 @@ def best_first_search(task: Task, h, *, reopen: bool, w_g=1.0, w_h=1.0, tie_brea
     """
     if tie_break not in TIE_RULES:
         raise ValueError(f"tie_break must be one of {TIE_RULES}, not {tie_break!r}")
-    t0 = time.perf_counter()
+    t0 = time.perf_counter_ns()
     s0 = task.init if start is None else start
     h_cache = {s0: h(task, s0)}
     # The third heap key: increasing for FIFO, decreasing for LIFO, so heapq pops the oldest or newest.
@@ -96,7 +100,7 @@ def best_first_search(task: Task, h, *, reopen: bool, w_g=1.0, w_h=1.0, tie_brea
 
     def result(plan, cost, budget_hit=False):
         return SearchResult(plan, cost, expanded, generated, len(h_cache),
-                            time.perf_counter() - t0, budget_hit, reopened, peak_open, len(closed))
+                            time.perf_counter_ns() - t0, budget_hit, reopened, peak_open, len(closed))
 
     if h_cache[s0] == INF:
         return result(None, INF)

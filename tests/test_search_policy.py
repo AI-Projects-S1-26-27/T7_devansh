@@ -161,6 +161,7 @@ def test_peak_sizes_are_consistent_with_the_trace(seed):
 
 def test_evaluation_records_peaks_and_passes_the_tie_rule():
     from ahg.evaluate import _run
-    f, l = _run(TIE_TASK, lambda t, s: 0, None), _run(TIE_TASK, lambda t, s: 0, None, tie_break="lifo")
+    h0 = lambda t, s: 0
+    f, l = _run(TIE_TASK, lambda: h0, None, 1), _run(TIE_TASK, lambda: h0, None, 1, tie_break="lifo")
     assert (f["peak_open"], f["peak_closed"], f["expanded"]) == (3, 4, 4)
     assert (l["peak_open"], l["peak_closed"], l["expanded"]) == (3, 3, 3)
