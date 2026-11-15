@@ -162,7 +162,8 @@ def main() -> None:
                 units.append({"family": "os", "os": "windows", "product": "windows_os", "prior": "os_component",
                               "msrc_products": sorted(win_pids)})  # fmt: skip
         if not units:
-            build["no_in_scope_product" if cve else "msrc_not_in_scope"] += 1
+            # F6: a listed product matched only with another CPE part is counted, never a hit
+            build["cpe_part_mismatch_only" if part_mismatch else "no_in_scope_product" if cve else "msrc_not_in_scope"] += 1
             continue
 
         # ---- dates and cohort: NVD publication date where NVD has the record, else MSRC release date
