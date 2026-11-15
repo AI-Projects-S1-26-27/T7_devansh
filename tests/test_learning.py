@@ -19,7 +19,7 @@ from ahg.learning.models import fit_ridge
 from ahg.learning.runs import make_config
 from ahg.learning.train import load, loss_fn, save, train_model
 from ahg.search import astar, gbfs, weighted_astar
-from ahg.heuristics import hadd
+from ahg.heuristics import hadd, hff
 from test_labels import CFG
 
 
@@ -111,8 +111,15 @@ def test_harness_checks_baselines_and_summarises(batches):
     assert set(s["vs"]) == set(COMPARATORS) and s["solved"] == len(recs)
     assert s["plan_cost"][0] >= 1.0
     srch = summarise_searches(recs)
-    assert set(srch) == {"hadd", "gbfs_hadd", "wastar1.5_hadd", "wastar2_hadd"}
+    assert set(srch) == {"hadd", "hff", "gbfs_hadd", "wastar1.5_hadd", "wastar2_hadd"}
     assert all(v["solved"] == len(recs) and v["plan_cost"][0] >= 1.0 for v in srch.values())
+
+
+def test_hff_is_an_inadmissible_baseline():
+    """D28 Round 7 (H1): A*+h_FF is in the baseline set; never checked against h* as if admissible."""
+    from ahg.evaluate import INADMISSIBLE_SEARCHES
+    assert BASELINES["hff"] is hff and "hff" in COMPARATORS
+    assert "hff" in INADMISSIBLE_SEARCHES and "hff" not in ADMISSIBLE
 
 
 def test_hadd_searches_are_the_search_module_algorithms(batches):
@@ -123,7 +130,8 @@ def test_hadd_searches_are_the_search_module_algorithms(batches):
     insts = [inst for inst, rec in zip(val.instances, val.manifest["instances"]) if rec["stats"] is not None]
     for r, inst in zip(recs, insts):
         for name, direct in [("gbfs_hadd", gbfs(inst.task, hadd)), ("wastar1.5_hadd", weighted_astar(inst.task, hadd, 1.5)),
-                             ("wastar2_hadd", weighted_astar(inst.task, hadd, 2.0)), ("hadd", astar(inst.task, hadd))]:
+                             ("wastar2_hadd", weighted_astar(inst.task, hadd, 2.0)), ("hadd", astar(inst.task, hadd)),
+                             ("hff", astar(inst.task, hff))]:
             assert (r["runs"][name]["expanded"], r["runs"][name]["cost"]) == (direct.expanded, direct.cost)
             assert r["runs"][name]["cost"] >= r["hstar"]
 

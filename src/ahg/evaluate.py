@@ -21,19 +21,20 @@ import random
 from itertools import combinations
 
 from .cost import SCALE
-from .heuristics import ADMISSIBLE, INF, h0, hadd, hmax, hsp, lmcut
+from .heuristics import ADMISSIBLE, INF, h0, hadd, hff, hmax, hsp, lmcut
 from .measure import HardFailure
 from .search import best_first_search
 from .task import plan_cost
 
-BASELINES = {"h0": h0, "hmax": hmax, "hsp": hsp, "hadd": hadd, "lmcut": lmcut}  # each in A*
+# Each in A*. h_FF added by D28 Round 7 (H1); it is inadmissible, so only its plan cost is measured.
+BASELINES = {"h0": h0, "hmax": hmax, "hsp": hsp, "hadd": hadd, "hff": hff, "lmcut": lmcut}
 # D23 §2: h_add in the other best-first searches, f = w_g*g + w_h*h (search.py): GBFS and weighted A*.
 # Reopening as Fast Downward 24.06.1 (D28 Round 7, search.py): GBFS never reopens, weighted A* does.
 HADD_SEARCHES = {"gbfs_hadd": {"w_g": 0.0, "w_h": 1.0, "reopen": False},
                  "wastar1.5_hadd": {"w_g": 1.0, "w_h": 1.5, "reopen": True},
                  "wastar2_hadd": {"w_g": 1.0, "w_h": 2.0, "reopen": True}}
 COMPARATORS = (*BASELINES, *HADD_SEARCHES)
-INADMISSIBLE_SEARCHES = ("hadd", *HADD_SEARCHES)  # plan cost measured, never bounded (rule 8)
+INADMISSIBLE_SEARCHES = ("hadd", "hff", *HADD_SEARCHES)  # plan cost measured, never bounded (rule 8)
 STATE_GROUPS = {"walk": {"walk"}, "astar_expanded": {"expanded_lmcut", "expanded_hmax"}, "successor": {"successor"}}
 BOOTSTRAP = 10_000
 
