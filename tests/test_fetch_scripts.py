@@ -42,3 +42,21 @@ def test_msrc_update_ids_in_month_range():
     index = {"value": [{"ID": i} for i in ("2023-Dec", "2024-Jan", "2024-Jan-B", "2018-FEB", "2026-Oct", "2026-Nov", "x")]}
     assert m.ids_in_range(index, (2024, 1), (2026, 10)) == ["2024-Jan", "2024-Jan-B", "2026-Oct"]
     assert m.update_month("2018-FEB") == (2018, 2) and m.update_month("x") is None
+
+
+def test_ghsa_refs_picks_repository_advisories_in_window():
+    m = load("fetch_ghsa")
+
+    def cve(cid, pub, *urls):
+        return {"cve": {"id": cid, "published": pub, "references": [{"url": u} for u in urls]}}
+
+    base = "https://github.com/FreeRDP/FreeRDP/security/advisories/"
+    pages = [{"response": {"vulnerabilities": [
+        cve("CVE-2023-39354", "2023-08-31T17:15:09.000", base + "GHSA-c3r2-pxxp-f8r6", "https://example.org/x"),
+        cve("CVE-2015-0001", "2015-01-01T00:00:00.000", base + "GHSA-hm8c-rcjg-c8qp"),
+        cve("CVE-2023-1", "2023-01-01T00:00:00.000", "https://github.com/advisories/GHSA-hm8c-rcjg-c8qp"),
+    ]}}]  # fmt: skip
+    assert m.ghsa_refs(pages) == {
+        "GHSA-c3r2-pxxp-f8r6__FreeRDP__FreeRDP.html": base + "GHSA-c3r2-pxxp-f8r6",
+        "GHSA-hm8c-rcjg-c8qp__global.html": "https://github.com/advisories/GHSA-hm8c-rcjg-c8qp",
+    }
