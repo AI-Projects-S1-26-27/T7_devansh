@@ -219,7 +219,7 @@ _NEG = re.compile(r"[^.;]*\b(?:not|never|un)\s*(?:be\s+)?(?:affected|vulnerable|
 _CLIENT = [
     ("clients only", r"\bclients?\s+only\b"),
     ("client-side", r"\bclient[- ]side\b"),
-    ("in the client", r"\b(?:in|affects?|affecting)\s+(?:the\s+)?(?:(?!allows?\b|permits?\b|lets?\b)[\w.-]+\s+){0,2}clients?\b(?!\s+(?:to|can|could|may|might|that|who|with)\b)"),
+    ("in the client", r"\b(?:in|within)\s+(?:the\s+)?(?:(?!allows?\b|permits?\b|lets?\b)[\w.-]+\s+){0,2}clients?\b(?!\s+(?:to|can|could|may|might|that|who|with|certificates?|connect\w*|requests?|sessions?|authenticat\w*|data|input|messages?|packets?)\b)"),
     ("client product", r"\bvulnerability in the [\w ]*client product\b"),
     ("attacker-controlled server", r"\b(?:malicious|rogue|compromised|attacker[- ]controlled|attacker's|fake)\s+(?:[\w.]+\s+){0,1}servers?\b"),
     ("connects to a malicious host", r"\bconnect(?:s|ing|ed)?\s+to\s+(?:a|an)\s+(?:malicious|rogue|compromised|attacker|specially crafted|crafted)"),
@@ -232,8 +232,8 @@ _SERVER = [
     ("crafted input sent to a server", r"\b(?:send|sending|sends|submit|submitting|submits)\s+(?:a\s+|an\s+)?(?:specially[- ]crafted|crafted|malicious|malformed)\s+(?:[\w./-]+\s+){0,3}(?:requests?|packets?|quer(?:y|ies)|messages?|commands?|headers?|urls?|uris?|payloads?|data|traffic|connections?)\s+to\s+(?:a|an|the|any|affected|vulnerable|targeted|target)\s+(?:[\w./-]+\s+){0,3}(?:servers?|services?|daemons?|hosts?|systems?|instances?|endpoints?)\b"),
 ]
 # Short component names (MSRC tags and titles): a plain word is the component's own role. Product names
-# that contain "server" are removed first (they name a product, not a role).
-_PRODUCT_NAMES = re.compile(r"\b(?:sql server|exchange server|windows server|sharepoint server|server core)\b", re.I)
+# that contain "server", and "denial of service", are removed first (they name a product or an effect).
+_PRODUCT_NAMES = re.compile(r"\b(?:sql server|exchange server|windows server|sharepoint server|server core|denial[- ]of[- ]service)\b", re.I)
 
 
 def strip_negated(text: str) -> str:

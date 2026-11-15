@@ -95,6 +95,10 @@ FREERDP_GHSA = ("Summary Out-Of-Bounds Read in nsc_rle_decompress_data Affected 
     ("A remote attacker can send a crafted request to the server to crash it.", False, {"server"}),
     ("A flaw in libssh allows a malicious client to bypass authentication.", False, {"server"}),
     ("An out-of-bounds read in libfoo allows clients to crash it.", False, set()),
+    ("A crafted RPC packet crashes the service, affecting all other clients.", False, set()),
+    ("The overflow is in the FreeRDP client.", False, {"client"}),
+    ("A NULL dereference when checking the CRL of a certificate in a TLS client certificate chain.", False, set()),
+    ("Windows DNS Denial of Service Vulnerability", True, set()),
     ("The server is not affected.", False, set()),
     ("Windows SMB Client Remote Code Execution Vulnerability", True, {"client"}),
     ("Windows DNS Server Remote Code Execution Vulnerability", True, {"server"}),
@@ -167,6 +171,18 @@ def test_ghsa_text_extracts_description_block():
             '<div class="Box-header">Severity</div></html>')  # fmt: skip
     assert cd.ghsa_text(page) == "Summary Affected FreeRDP based clients only."
     assert cd.ghsa_text("<html></html>") == ""
+
+
+def test_oracle_component_wording_decides_mysql_role():
+    import json
+    from pathlib import Path
+
+    cfg = json.loads((Path(__file__).resolve().parents[1] / "configs/data/cve_master_p2.json").read_text())
+    vocab = cfg["role_vocabulary"]["oracle:mysql"]
+    old = "Vulnerability in the MySQL Server component of Oracle MySQL (subcomponent: Client programs)."
+    new = "Vulnerability in the MySQL Server product of Oracle MySQL (component: Server: Optimizer)."
+    assert {s["role"] for s in cd.vocab_signals(old, vocab, "d") + cd.role_signals(old, "d")} == {"client"}
+    assert {s["role"] for s in cd.vocab_signals(new, vocab, "d") + cd.role_signals(new, "d")} == {"server"}
 
 
 def test_vocab_signals_product_wording():
