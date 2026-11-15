@@ -27,7 +27,8 @@ from .search import best_first_search
 from .task import plan_cost
 from .timing import REPEATS, WARMUP, InvalidMeasurement, Timing, log_ratio, timed
 
-# Each in A*. h_FF added by D28 Round 7 (H1); it is inadmissible, so only its plan cost is measured.
+# Each in A*. h_FF added by D28 Round 7 (H1). Every one records expansions; h_add and h_FF are inadmissible,
+# so their plan cost is measured and never checked against h* (M1).
 BASELINES = {"h0": h0, "hmax": hmax, "hsp": hsp, "hadd": hadd, "hff": hff, "lmcut": lmcut}
 # D23 §2: h_add in the other best-first searches, f = w_g*g + w_h*h (search.py): GBFS and weighted A*.
 # Reopening as Fast Downward 24.06.1 (D28 Round 7, search.py): GBFS never reopens, weighted A* does.
@@ -36,6 +37,10 @@ HADD_SEARCHES = {"gbfs_hadd": {"w_g": 0.0, "w_h": 1.0, "reopen": False},
                  "wastar2_hadd": {"w_g": 1.0, "w_h": 2.0, "reopen": True}}
 COMPARATORS = (*BASELINES, *HADD_SEARCHES)
 INADMISSIBLE_SEARCHES = ("hadd", "hff", *HADD_SEARCHES)  # plan cost measured, never bounded (rule 8)
+# Candidates for the strongest classical baseline (D28 Round 11, P0c): A* with each of these. All of them
+# run through _run, so each records expansions; the inadmissible ones (h_add, h_FF) are simply not checked
+# against h* (M1).
+STRONGEST_CANDIDATES = ("hmax", "hadd", "hff", "lmcut", "hsp")
 STATE_GROUPS = {"walk": {"walk"}, "astar_expanded": {"expanded_lmcut", "expanded_hmax"}, "successor": {"successor"}}
 BOOTSTRAP = 10_000
 
@@ -156,6 +161,40 @@ def _geo_ci(logs: list[float], key: str):
 def comparators(records: list[dict]) -> list[str]:
     """The comparators every record ran (runs before D24 have no h_add searches)."""
     return [c for c in COMPARATORS if all(c in r["runs"] for r in records)]
+
+
+def strongest_baseline(records: list[dict]) -> dict:
+    """The strongest classical baseline on validation records (D28 Round 11, decided P0c).
+
+    Among A* + STRONGEST_CANDIDATES: the lowest geometric-mean expansions on the tasks every candidate
+    solved; ties go to LM-cut. Admissibility plays no part, so h_add and h_FF can be picked. Compared on
+    the mean of log expansions (the log of the geometric mean), so equal means are an exact tie.
+    Trivial tasks (s0 already a goal: an empty plan, 0 expansions for every method) are counted and left
+    out, as in the primary ratio (D28 §13.1, P0d)."""
+    missing = [c for c in STRONGEST_CANDIDATES if not all(c in r["runs"] for r in records)]
+    if missing:
+        raise ValueError(f"records lack the A* runs of {missing}")
+    solved = [r for r in records if all(r["runs"][c]["cost"] is not None for c in STRONGEST_CANDIDATES)]
+    trivial = [r for r in solved if r["hstar"] == 0]
+    common = [r for r in solved if r["hstar"] != 0]
+    if not common:
+        raise InvalidMeasurement("no task solved by every candidate")
+    mean_log = {c: math.fsum(math.log(_positive_count(r["runs"][c]["expanded"], c)) for r in common) / len(common)
+                for c in STRONGEST_CANDIDATES}
+    best = min(mean_log.values())
+    tied = [c for c in STRONGEST_CANDIDATES if mean_log[c] == best]
+    pick = "lmcut" if "lmcut" in tied else tied[0]
+    if len(tied) > 1 and pick != "lmcut":
+        # The rule names only LM-cut as the tie-winner; a tie without LM-cut is not settled by it.
+        raise ValueError(f"tie among {tied} without LM-cut: not covered by the D28 rule")
+    return {"baseline": pick, "common": len(common), "trivial": len(trivial), "tied": tied,
+            "geo_mean_expansions": {c: math.exp(v) for c, v in mean_log.items()}}
+
+
+def _positive_count(x, what: str) -> int:
+    if isinstance(x, bool) or not isinstance(x, int) or x <= 0:
+        raise InvalidMeasurement(f"{what}: expansions {x!r} is not a positive integer")
+    return x
 
 
 def summarise_searches(records: list[dict]) -> dict:
