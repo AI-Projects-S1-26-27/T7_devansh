@@ -108,7 +108,9 @@ def main() -> None:
     for name, p in verified_files(gdir).items():
         ghsa.setdefault(name.split("__")[0], []).append((name, cd.ghsa_text(p.read_text(errors="replace"))))
 
-    linux_products = {p: fam for fam, ps in FAMILY_PRODUCTS.items() for p in ps}
+    # Windows-only products are queried (FAMILY_PRODUCTS is the 2026-10-21 request plan) but are not Linux products (P2b).
+    excluded = set(cfg["linux_excluded_products"])
+    linux_products = {p: fam for fam, ps in FAMILY_PRODUCTS.items() for p in ps if p not in excluded}
     prior = cfg["product_role_prior"]
     win_versions, comps = set(cfg["windows_versions"]), cfg["windows_components"]
     app_re = {k: re.compile(v) for k, v in cfg["windows_app_products"].items()}
@@ -172,7 +174,7 @@ def main() -> None:
         else:
             published, published_source = ms["release_date"] or ms["initial_release"], "msrc"
             build["msrc_only_rows"] += 1
-        coh = cd.cohort(published, cohorts)
+        coh = cd.cohort(published, cohorts) if published else None
 
         # ---- vectors (CV1): every NVD provider, plus MSRC vectors scoring an in-scope product
         vectors = cd.nvd_vectors(cve) if cve else []
@@ -206,6 +208,8 @@ def main() -> None:
             u["role_evidence"] = ev
             u["cohort"] = coh
             u["stage"] = cd.funnel_stage(res, u["role"]) if coh else None
+            u["ac"] = res["ac"]["value"]  # "L" or "H" only when explicit, else None
+            u["ac_status"] = res["ac"]["status"]
 
         rows.append({
             "cve_id": cid, "published": published, "published_source": published_source,
@@ -238,11 +242,14 @@ def main() -> None:
     # ---- aggregates (counts come only from the rows above)
     units = [u | {"cve_id": r["cve_id"]} for r in rows for u in r["units"] if u["cohort"]]
     funnel = Counter((u["family"], u["os"], u["product"], u["cohort"], u["stage"]) for u in units)
-    funnel_rows = sorted({k[:4] for k in funnel})
-    eligible = defaultdict(set)
+    funnel_ac = Counter((u["family"], u["os"], u["product"], u["cohort"]) for u in units if u["ac"])
+    no_cohort = Counter((cd.cohort_reason(r["published"], cohorts), r["published_source"]) for r in rows if not r["cohort"])
+    no_cohort_years = Counter(r["published"][:4] if r["published"] else "none" for r in rows if not r["cohort"])
+    eligible, eligible_ac = defaultdict(set), defaultdict(set)
     for u in units:
         if u["stage"] in ("remote_candidate", "local_candidate"):
             eligible[(u["family"], u["os"], u["cohort"], u["stage"])].add(u["cve_id"])
+            eligible_ac[(u["family"], u["os"], u["cohort"], u["stage"], u["ac"] or "none")].add(u["cve_id"])
     products_listed = defaultdict(set)
     for p, fam in linux_products.items():
         products_listed[(fam, "linux")].add(p)
@@ -275,6 +282,11 @@ def main() -> None:
         "cpe_part_mismatch_rows": sum(1 for r in rows if r["cpe_part_mismatch"]),
         "funnel": [[*k, n] for k, n in sorted(funnel.items())],
         "eligible": [[*k, len(v)] for k, v in sorted(eligible.items())],
+        "eligible_ac": [[*k, len(v)] for k, v in sorted(eligible_ac.items())],
+        "funnel_ac": [[*k, n] for k, n in sorted(funnel_ac.items())],
+        "no_cohort_reasons": [[*k, n] for k, n in sorted(no_cohort.items())],
+        "no_cohort_years": dict(sorted(no_cohort_years.items())),
+        "linux_excluded_products": sorted(excluded),
         "products_listed": {f"{f}|{o}": sorted(v) for (f, o), v in sorted(products_listed.items())},
         "products_with_eligible": [[*k, sorted(v)] for k, v in sorted(prod_with_eligible.items())],
         "provider_mix": [[*k, n] for k, n in sorted(mix.items())],
@@ -308,16 +320,24 @@ def render(raw: dict) -> str:
     f = defaultdict(Counter)
     for fam, os_, prod, coh, stage, n in raw["funnel"]:
         f[(fam, os_, prod, coh)][stage] += n
-    body = [[*k, sum(c.values()), *[c[s] for s in stages]] for k, c in sorted(f.items())]
+    fac = {tuple(k[:4]): k[4] for k in raw["funnel_ac"]}
+    body = [[*k, sum(c.values()), fac.get(k, 0), *[c[s] for s in stages]] for k, c in sorted(f.items())]
+    acs = Counter()
+    for fam, os_, prod_, coh, n in raw["funnel_ac"]:
+        acs[coh] += n
     tot = defaultdict(Counter)
     for fam, os_, prod, coh, stage, n in raw["funnel"]:
         tot[coh][stage] += n
-    body += [["**all**", "", "", coh, sum(c.values()), *[c[s] for s in stages]] for coh, c in sorted(tot.items())]
+    body += [["**all**", "", "", coh, sum(c.values()), acs[coh], *[c[s] for s in stages]] for coh, c in sorted(tot.items())]
     el = defaultdict(Counter)
     for fam, os_, coh, stage, n in raw["eligible"]:
         el[(fam, os_, coh)][stage] = n
     prod = {(fam, os_, coh): v for fam, os_, coh, v in raw["products_with_eligible"]}
     pl = raw["products_listed"]
+    ea = defaultdict(dict)
+    for fam, os_, coh, stage, ac, n in raw["eligible_ac"]:
+        ea[(fam, os_, coh, stage)][ac] = n
+    ac_rows = [[*k, c.get("L", 0), c.get("H", 0), c.get("none", 0)] for k, c in sorted(ea.items())]
     out = [
         "# D28 master CVE dataset and exclusion funnel (P2)", "",
         f"Rows (canonical CVE IDs): {raw['rows']}; per cohort: {raw['rows_per_cohort']}; dataset SHA-256 `{raw['dataset_sha256']}`.", "",
@@ -328,11 +348,16 @@ def render(raw: dict) -> str:
         f"Build counts: {raw['build_counts']}. Rows with a CPE part mismatch on a listed product (F6, not counted as hits): {raw['cpe_part_mismatch_rows']}.", "",
         "## Exclusion funnel per family × OS × product × cohort", "",
         "Units are (CVE, product) pairs. Each unit is counted once, at the first filter that excludes it, in column order.", "",
-        md_table(["family", "OS", "product", "cohort", "in cohort", *stages], body), "",
+        md_table(["family", "OS", "product", "cohort", "in cohort", "has explicit AC", *stages], body), "",
         "## Eligible before effect classification, unique CVEs per family × OS × cohort", "",
         md_table(["family", "OS", "cohort", "remote (AV:N)", "local (AV:L)", "products with ≥1 eligible CVE", "products listed"],
                  [[*k, c["remote_candidate"], c["local_candidate"], len(prod.get(k, [])), len(pl.get(f"{k[0]}|{k[1]}", []))]
                   for k, c in sorted(el.items())]), "",
+        "## Eligible CVEs by Attack Complexity (unique CVEs; AC only when explicit, else none)", "",
+        md_table(["family", "OS", "cohort", "stage", "AC:L", "AC:H", "no explicit AC"], ac_rows), "",
+        "## Cohort-less rows by reason", "",
+        md_table(["reason", "published from", "rows"], raw["no_cohort_reasons"]), "",
+        f"Publication year of the cohort-less rows: {raw['no_cohort_years']}.", "",
         "## Products per family per OS", "",
         md_table(["family", "OS", "products listed", "names"], [[*k.split("|"), len(v), ", ".join(v)] for k, v in pl.items()]), "",
         "## Provider mix per cohort (rows)", "",

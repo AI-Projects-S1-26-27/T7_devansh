@@ -191,3 +191,28 @@ def test_vocab_signals_product_wording():
     assert cd.vocab_signals("a file named x.conf", vocab, "d") == []  # the English word is not the daemon
     assert {s["role"] for s in cd.vocab_signals("smbd and smbclient both crash", vocab, "d")} == {"client", "server"}
     assert cd.vocab_signals("smbd is not affected.", vocab, "d") == []
+
+
+def test_resolve_ac_explicit_conflict_absent():
+    """P2b: AC from the same v3.0/v3.1 vectors as AV/PR/UI; never invented."""
+    a = vec("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+    b = vec("CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H", source="cna", type_="Secondary")
+    h = vec("CVSS:3.0/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:H", source="cna2", type_="Secondary")
+    assert cd.resolve_vector([a, b])["ac"] == {"status": "explicit", "value": "L", "candidates": ["L"]}
+    assert cd.resolve_vector([a, h])["ac"] == {"status": "conflict", "value": None, "candidates": ["H", "L"]}
+    # v2 Access Complexity is not an AC; a vector without AC is absent, not guessed
+    v2 = vec("AV:N/AC:L/Au:N/C:P/I:P/A:P")
+    assert cd.resolve_vector([v2])["ac"] == {"status": "absent", "value": None, "candidates": []}
+    assert cd.resolve_vector([a, v2])["ac"]["value"] == "L"  # v2 ignored, v3 decides
+    no_ac = vec("CVSS:3.1/AV:N/PR:N/UI:N/S:U/C:H/I:H/A:H")
+    assert cd.resolve_vector([no_ac])["ac"]["status"] == "absent"
+
+
+def test_cohort_reason():
+    c = {"core": ["2016-01-01", "2023-12-31"], "temporal": ["2024-01-01", "2026-10-21"]}
+    assert cd.cohort_reason("2015-12-31T23:59:59.000", c) == "before_first_cohort"
+    assert cd.cohort_reason("2026-10-22T00:00:00.000", c) == "after_last_cohort"
+    assert cd.cohort_reason(None, c) == "missing_date" and cd.cohort_reason("", c) == "missing_date"
+    assert cd.cohort_reason("2020-05-05", c) is None
+    gap = {"a": ["2016-01-01", "2017-12-31"], "b": ["2019-01-01", "2020-12-31"]}
+    assert cd.cohort_reason("2018-06-01", gap) == "between_cohorts"

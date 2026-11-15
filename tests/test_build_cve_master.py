@@ -66,6 +66,7 @@ def test_build_end_to_end_on_synthetic_snapshots(tmp_path, monkeypatch):
         _cve("CVE-2020-0005", "2020-01-01T00:00:00.000", "thekelleys:dnsmasq", N, "x", part="o"),
         _cve("CVE-2015-0006", "2015-01-01T00:00:00.000", "thekelleys:dnsmasq", N, "x"),
         _cve("CVE-2021-0007", "2021-01-01T00:00:00.000", "linux:linux_kernel", N.replace("AV:N", "AV:L"), "x", part="o"),
+        _cve("CVE-2020-0008", "2020-01-01T00:00:00.000", "microsoft:exchange_server", N, "x"),  # Windows-only: no Linux unit
     ]  # fmt: skip
     resp = {"startIndex": 0, "totalResults": len(vulns), "resultsPerPage": len(vulns), "vulnerabilities": vulns}
     _write_rawfetch_snapshot(tmp_path / "nvd", [("p.json", resp)])
@@ -73,7 +74,7 @@ def test_build_end_to_end_on_synthetic_snapshots(tmp_path, monkeypatch):
     (tmp_path / "msrc" / "fetch_log.jsonl").write_text("")
     (tmp_path / "ghsa").mkdir()
     (tmp_path / "ghsa" / "fetch_log.jsonl").write_text("")
-    cfg = json.loads((SCRIPT.parents[1] / "configs/data/cve_master_p2.json").read_text())
+    cfg = json.loads((SCRIPT.parents[1] / "configs/data/cve_master_p2b.json").read_text())
     cfg |= {"nvd_snapshots": {"t": "nvd"}, "msrc_folders": ["msrc"], "ghsa_folder": "ghsa"}
     (tmp_path / "cfg.json").write_text(json.dumps(cfg))
     captured = {}
@@ -96,9 +97,14 @@ def test_build_end_to_end_on_synthetic_snapshots(tmp_path, monkeypatch):
     assert stages[("linux:linux_kernel", "core", "local_candidate")] == 1
     # the pre-2016 CVE stays in the dataset without a cohort; the part-o dnsmasq match is not a hit (F6)
     assert raw["rows"] == 6 and raw["rows_per_cohort"] == {"core": 4, "temporal": 1, "None": 1}
-    assert raw["build_counts"] == {"cpe_part_mismatch_only": 1}
+    assert raw["build_counts"] == {"cpe_part_mismatch_only": 1, "no_in_scope_product": 1}  # P2b: exchange_server dropped
+    assert "microsoft:exchange_server" not in raw["products_listed"]["mail|linux"]
+    assert raw["no_cohort_reasons"] == [["before_first_cohort", "nvd", 1]]
+    ac = {(a[2], a[3], a[4]): a[5] for a in raw["eligible_ac"]}
+    assert ac[("core", "remote_candidate", "L")] == 1 and ac[("core", "local_candidate", "L")] == 1  # AC:L in N
     rows = [json.loads(x) for x in gzip.decompress((tmp_path / "data/d28/master/run/cves.jsonl.gz").read_bytes()).splitlines()]
     assert {r["cve_id"] for r in rows} == {"CVE-2020-0001", "CVE-2020-0002", "CVE-2020-0003", "CVE-2025-0004",
                                            "CVE-2021-0007", "CVE-2015-0006"}  # fmt: skip
     r4 = next(r for r in rows if r["cve_id"] == "CVE-2025-0004")
     assert r4["vector_resolution"]["conflict_fields"] == ["UI"] and len(r4["vectors"]) == 2  # both providers kept
+    assert r4["vector_resolution"]["ac"] == {"status": "explicit", "value": "L", "candidates": ["L"]}

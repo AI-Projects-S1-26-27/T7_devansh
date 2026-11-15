@@ -116,8 +116,24 @@ def nvd_vectors(cve: dict) -> list[dict]:
     return out
 
 
+def resolve_ac(v3: list[dict]) -> dict:
+    """Attack Complexity from the same v3.0/v3.1 vectors that resolve AV/PR/UI (P2b; v3.0 and v3.1 share AC weights).
+
+    explicit: every v3 vector carries AC and all give one value; value holds it.
+    conflict: the vectors give different AC values; value stays None (no provider is preferred, D28 E2).
+    absent: no v3 vector, or none carries an AC metric; value stays None. An AC is never inferred from
+    anything else (not from v2 Access Complexity, not from the base score).
+    """
+    cand = sorted({v["metrics"]["AC"] for v in v3 if v["metrics"].get("AC") in ("L", "H")})
+    if any("AC" not in v["metrics"] for v in v3) or not cand:
+        return {"status": "absent", "value": None, "candidates": cand}
+    if len(cand) > 1:
+        return {"status": "conflict", "value": None, "candidates": cand}
+    return {"status": "explicit", "value": cand[0], "candidates": cand}
+
+
 def resolve_vector(vectors: list[dict]) -> dict:
-    """CV1 resolution of AV/PR/UI over every provider's v3.x vector.
+    """CV1 resolution of AV/PR/UI over every provider's v3.x vector; "ac" resolves AC over the same vectors.
 
     status:
       AGREED: every v3 vector gives the same AV, PR and UI; values holds them.
@@ -129,7 +145,8 @@ def resolve_vector(vectors: list[dict]) -> dict:
     """
     v3 = [v for v in vectors if v["version"].startswith("3.")]
     if not v3:
-        return {"status": "NO_V3", "values": {}, "candidates": {}, "conflict_fields": [], "n_v3": 0}
+        return {"status": "NO_V3", "values": {}, "candidates": {}, "conflict_fields": [], "n_v3": 0,
+                "ac": resolve_ac([])}
     cand = {f: sorted({v["metrics"][f] for v in v3}) for f in ROLE_FIELDS}
     conflict = [f for f in ROLE_FIELDS if len(cand[f]) > 1]
     scope = sorted({v["metrics"].get("S", "") for v in v3})
@@ -137,7 +154,7 @@ def resolve_vector(vectors: list[dict]) -> dict:
             "values": {} if conflict else {f: cand[f][0] for f in ROLE_FIELDS},
             "candidates": cand, "conflict_fields": conflict, "n_v3": len(v3),
             "providers": sorted({f"{v['origin']}:{v['source']}" for v in v3}),
-            "cvss_scope_values": scope}  # fmt: skip
+            "cvss_scope_values": scope, "ac": resolve_ac(v3)}  # fmt: skip
 
 
 # ---------------------------------------------------------------- MSRC CVRF
@@ -211,6 +228,21 @@ def cohort(published: str, cohorts: dict[str, list[str]]) -> str | None:
         if date.fromisoformat(lo) <= d <= date.fromisoformat(hi):
             return name
     return None
+
+
+def cohort_reason(published: str | None, cohorts: dict[str, list[str]]) -> str | None:
+    """Why a date lies in no cohort: missing_date, before_first_cohort, after_last_cohort, between_cohorts.
+
+    None when the date is in a cohort.
+    """
+    if not published:
+        return "missing_date"
+    d = date.fromisoformat(published[:10])
+    lo = min(date.fromisoformat(r[0]) for r in cohorts.values())
+    hi = max(date.fromisoformat(r[1]) for r in cohorts.values())
+    if cohort(published, cohorts):
+        return None
+    return "before_first_cohort" if d < lo else "after_last_cohort" if d > hi else "between_cohorts"
 
 
 # ---------------------------------------------------------------- role rule (E5 / CV5 / CV11)
