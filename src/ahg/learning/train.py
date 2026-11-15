@@ -15,7 +15,7 @@ from torch.nn.functional import softplus
 from ..cost import SCALE
 from ..dataset import LabelBatch
 from . import encode
-from .models import GNN, MLP, WLLinear, fit_ridge, sparse_matrix
+from .models import GNN, MLP, WLLinear, fit_ridge, goal_mask, output_transform, sparse_matrix, wl_transform
 
 KINDS = ("mlp", "wl", "gnn")
 LOSSES = ("mse", "asym", "rank")  # rank: GNN only (D22 c, d)
@@ -36,12 +36,14 @@ def _cat(xs):
 def _train_mlp(cfg, train, val, history, deadline=None):
     X = _cat([encode.mlp_matrix(b) for b in train])
     y = _cat([encode.targets(b) for b in train])
+    G = _cat([encode.goal_flags(b) for b in train])
     Xv = _cat([encode.mlp_matrix(b) for b in val])
     yv = _cat([encode.targets(b) for b in val])
+    Gv = _cat([encode.goal_flags(b) for b in val])
     dev = torch.device(cfg["device"])
     mean, std = X.mean(0), X.std(0).clamp_min(1e-6)  # train-only statistics (D14 §5)
     model = MLP(X.shape[1], cfg["hidden"], mean, std).to(dev)
-    X, y, Xv, yv = X.to(dev), y.to(dev), Xv.to(dev), yv.to(dev)
+    X, y, G, Xv, yv, Gv = X.to(dev), y.to(dev), G.to(dev), Xv.to(dev), yv.to(dev), Gv.to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
     gen = torch.Generator().manual_seed(cfg["seed"])
 
@@ -50,7 +52,7 @@ def _train_mlp(cfg, train, val, history, deadline=None):
         total = 0.0
         for idx in torch.randperm(len(y), generator=gen).split(cfg["batch_size"]):
             idx = idx.to(dev)
-            loss = loss_fn(model(X[idx]), y[idx], cfg["loss"], cfg["w_over"])
+            loss = loss_fn(output_transform(model(X[idx]), G[idx]), y[idx], cfg["loss"], cfg["w_over"])
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -60,7 +62,7 @@ def _train_mlp(cfg, train, val, history, deadline=None):
     def val_loss():
         model.eval()
         with torch.no_grad():
-            return float(loss_fn(model(Xv), yv, cfg["loss"], cfg["w_over"]))
+            return float(loss_fn(output_transform(model(Xv), Gv), yv, cfg["loss"], cfg["w_over"]))
 
     return _early_stop(model, epoch, val_loss, cfg, history, deadline)
 
@@ -71,23 +73,12 @@ def rank_loss(h, g):
     return softplus(g["dg"] + h[g["pi"]] - h[g["pj"]]).sum()
 
 
-def residual_h(hm, r, loss: str):
-    """h = h_max + t(r) for the residual target (D22 a, d; D24 §1), in effort units. The one place the
-    transform t is defined, so the score the ranking loss trains is the score A* searches with.
-
-    rank (A, D22 d): t = softplus. The ranking loss is trained on h_max + softplus(r) and only orders states,
-        so search must use the same strictly monotone map of r; max(0, r) collapses every r < 0 to 0
-        and can reverse the trained order (AUDIT_1 L1).
-    mse (B, D22 a): t = max(0, r). r is regressed directly onto h* - h_max >= 0 (h_max is admissible), so
-        the trained estimate is r itself; clipping it to the target's support [0, inf) never increases
-        its squared error, and is the identity wherever r >= 0. softplus would bias every estimate upward.
-    """
-    return hm + (softplus(r) if loss == "rank" else r.clamp_min(0))
-
-
-def gnn_h(model, g, residual: bool, sl=slice(None)):
-    """Raw model output for states sl of group g (the residual r, or h itself)."""
-    return model(g["fx"][sl], g["graph"], g["glob"][sl] if residual else None)
+def gnn_pred(model, g, residual: bool, sl=slice(None)):
+    """h for states sl of group g, through the shared output transform (D28 LRN7): the same function of the
+    same inputs that Learned.bind computes in search."""
+    fx = g["fx"][sl]
+    raw = model(fx, g["graph"], g["glob"][sl] if residual else None)
+    return output_transform(raw, goal_mask(fx), g["hm"][sl] if residual else None)
 
 
 def _train_gnn(cfg, train, val, history, deadline=None):
@@ -104,9 +95,8 @@ def _train_gnn(cfg, train, val, history, deadline=None):
     chunk = cfg["batch_size"]
 
     def group_rank_loss(g):
-        out = gnn_h(model, g, residual)
-        # Variant d trains h = h_max + softplus(r): a strictly positive residual keeps the gradient (D22 §4).
-        return rank_loss(residual_h(g["hm"], out, "rank") if residual else out, g)
+        # The ranking loss orders the h search uses: h_max + softplus(r) for variant d (D22 §4, D28 LRN7).
+        return rank_loss(gnn_pred(model, g, residual), g)
 
     def epoch():
         model.train()
@@ -124,7 +114,7 @@ def _train_gnn(cfg, train, val, history, deadline=None):
                 continue
             for s in range(0, len(g["y"]), chunk):
                 sl = slice(s, s + chunk)
-                loss = loss_fn(gnn_h(model, g, residual, sl), g["y"][sl], cfg["loss"], cfg["w_over"])
+                loss = loss_fn(gnn_pred(model, g, residual, sl), g["y"][sl], cfg["loss"], cfg["w_over"])
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
@@ -139,7 +129,7 @@ def _train_gnn(cfg, train, val, history, deadline=None):
                 if rank:  # mean over instances of the per-instance summed loss
                     total, n = total + float(group_rank_loss(g)), n + 1
                 else:
-                    total += float(loss_fn(gnn_h(model, g, residual), g["y"], cfg["loss"], cfg["w_over"])) * len(g["y"])
+                    total += float(loss_fn(gnn_pred(model, g, residual), g["y"], cfg["loss"], cfg["w_over"])) * len(g["y"])
                     n += len(g["y"])
         return total / n
 
@@ -149,7 +139,7 @@ def _train_gnn(cfg, train, val, history, deadline=None):
 def new_gnn(cfg: dict) -> GNN:
     """The GNN a config describes; the residual target (D22 a, d) adds the h_max inputs and a raw output."""
     if cfg.get("target", "hstar") == "residual":
-        return GNN(cfg["hidden"], cfg["layers"], fact_dim=4, global_dim=1, positive=False)
+        return GNN(cfg["hidden"], cfg["layers"], fact_dim=4, global_dim=1)
     return GNN(cfg["hidden"], cfg["layers"])
 
 
@@ -186,6 +176,7 @@ def _train_wl(cfg, train, val, history, deadline=None):
     (373 s for the D23 WL), and the first fit always runs, as the first epoch does in _early_stop."""
     hists = [h for b in train for h in encode.wl_histograms(b)]
     y = _cat([encode.targets(b) for b in train]).double()
+    G = _cat([encode.goal_flags(b) for b in train])
     vocab: dict[str, int] = {}
     for h in hists:  # fitted on train only; colours unseen in train are dropped later
         for c in sorted(h):
@@ -193,6 +184,7 @@ def _train_wl(cfg, train, val, history, deadline=None):
     X = sparse_matrix(hists, vocab)
     Xv = sparse_matrix([h for b in val for h in encode.wl_histograms(b)], vocab)
     yv = _cat([encode.targets(b) for b in val]).double()
+    Gv = _cat([encode.goal_flags(b) for b in val])
     w = None
     rounds = cfg["irls_rounds"] if cfg["loss"] == "asym" else 1
     for r in range(rounds):
@@ -201,10 +193,10 @@ def _train_wl(cfg, train, val, history, deadline=None):
             break
         t0 = time.perf_counter()
         beta, bias = fit_ridge(X, y, cfg["lam"], w)
-        pred = (X @ beta + bias).clamp_min(0)
+        pred = wl_transform(X @ beta + bias, G)
         # IRLS for the asymmetric loss: reweight by which side of h* each state now falls on.
         w = torch.where(pred > y, torch.full_like(y, cfg["w_over"]), torch.ones_like(y))
-        pv = (Xv @ beta + bias).clamp_min(0)
+        pv = wl_transform(Xv @ beta + bias, Gv)
         history.append({"epoch": r, "train_loss": float(loss_fn(pred, y, cfg["loss"], cfg["w_over"])),
                         "val_loss": float(loss_fn(pv, yv, cfg["loss"], cfg["w_over"])),
                         "epoch_seconds": time.perf_counter() - t0, "val_seconds": 0.0})

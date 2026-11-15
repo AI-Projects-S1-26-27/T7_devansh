@@ -1,8 +1,11 @@
 """The three learned heuristics of D21 §1. Each predicts h*(s) in effort units and is ≥ 0.
 
-softplus (not ReLU) on the output keeps h_θ ≥ 0 while still passing a
-gradient when the raw output is negative; the WL model is linear and is
-clamped at 0 instead.
+The networks (MLP, GNN) return a raw output; output_transform is the one map
+from raw output to h (D28 LRN7), used by training, validation and search alike:
+softplus (not ReLU) keeps h_θ ≥ 0 while still passing a gradient when the raw
+output is negative, the residual GNN adds it to h_max, and h(goal) = 0 is set
+explicitly. The WL model is linear and fitted by ridge regression, so its map
+is max(0, ·), again with h(goal) = 0 (wl_transform).
 """
 
 from collections import Counter
@@ -16,6 +19,23 @@ from ..dataset import ACTION_DIM
 FACT_DIM = 2
 
 
+def output_transform(raw: torch.Tensor, is_goal: torch.Tensor, hm: torch.Tensor | None = None) -> torch.Tensor:
+    """h from a network's raw output (D28 LRN7): softplus(raw), or h_max + softplus(raw) for the residual
+    GNN, and exactly 0 at goal states. The only place this map is defined."""
+    h = softplus(raw) if hm is None else hm + softplus(raw)
+    return torch.where(is_goal, torch.zeros_like(h), h)
+
+
+def wl_transform(raw: torch.Tensor, is_goal: torch.Tensor) -> torch.Tensor:
+    """h from the linear WL model's raw output: max(0, raw), and exactly 0 at goal states."""
+    return torch.where(is_goal, torch.zeros_like(raw), raw.clamp_min(0))
+
+
+def goal_mask(fx: torch.Tensor) -> torch.Tensor:
+    """[B] True where every goal fact is held; fx [B, facts, >= 2] with channels held, is_goal."""
+    return ((fx[..., 1] == 0) | (fx[..., 0] == 1)).all(-1)
+
+
 class MLP(nn.Module):
     """Graph-level hand-built features -> h. Standardisation stats are buffers, saved with the weights."""
 
@@ -27,20 +47,19 @@ class MLP(nn.Module):
                                  nn.Linear(hidden, 1))
 
     def forward(self, x):
-        return softplus(self.net((x - self.mean) / self.std)).squeeze(-1)
+        """Raw output; h = output_transform(raw, is_goal)."""
+        return self.net((x - self.mean) / self.std).squeeze(-1)
 
 
 class GNN(nn.Module):
     """Message passing over the fact-action graph; one instance's states per call (shared graph).
 
     fact_dim/global_dim > their defaults give the D22 residual model its h_max inputs (per-fact and
-    global); positive=False returns the raw output (the residual r), otherwise softplus(output) >= 0.
+    global). forward returns the raw output; h = output_transform(raw, is_goal[, h_max]).
     """
 
-    def __init__(self, hidden: int, layers: int, fact_dim: int = FACT_DIM, global_dim: int = 0,
-                 positive: bool = True):
+    def __init__(self, hidden: int, layers: int, fact_dim: int = FACT_DIM, global_dim: int = 0):
         super().__init__()
-        self.positive = positive
         self.enc_f = nn.Linear(fact_dim, hidden)
         self.enc_a = nn.Linear(ACTION_DIM, hidden)
         self.up_a = nn.ModuleList(nn.Linear(2 * hidden, hidden) for _ in range(layers))
@@ -60,8 +79,7 @@ class GNN(nn.Module):
             m_f = f.new_zeros(b, n_f, f.shape[2]).index_add_(1, g["add_dst"], a[:, g["add_src"]]) * g["inv_deg_add"]
             f = torch.relu(up_f(torch.cat([f, m_f], -1)))
         pooled = [f.mean(1), a.mean(1), f[:, g["goal"]].mean(1)] + ([glob] if glob is not None else [])
-        out = self.head(torch.cat(pooled, -1)).squeeze(-1)
-        return softplus(out) if self.positive else out
+        return self.head(torch.cat(pooled, -1)).squeeze(-1)
 
 
 class WLLinear:
@@ -71,8 +89,8 @@ class WLLinear:
         self.vocab, self.beta, self.bias = vocab, beta, bias
         self._w = {c: float(beta[k]) for c, k in vocab.items()}  # dict lookup is faster than a sparse dot here
 
-    def predict_one(self, hist: Counter) -> float:
-        return max(0.0, self.bias + sum(n * self._w.get(c, 0.0) for c, n in hist.items()))
+    def raw_one(self, hist: Counter) -> float:
+        return self.bias + sum(n * self._w.get(c, 0.0) for c, n in hist.items())
 
     def state_dict(self) -> dict:
         return {"vocab": self.vocab, "beta": self.beta, "bias": self.bias}

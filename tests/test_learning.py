@@ -228,7 +228,7 @@ def _score_parity(model, cfg, batch, n_instances):
     """The score the training loss sees, computed batched as in training, against the score A* calls, one state
     at a time as in search, on the plan and open-list states the ranking loss is trained on (D24 §1)."""
     from ahg.learning.encode import gnn_inputs
-    from ahg.learning.train import gnn_h, residual_h
+    from ahg.learning.train import gnn_pred
     checked = 0
     for i, inst in enumerate(batch.instances):
         if checked == n_instances:
@@ -240,7 +240,7 @@ def _score_parity(model, cfg, batch, n_instances):
             continue
         g = {"graph": static_graph(inst), **gnn_inputs(inst.task, states, residual=True)}
         with torch.no_grad():
-            train_score = residual_h(g["hm"], gnn_h(model, g, True), cfg["loss"])
+            train_score = gnn_pred(model, g, True)
         h = Learned(model, cfg, "m").bind(inst)
         search_score = torch.tensor([h(inst.task, s) / SCALE for s in states])
         assert torch.allclose(train_score, search_score, rtol=1e-5, atol=1e-4)
@@ -271,12 +271,11 @@ def test_training_score_is_search_score_on_real_val_states(run):
 
 def test_rank_transform_is_softplus_not_relu():
     """The AUDIT_1 L1 counterexample: h_max [10, 9.8], r [-10, -1]. Training ranks state 1 above state 0;
-    max(0, r) would reverse it; residual_h keeps the training order."""
-    from ahg.learning.train import residual_h
+    max(0, r) would reverse it; the shared transform (D28 LRN7: softplus for every loss) keeps the order."""
+    from ahg.learning.models import output_transform
     hm, r = torch.tensor([10.0, 9.8]), torch.tensor([-10.0, -1.0])
-    h = residual_h(hm, r, "rank")
+    h = output_transform(r, torch.tensor([False, False]), hm)
     assert h[1] > h[0] and (hm + r.clamp_min(0))[1] < (hm + r.clamp_min(0))[0]
-    assert torch.equal(residual_h(hm, r, "mse"), hm)
 
 
 def test_encoding_cache_is_keyed_by_encoder_version(batches, tmp_path, monkeypatch):
