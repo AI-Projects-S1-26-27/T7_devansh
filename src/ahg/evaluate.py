@@ -18,6 +18,7 @@ nothing but the raw records, so aggregates can always be regenerated.
 
 import math
 import random
+import statistics
 from itertools import combinations
 
 from .cost import SCALE
@@ -167,10 +168,10 @@ def strongest_baseline(records: list[dict]) -> dict:
     """The strongest classical baseline on validation records (D28 Round 11, decided P0c).
 
     Among A* + STRONGEST_CANDIDATES: the lowest geometric-mean expansions on the tasks every candidate
-    solved; ties go to LM-cut. Admissibility plays no part, so h_add and h_FF can be picked. Compared on
+    solved; ties go to LM-cut, and a tie without LM-cut is broken by `_break_tie_by_time`. Admissibility plays no part, so h_add and h_FF can be picked. Compared on
     the mean of log expansions (the log of the geometric mean), so equal means are an exact tie.
     Trivial tasks (s0 already a goal: an empty plan, 0 expansions for every method) are counted and left
-    out, as in the primary ratio (D28 §13.1, P0d)."""
+    out, as in the primary ratio (D28 §13.1, P0d; confirmed Round 12, OQ-M1-2)."""
     missing = [c for c in STRONGEST_CANDIDATES if not all(c in r["runs"] for r in records)]
     if missing:
         raise ValueError(f"records lack the A* runs of {missing}")
@@ -183,12 +184,30 @@ def strongest_baseline(records: list[dict]) -> dict:
                 for c in STRONGEST_CANDIDATES}
     best = min(mean_log.values())
     tied = [c for c in STRONGEST_CANDIDATES if mean_log[c] == best]
-    pick = "lmcut" if "lmcut" in tied else tied[0]
-    if len(tied) > 1 and pick != "lmcut":
-        # The rule names only LM-cut as the tie-winner; a tie without LM-cut is not settled by it.
-        raise ValueError(f"tie among {tied} without LM-cut: not covered by the D28 rule")
-    return {"baseline": pick, "common": len(common), "trivial": len(trivial), "tied": tied,
-            "geo_mean_expansions": {c: math.exp(v) for c, v in mean_log.items()}}
+    out = {"common": len(common), "trivial": len(trivial), "tied": tied,
+           "geo_mean_expansions": {c: math.exp(v) for c, v in mean_log.items()},
+           "tie_break": None, "median_time_ns": None, "time_censored": None}
+    if len(tied) == 1:
+        return {**out, "baseline": tied[0]}
+    if "lmcut" in tied:
+        return {**out, "baseline": "lmcut", "tie_break": "lmcut"}
+    return {**out, **_break_tie_by_time(common, tied)}
+
+
+def _break_tie_by_time(common: list[dict], tied: list[str]) -> dict:
+    """A tie without LM-cut (D28 Round 12, decided 15 Nov 2026, OQ-M1-1): lowest median wall-clock time,
+    then alphabetical; never raises.
+
+    A method's time on a task is the median of its timed repeats (Round 12 "Repeats"); its median time is
+    the median of those over the tied methods' common tasks. A task where any tied method's timing is
+    censored is left out for all of them (paired, never replaced) and counted. If no task is left, or the
+    median times also tie, the alphabetically first name wins."""
+    timings = [{c: Timing.from_record(r["runs"][c]["time"]) for c in tied} for r in common]
+    clean = [t for t in timings if not any(x.censored for x in t.values())]
+    med = {c: statistics.median(t[c].median_ns for t in clean) for c in tied} if clean else None
+    fastest = sorted(tied) if med is None else sorted(c for c in tied if med[c] == min(med.values()))
+    return {"baseline": fastest[0], "tie_break": "time" if len(fastest) == 1 else "alphabetical",
+            "median_time_ns": med, "time_censored": len(timings) - len(clean)}
 
 
 def _positive_count(x, what: str) -> int:

@@ -61,8 +61,11 @@ def test_inadmissible_baselines_are_not_checked_against_hstar(monkeypatch):
         evaluate([b], [], repeats=1, warmup=0)
 
 
-def _recs(exp: dict, hstar=5, n=2, unsolved=()):
-    run = lambda c, e: {"expanded": e, "cost": None if c in unsolved else hstar}
+def _recs(exp: dict, hstar=5, n=2, unsolved=(), ns=None):
+    """n identical records; ns maps a method to its per-task repeat times (default 1 ms for all)."""
+    ns = ns or {}
+    run = lambda c, e: {"expanded": e, "cost": None if c in unsolved else hstar,
+                        "time": {"ns": ns.get(c, [10**6]), "resolution_ns": 1000}}
     return [{"hstar": hstar, "runs": {c: run(c, e) for c, e in exp.items()}} for _ in range(n)]
 
 
@@ -72,14 +75,44 @@ BASE = {"hmax": 50, "hadd": 50, "hff": 50, "lmcut": 50, "hsp": 50}
 @pytest.mark.parametrize("winner", ["hmax", "hadd", "hff", "lmcut", "hsp"])
 def test_any_of_the_five_can_be_picked(winner):
     r = strongest_baseline(_recs({**BASE, winner: 7}))
-    assert r["baseline"] == winner and r["tied"] == [winner] and r["common"] == 2
+    assert r["baseline"] == winner and r["tied"] == [winner] and r["common"] == 2 and r["tie_break"] is None
     assert r["geo_mean_expansions"][winner] == pytest.approx(7)
 
 
-def test_ties_go_to_lmcut_and_other_ties_are_not_decided():
-    assert strongest_baseline(_recs({**BASE, "hff": 7, "lmcut": 7}))["baseline"] == "lmcut"
-    with pytest.raises(ValueError):
-        strongest_baseline(_recs({**BASE, "hff": 7, "hadd": 7}))
+def test_ties_go_to_lmcut_even_when_lmcut_is_slower():
+    r = strongest_baseline(_recs({**BASE, "hff": 7, "lmcut": 7}, ns={"hff": [10], "lmcut": [10**9]}))
+    assert r["baseline"] == "lmcut" and r["tie_break"] == "lmcut" and r["tied"] == ["hff", "lmcut"]
+
+
+def test_tie_without_lmcut_goes_to_lowest_median_time():
+    # Per-task medians: hff 300 (repeats 100/300/900), hadd 400, hmax 200 on one task and 900 on the other
+    # -> median 550. hff has the lowest median time though hmax is fastest on one task and alphabetically first.
+    recs = _recs({**BASE, "hff": 7, "hadd": 7, "hmax": 7}, n=1,
+                 ns={"hff": [100_000, 300_000, 900_000], "hadd": [400_000], "hmax": [200_000]}) \
+        + _recs({**BASE, "hff": 7, "hadd": 7, "hmax": 7}, n=1,
+                ns={"hff": [300_000], "hadd": [400_000], "hmax": [900_000]})
+    r = strongest_baseline(recs)
+    assert r["baseline"] == "hff" and r["tie_break"] == "time" and r["time_censored"] == 0
+    assert r["median_time_ns"] == {"hmax": 550_000, "hadd": 400_000, "hff": 300_000}
+
+
+def test_tie_without_lmcut_and_equal_time_goes_alphabetically():
+    r = strongest_baseline(_recs({**BASE, "hsp": 7, "hff": 7, "hmax": 7}))  # all 1 ms
+    assert r["baseline"] == "hff" and r["tie_break"] == "alphabetical"
+    r = strongest_baseline(_recs({**BASE, "hsp": 7, "hmax": 7, "hff": 7}, ns={"hff": [9 * 10**6]}))
+    assert r["baseline"] == "hmax" and r["tie_break"] == "alphabetical"  # hmax and hsp tie on time
+
+
+def test_censored_times_are_left_out_paired_and_never_raise():
+    # Task 1: hadd censored (below 1000 ns) -> task 1 dropped for both; task 2 decides: hff faster.
+    recs = _recs({**BASE, "hff": 7, "hadd": 7}, n=1, ns={"hadd": [5], "hff": [9 * 10**6]}) \
+        + _recs({**BASE, "hff": 7, "hadd": 7}, n=1, ns={"hadd": [2 * 10**6]})
+    r = strongest_baseline(recs)
+    assert r["baseline"] == "hff" and r["tie_break"] == "time" and r["time_censored"] == 1
+    # Every task censored: no time comparison is possible -> alphabetical, still no error.
+    r = strongest_baseline(_recs({**BASE, "hff": 7, "hadd": 7}, ns={"hff": [5]}))
+    assert r["baseline"] == "hadd" and r["tie_break"] == "alphabetical"
+    assert r["median_time_ns"] is None and r["time_censored"] == 2
 
 
 def test_common_tasks_trivial_tasks_and_bad_inputs():
