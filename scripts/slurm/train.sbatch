@@ -14,13 +14,15 @@
 # HPC runs report losses, validation metrics and checkpoints only. Test splits
 # and timing stay on the M4 (D17 §4, §5).
 #
-# TEMPLATE: the gres/MPS/qos lines below must be the ones in the admins'
-# docs/hpc/mock_job.sh (missing from the repo when this was written).
-# Lines marked SET_ME are placeholders that SLURM will reject.
+# Limits (read 15 Nov 2026, P9a, `sacctmgr show assoc user=csisnlp_18` and
+# `sacctmgr show qos gpu_csis_course`): the account's only QOS is gpu_csis_course.
+# Per user it allows cpu=4, gres/mps=50 (half a card), mem=80G and no whole GPUs
+# (gres/gpu=0), so at most one half-card job runs at a time. The partition's
+# MaxTime is 2 days.
 #
 #SBATCH --job-name=ahg-train
 #SBATCH --partition=gpu_rtx_pro_6000_6_csis_hyd
-#SBATCH --qos=SET_ME_QOS_FROM_TEMPLATE
+#SBATCH --qos=gpu_csis_course
 #SBATCH --gres=mps:50
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
