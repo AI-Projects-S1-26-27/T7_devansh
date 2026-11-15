@@ -6,9 +6,9 @@ Usage:
   headroom    per instance, expansions of A* with h* itself against A* with h_max and LM-cut (D3 ties).
               h*(s) is the label where one exists, else A*+LM-cut from s (the labels' own solver).
   ordering    sibling-ordering accuracy (evaluate.sibling_order) of h_max, LM-cut, h_add, h_sp and each
-              model, next to each model's MSE on all val labels (effort units).
+              model, next to each model's MSE on all val labels (the regime's cost units).
   ties        each --tie-models model in A* as is, with h rounded to whole D9 units (a control), and
-              rounded to whole effort units (38 D9 units, which creates f-ties); expansion ratios vs h_max.
+              rounded to whole multiples of the model's label scale (which creates f-ties); expansion ratios vs h_max.
 --repeats / --warmup: timed and discarded runs per search in the ties part (default 5 and 1, D28 M1); recorded.
 Refuses test splits: D22 is validation only.
 Output: results/evaluation/<name>/<stamp>-<commit>/.
@@ -21,7 +21,6 @@ from pathlib import Path
 
 import torch
 
-from ahg.cost import SCALE
 from ahg.dataset import open_batch
 from ahg.evaluate import _geo_ci, evaluate, sibling_groups, sibling_order, summarise
 from ahg.heuristics import hadd, hmax, hsp, lmcut
@@ -38,9 +37,9 @@ ORDER_BASELINES = {"hmax": hmax, "lmcut": lmcut, "hadd": hadd, "hsp": hsp}
 
 
 class Rounded:
-    """A learned heuristic with its value rounded to a multiple of `unit` D9 units (ties diagnostic only)."""
+    """A learned heuristic with its value rounded to a multiple of `unit` cost units (ties diagnostic only)."""
 
-    def __init__(self, base: Learned, unit: int):
+    def __init__(self, base: Learned, unit: float):
         self.base, self.unit, self.name = base, unit, f"{base.name}@round{unit}"
 
     def bind(self, inst):
@@ -49,7 +48,7 @@ class Rounded:
 
     def predict_states(self, inst, states):
         h = self.bind(inst)
-        return [h(inst.task, s) / SCALE for s in states]
+        return [h(inst.task, s) for s in states]
 
 
 def by_instance(batch):
@@ -108,10 +107,10 @@ def ordering(batches, models: list[Learned]) -> dict:
                     counts[name][k] += c[k]
             for m in models:
                 preds = m.predict_states(inst, [ex.state for ex in exs])
-                c = sibling_order(groups, {ex.state: p * SCALE for p, ex in zip(preds, exs)})
+                c = sibling_order(groups, {ex.state: p for p, ex in zip(preds, exs)})
                 for k in c:
                     counts[m.name][k] += c[k]
-                sq[m.name][0] += sum((p - ex.hstar / SCALE) ** 2 for p, ex in zip(preds, exs))
+                sq[m.name][0] += sum((p - ex.hstar) ** 2 for p, ex in zip(preds, exs))
                 sq[m.name][1] += len(exs)
     out = {}
     for name, c in counts.items():
@@ -134,7 +133,7 @@ def render(raw) -> str:
          "that a heuristic as good as h* reaches under D3.",
          f"- exp(h*) / exp(LM-cut): {f(h['hstar_over_lmcut'])}.", "",
          "## Sibling ordering (c(a) + h(s') vs c(a) + h*(s'))", "",
-         "| heuristic | pairs | accuracy | tie rate | val MSE (effort²) |", "|---|---|---|---|---|"]
+         "| heuristic | pairs | accuracy | tie rate | val MSE (cost units²) |", "|---|---|---|---|---|"]
     for name, o in raw["ordering"].items():
         mse = f"{o['val_mse']:.3f}" if "val_mse" in o else "—"
         L.append(f"| {name} | {o['pairs']} | {o['accuracy']:.3f} | {o['tie_rate']:.3f} | {mse} |")
@@ -178,7 +177,7 @@ def main():
     tie = []
     for r in args.tie_models:
         base = learned(r)
-        tie += [base, Rounded(base, 1), Rounded(base, SCALE)]
+        tie += [base, Rounded(base, 1), Rounded(base, float(base.model.label_scale))]
     records = evaluate(batches, tie, BUDGET, repeats=args.repeats, warmup=args.warmup)
     raw["repeats"], raw["warmup"] = args.repeats, args.warmup
     raw["ties"] = {name: {k: v[k] for k in ("vs", "plan_cost", "optimal", "solved")}

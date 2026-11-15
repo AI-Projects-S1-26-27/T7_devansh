@@ -77,7 +77,7 @@ def render(raw) -> str:
               "| search | solved | budget hits | optimal | plan cost / h* |", "|---|---|---|---|---|"]
         L += [f"| {m} | {v['solved']}/{v['instances']} | {v['budget_hits']} | {v['optimal']} | {fmt(v['plan_cost'])} |"
               for m, v in raw["searches"].items()]
-    L += ["", "## Overestimation (effort units)", "", "| model | states | rate h_θ > h* | mean violation | "
+    L += ["", "## Overestimation (the regime's cost units)", "", "| model | states | rate h_θ > h* | mean violation | "
           "max violation | mean abs error |", "|---|---|---|---|---|---|"]
     for m, v in s.items():
         for g in STATE_GROUPS:

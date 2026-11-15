@@ -39,17 +39,17 @@ def test_readout_by_hand():
 
 def test_invalid_aggregators_are_refused():
     with pytest.raises(ValueError):
-        GNN(8, 2, pre_agg="min")
+        GNN(8, 2, pre_agg="min", label_scale=1.0, cost_scale=1.0)
     with pytest.raises(ValueError):
-        GNN(8, 2, readout="max")
+        GNN(8, 2, readout="max", label_scale=1.0, cost_scale=1.0)
     with pytest.raises(ValueError):
         make_config(kind="gnn", pooling="sum")
 
 
 def test_absent_keys_are_the_d21_mean_mean(batches):
     torch.manual_seed(0)
-    a = new_gnn(make_config(kind="gnn", hidden=8, layers=2))
-    b = new_gnn(make_config(kind="gnn", hidden=8, layers=2, pre_agg="mean", readout="mean"))
+    a = new_gnn(make_config(kind="gnn", hidden=8, layers=2), 1.0, 1.0)
+    b = new_gnn(make_config(kind="gnn", hidden=8, layers=2, pre_agg="mean", readout="mean"), 1.0, 1.0)
     assert (a.pre_agg, a.readout) == (b.pre_agg, b.readout) == ("mean", "mean")
 
 
@@ -78,10 +78,10 @@ def test_cells_compute_different_functions(batches):
     states = [ex.state for ex in val.examples if ex.instance == val.examples[0].instance][:5]
     g, fx = static_graph(inst), fact_bits(inst.task, states)
     torch.manual_seed(0)
-    base = GNN(8, 2)
+    base = GNN(8, 2, label_scale=1.0, cost_scale=1.0)
     outs = []
     for p, r in AGGREGATOR_GRID:
-        m = GNN(8, 2, pre_agg=p, readout=r)
+        m = GNN(8, 2, pre_agg=p, readout=r, label_scale=1.0, cost_scale=1.0)
         m.load_state_dict(base.state_dict())
         with torch.no_grad():
             outs.append(m(fx, g))

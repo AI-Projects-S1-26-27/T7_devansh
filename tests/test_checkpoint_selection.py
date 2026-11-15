@@ -60,17 +60,18 @@ def test_returned_model_has_the_minimum_recorded_mae(batches, kind):
     with torch.no_grad():
         if kind == "mlp":
             pv = output_transform(model(encode.mlp_matrix(val)), encode.goal_flags(val))
-            got = macro_mae(pv, encode.targets(val), network_ids([val]))
+            got = macro_mae(pv, encode.targets(val) / float(model.label_scale), network_ids([val]))
         else:
             gs = encode.gnn_groups(val)
-            got = sum(float((gnn_pred(model, g, False) - g["y"]).abs().double().mean()) for g in gs) / len(gs)
+            s = float(model.label_scale)
+            got = sum(float((gnn_pred(model, g, False) - g["y"] / s).abs().double().mean()) for g in gs) / len(gs)
     assert got == pytest.approx(best, rel=1e-6)
 
 
 def test_wl_keeps_its_best_irls_round_not_the_last(batches, monkeypatch):
     """Scripted ridge fits: zero weights and bias b_r in round r, so round r predicts max(0, b_r) everywhere."""
     train, val = batches
-    y = encode.targets(val).double()
+    y = encode.targets(val).double() / train_mod.label_scale([train])  # the model's unit (P9a2)
     biases = iter([50.0, float(y.median()), 40.0, 30.0])
     monkeypatch.setattr(train_mod, "fit_ridge", lambda X, yy, lam, w: (torch.zeros(X.shape[1], dtype=torch.float64), next(biases)))
     cfg = make_config(kind="wl", loss="asym", irls_rounds=4)

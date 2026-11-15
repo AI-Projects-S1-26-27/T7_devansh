@@ -25,14 +25,12 @@ from pathlib import Path
 import torch
 
 from .attack_graph import Instance, make_instance
-from .cost import SCALE
 from .cve import load_table
 from .heuristics import hsp
 from .labels import CVES, FAILURES_FILE, LABELS_FILE, MANIFEST
 from .splits import LABEL_GENERATION, SPLITS, cve_pool, record_test_access
 from .task import Task, task_digest
 
-COST_SCALE = 10 * SCALE  # the largest action cost (D9), so normalised costs lie in [0.1, 1]
 ACTION_KINDS = ("exploit", "login", "harvest")
 PR = ("N", "L", "H")
 ACTION_DIM = 1 + len(ACTION_KINDS) + len(PR)  # cost, kind one-hot, CVSS privileges-required one-hot
@@ -104,12 +102,13 @@ def _action_kind(name: str) -> str:
 
 
 def action_features(inst: Instance) -> list[list[float]]:
-    """Per action: normalised cost, kind one-hot, CVSS privileges-required one-hot (zeros if no CVE)."""
+    """Per action: raw cost (the GNN divides it by its cost_scale), kind one-hot, CVSS privileges-required
+    one-hot (zeros if no CVE)."""
     by_id = {c.cve_id: c for c in inst.cves.values()}
     out = []
     for a in inst.task.actions:
         kind = _action_kind(a.name)
-        row = [a.cost / COST_SCALE] + [float(kind == k) for k in ACTION_KINDS]
+        row = [float(a.cost)] + [float(kind == k) for k in ACTION_KINDS]
         pr = by_id[a.name.split()[1]].privileges_required if kind == "exploit" else None
         out.append(row + [float(pr == p) for p in PR])
     return out
@@ -137,9 +136,9 @@ def fact_features(task: Task, state: int) -> torch.Tensor:
 
 def mlp_features(task: Task, state: int) -> list[float]:
     """CLAUDE.md §2 graph-level features: #facts, #actions, #held, h_sp(s), and the number, mean
-    and min cost of applicable useful actions (costs in effort units)."""
-    costs = [task.actions[ai].cost / SCALE for ai, _ in task.successors(state)]
-    return [len(task.facts), len(task.actions), bin(state).count("1"), hsp(task, state) / SCALE,
+    and min cost of applicable useful actions (raw costs; the MLP standardises its inputs)."""
+    costs = [float(task.actions[ai].cost) for ai, _ in task.successors(state)]
+    return [len(task.facts), len(task.actions), bin(state).count("1"), float(hsp(task, state)),
             len(costs), sum(costs) / len(costs) if costs else 0.0, min(costs, default=0.0)]
 
 

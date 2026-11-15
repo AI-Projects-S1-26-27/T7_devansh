@@ -21,7 +21,6 @@ import random
 import statistics
 from itertools import combinations
 
-from .cost import SCALE
 from .heuristics import ADMISSIBLE, INF, h0, hadd, hff, hmax, hsp, lmcut
 from .measure import HardFailure
 from .search import best_first_search
@@ -139,9 +138,9 @@ def evaluate(batches, learned: list, budget: int = 200_000, tie_break: str = "fi
                                               warmup=warmup)
                 preds = model.predict_states(inst, [ex.state for ex in exs])
                 rec["over"][model.name] = {
-                    g: [p - ex.hstar / SCALE for p, ex in zip(preds, exs) if set(ex.sources) & srcs]
+                    g: [p - ex.hstar for p, ex in zip(preds, exs) if set(ex.sources) & srcs]  # cost units
                     for g, srcs in STATE_GROUPS.items()}
-                h_of = {ex.state: p * SCALE for p, ex in zip(preds, exs)}
+                h_of = {ex.state: p for p, ex in zip(preds, exs)}
                 rec["order"][model.name] = sibling_order(groups, h_of)
             records.append(rec)
     return records
