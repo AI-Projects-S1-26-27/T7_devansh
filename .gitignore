@@ -29,3 +29,11 @@ results/training/**/wl-*/**/model.pt
 docs/ai_usage_log.md
 third_party/
 logs/
+# Documentation is local-only (task P-1, 2026-11-15). Run outputs under results/ stay tracked.
+docs/
+CLAUDE.md
+*.md
+!/README.md
+!LICENSE*
+!NOTICE*
+!/results/**/*.md
