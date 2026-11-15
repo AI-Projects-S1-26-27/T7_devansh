@@ -14,6 +14,9 @@ temporary directory. FD's own reported times (translator "Done! [.. wall-clock]"
 process start-up, ours do not. Python-loop timings and these compiled timings
 are always reported separately (D28 Rounds 7 and 12).
 
+Each run starts with WARMUP discarded runs of the whole per-repeat sequence,
+then REPEATS timed ones, summarised by the median (decided 15 Nov 2026, M1).
+
 Durations go through timing.Timing: below-resolution repeats are censored,
 never replaced. The FD checkout must be release-24.06.1, the pinned version;
 anything else is refused.
@@ -28,7 +31,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .timing import Timing
+from .timing import REPEATS, WARMUP, Timing
 
 ROOT = Path(__file__).resolve().parents[2]
 FD_DIR = ROOT / "third_party" / "downward"
@@ -74,12 +77,18 @@ def _run(args: list[str], cwd: Path) -> tuple[int, str, int]:
     return p.returncode, p.stdout, ns
 
 
-def run(domain: Path, problem: Path, heuristic: str, repeats: int, fd_dir: Path = FD_DIR) -> dict:
-    """Time FD A*+<heuristic> on one PDDL task, `repeats` times. heuristic in SEARCHES."""
+def run(domain: Path, problem: Path, heuristic: str, repeats: int = REPEATS, fd_dir: Path = FD_DIR, *,
+        warmup: int = WARMUP) -> dict:
+    """Time FD A*+<heuristic> on one PDDL task: `warmup` discarded runs, then `repeats` timed ones.
+
+    heuristic in SEARCHES. Warm-up runs are not timed, parsed or compared; they only take first-call
+    costs (disk cache, Python start-up of the driver) out of the timed repeats."""
     if heuristic not in SEARCHES:
         raise ValueError(f"heuristic must be one of {sorted(SEARCHES)}")
     if repeats < 1:
         raise ValueError("repeats must be >= 1")
+    if warmup < 0:
+        raise ValueError("warmup must be >= 0")
     version = fd_version(fd_dir)
     if version != FD_VERSION:
         raise FDError(f"Fast Downward at {fd_dir} is {version!r}, not the pinned {FD_VERSION}")
@@ -88,7 +97,7 @@ def run(domain: Path, problem: Path, heuristic: str, repeats: int, fd_dir: Path 
     search = SEARCHES[heuristic]
     ns = {"translate": [], "search": [], "end_to_end": []}
     reports, outcomes = [], set()
-    for _ in range(repeats):
+    for i in range(warmup + repeats):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             code_e, log_e, t_e = _run([fd, "--plan-file", "e2e_plan", domain, problem, "--search", search], d)
@@ -97,6 +106,8 @@ def run(domain: Path, problem: Path, heuristic: str, repeats: int, fd_dir: Path 
                 code_s, log_s, t_s = 10, "", None
             else:
                 code_s, log_s, t_s = _run([fd, "--plan-file", "plan", "task.sas", "--search", search], d)
+        if i < warmup:
+            continue  # discarded warm-up run
         e2e, phase = parse_log(log_e), parse_log(log_t + log_s)
         if code_e != code_s or (e2e["cost"], e2e["expanded"]) != (phase["cost"], phase["expanded"]):
             raise FDError("the end-to-end run and the phase-by-phase run disagree")
@@ -109,7 +120,7 @@ def run(domain: Path, problem: Path, heuristic: str, repeats: int, fd_dir: Path 
     if len(outcomes) != 1:
         raise FDError(f"repeats disagree: {sorted(outcomes, key=str)}")
     code, cost, expanded = outcomes.pop()
-    return {"fd_version": version, "heuristic": heuristic, "search": search, "repeats": repeats,
+    return {"fd_version": version, "heuristic": heuristic, "search": search, "repeats": repeats, "warmup": warmup,
             "status": STATUS[code], "exit_code": code, "cost": cost, "expanded": expanded,
             "wall": {k: Timing(tuple(v)).record() if v else None for k, v in ns.items()},
             "fd_reported": reports}
@@ -120,10 +131,11 @@ def main(argv=None):
     ap.add_argument("domain", type=Path)
     ap.add_argument("problem", type=Path)
     ap.add_argument("--heuristic", choices=sorted(SEARCHES), action="append", required=True)
-    ap.add_argument("--repeats", type=int, required=True)
+    ap.add_argument("--repeats", type=int, default=REPEATS)
+    ap.add_argument("--warmup", type=int, default=WARMUP)
     ap.add_argument("--fd-dir", type=Path, default=FD_DIR)
     a = ap.parse_args(argv)
-    print(json.dumps({h: run(a.domain, a.problem, h, a.repeats, a.fd_dir) for h in a.heuristic}, indent=1))
+    print(json.dumps({h: run(a.domain, a.problem, h, a.repeats, a.fd_dir, warmup=a.warmup) for h in a.heuristic}, indent=1))
 
 
 if __name__ == "__main__":

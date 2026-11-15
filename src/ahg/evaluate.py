@@ -25,7 +25,7 @@ from .heuristics import ADMISSIBLE, INF, h0, hadd, hff, hmax, hsp, lmcut
 from .measure import HardFailure
 from .search import best_first_search
 from .task import plan_cost
-from .timing import InvalidMeasurement, Timing, log_ratio, timed
+from .timing import REPEATS, WARMUP, InvalidMeasurement, Timing, log_ratio, timed
 
 # Each in A*. h_FF added by D28 Round 7 (H1); it is inadmissible, so only its plan cost is measured.
 BASELINES = {"h0": h0, "hmax": hmax, "hsp": hsp, "hadd": hadd, "hff": hff, "lmcut": lmcut}
@@ -78,8 +78,8 @@ def sibling_order(groups, h: dict) -> dict:
     return {"pairs": pairs, "concordant": concordant, "ties": ties}
 
 
-def _run(task, make_h, budget, repeats: int, w_g=1.0, w_h=1.0, reopen=True, tie_break="fifo"):
-    """One method on one task, repeated `repeats` times for timing (D28 Round 12).
+def _run(task, make_h, budget, repeats: int, w_g=1.0, w_h=1.0, reopen=True, tie_break="fifo", warmup: int = 0):
+    """One method on one task: `warmup` discarded runs, then `repeats` timed ones (D28 Round 12, M1).
 
     make_h() returns a fresh heuristic each repeat, so per-instance set-up a
     learned heuristic does lazily (its static graph) is inside every timed
@@ -87,7 +87,7 @@ def _run(task, make_h, budget, repeats: int, w_g=1.0, w_h=1.0, reopen=True, tie_
     give the same plan and counts, or the run aborts.
     """
     runs, timing = timed(lambda: best_first_search(task, make_h(), w_g=w_g, w_h=w_h, reopen=reopen,
-                                                   tie_break=tie_break, max_expansions=budget), repeats)
+                                                   tie_break=tie_break, max_expansions=budget), repeats, warmup)
     key = lambda r: (r.plan, r.expanded, r.generated, r.evaluations, r.peak_open, r.peak_closed, r.reopened)
     if any(key(r) != key(runs[0]) for r in runs):
         raise HardFailure("a repeated search gave different results: the timing repeats are not the same run")
@@ -99,11 +99,12 @@ def _run(task, make_h, budget, repeats: int, w_g=1.0, w_h=1.0, reopen=True, tie_
             "peak_open": r.peak_open, "peak_closed": r.peak_closed, "reopened": r.reopened}
 
 
-def evaluate(batches, learned: list, budget: int = 200_000, tie_break: str = "fifo", *, repeats: int) -> list[dict]:
+def evaluate(batches, learned: list, budget: int = 200_000, tie_break: str = "fifo", *,
+             repeats: int = REPEATS, warmup: int = WARMUP) -> list[dict]:
     """One record per labelled instance. learned: list of learning.heuristic.Learned.
 
     tie_break: search.TIE_RULES, the same for every method of the run (D28 Round 7); recorded per record.
-    repeats: timing repeats per search (timing.py); required, since D28 fixes no number."""
+    repeats, warmup: timed and discarded runs per search; defaults 5 and 1 (M1, timing.py). Recorded."""
     records = []
     for batch in batches:
         by_inst: dict[int, list] = {}
@@ -116,18 +117,20 @@ def evaluate(batches, learned: list, budget: int = 200_000, tie_break: str = "fi
             task = inst.task
             rec = {"batch": batch.manifest["batch_id"], "seed": inst_rec["spec"]["seed"],
                    "cell": {k: inst_rec["spec"][k] for k in ("variant", "n", "D", "rho", "m")},
-                   "hstar": hstar, "tie_break": tie_break, "runs": {}, "over": {}, "order": {}}
+                   "hstar": hstar, "tie_break": tie_break, "repeats": repeats, "warmup": warmup,
+                   "runs": {}, "over": {}, "order": {}}
             for name, h in BASELINES.items():
-                rec["runs"][name] = _run(task, lambda h=h: h, budget, repeats, tie_break=tie_break)
+                rec["runs"][name] = _run(task, lambda h=h: h, budget, repeats, tie_break=tie_break, warmup=warmup)
                 got = rec["runs"][name]["cost"]
                 if name in ADMISSIBLE and not rec["runs"][name]["budget_hit"] and got != hstar:
                     raise HardFailure(f"seed {rec['seed']}: A*+{name} cost {got} != label h* {hstar}")
             for name, w in HADD_SEARCHES.items():
-                rec["runs"][name] = _run(task, lambda: hadd, budget, repeats, tie_break=tie_break, **w)
+                rec["runs"][name] = _run(task, lambda: hadd, budget, repeats, tie_break=tie_break, warmup=warmup, **w)
             exs = by_inst[i]
             groups = sibling_groups(task, exs)
             for model in learned:
-                rec["runs"][model.name] = _run(task, lambda: model.bind(inst), budget, repeats, tie_break=tie_break)
+                rec["runs"][model.name] = _run(task, lambda: model.bind(inst), budget, repeats, tie_break=tie_break,
+                                              warmup=warmup)
                 preds = model.predict_states(inst, [ex.state for ex in exs])
                 rec["over"][model.name] = {
                     g: [p - ex.hstar / SCALE for p, ex in zip(preds, exs) if set(ex.sources) & srcs]

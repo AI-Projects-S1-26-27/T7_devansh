@@ -14,6 +14,10 @@ Rules:
 
 The per-measurement summary of the repeats is their median (robust to one-off
 scheduler stalls); the raw repeats are always kept in the record.
+
+Protocol (decided 15 Nov 2026, M1; resolves OQ-P7-1): 5 timed repeats per
+method per task after 1 discarded warm-up run, summarised by the median.
+REPEATS and WARMUP are the defaults the harnesses (evaluate.py, fd_timing.py) use.
 """
 
 import math
@@ -21,6 +25,8 @@ import statistics
 import time
 from dataclasses import dataclass
 
+REPEATS = 5  # timed repeats per method per task (M1)
+WARMUP = 1  # untimed, discarded runs before the timed ones: caches, lazy imports, allocator (M1)
 RESOLUTION_NS = max(1, math.ceil(time.get_clock_info("perf_counter").resolution * 1e9))
 
 
@@ -59,10 +65,17 @@ class Timing:
         return cls(tuple(rec["ns"]), rec["resolution_ns"])
 
 
-def timed(fn, repeats: int):
-    """Run fn() `repeats` times; return (the list of results, Timing). Each repeat is timed on its own."""
+def timed(fn, repeats: int, warmup: int = 0):
+    """Run fn() `warmup` times untimed and discard the results, then `repeats` times timed.
+
+    Returns (the list of timed results, Timing). Each timed repeat is timed on its own.
+    The warm-up runs exist only to take first-call costs out of the timed repeats."""
     if repeats < 1:
         raise ValueError("repeats must be >= 1")
+    if warmup < 0:
+        raise ValueError("warmup must be >= 0")
+    for _ in range(warmup):
+        fn()
     results, ns = [], []
     for _ in range(repeats):
         t0 = time.perf_counter_ns()
