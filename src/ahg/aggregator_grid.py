@@ -11,7 +11,9 @@ The pre-registered grid is precondition aggregation {mean, sum, max} x readout {
 The grid runs once, under the `ac` regime, on offline data only, before any on-policy round. The `uniform`
 models reuse the frozen `ac` choice; no grid runs under `uniform` (CA2). The selection rule's simplicity
 order, how the seeds of a cell combine and what counts as a tie are not fixed by D28 (open question
-OQ-P9a-1), so select() takes them as an explicit rule and never defaults them.
+OQ-P9a-1), so select() takes them as an explicit rule and never defaults them. Decided 15 Nov 2026 (P9a2):
+seeds combine by the mean; a cell within 2% (relative) of the best mean MAE ties with it; the simplest tied
+cell wins, in the order of configs/d28_grid_rule.json.
 """
 
 import hashlib
@@ -28,8 +30,9 @@ from .runlog import ROOT, write_run
 
 GRID_REGIME = PRIMARY_REGIME  # "ac" (CA2)
 GRID = ROOT / "results" / "training" / "grid"
-COMBINE = {"mean": statistics.fmean, "median": statistics.median}
-RULE_KEYS = {"simplicity_order", "seed_combination", "tie_tolerance"}
+COMBINE = {"mean": statistics.fmean}  # the decided seed combination (P9a2)
+RULE_KEYS = {"simplicity_order", "seed_combination", "tie_relative"}
+RULE_FILE = ROOT / "configs" / "d28_grid_rule.json"
 
 
 def grid_configs(base: dict) -> list[dict]:
@@ -91,13 +94,23 @@ def check_rule(rule: dict) -> dict:
         raise ValueError(f"simplicity_order must list each of the six grid cells once, got {order}")
     if rule["seed_combination"] not in COMBINE:
         raise ValueError(f"seed_combination must be one of {sorted(COMBINE)}")
-    if not (isinstance(rule["tie_tolerance"], (int, float)) and rule["tie_tolerance"] >= 0):
-        raise ValueError("tie_tolerance must be a number >= 0")
+    if not (isinstance(rule["tie_relative"], (int, float)) and rule["tie_relative"] >= 0):
+        raise ValueError("tie_relative must be a number >= 0")
     return rule
 
 
+def load_rule(path: Path = RULE_FILE) -> dict:
+    """The selection rule from its config file (default: the decided rule). The file may carry a "decided"
+    provenance note next to the rule keys, and nothing else."""
+    raw = json.loads(Path(path).read_text())
+    if set(raw) - {"decided"} != RULE_KEYS:
+        raise ValueError(f"{path}: rule keys must be {sorted(RULE_KEYS)} (plus an optional 'decided'), got {sorted(raw)}")
+    return check_rule({k: raw[k] for k in RULE_KEYS})
+
+
 def select(rows: list[dict], rule: dict) -> dict:
-    """The selected cell: lowest combined val MAE; among cells within tie_tolerance of it, the first in
+    """The selected cell: lowest combined val MAE; among cells within tie_relative of it (score <= best *
+    (1 + tie_relative)), the first in
     simplicity_order. Every cell must have exactly one row per seed, so no cell is judged on fewer runs."""
     check_rule(rule)
     by_cell: dict[tuple, dict[int, float]] = {}
@@ -112,7 +125,7 @@ def select(rows: list[dict], rule: dict) -> dict:
     combine = COMBINE[rule["seed_combination"]]
     score = {c: combine([v[s] for s in SEEDS]) for c, v in by_cell.items()}
     best = min(score.values())
-    tied = [c for c in map(tuple, rule["simplicity_order"]) if score[c] <= best + rule["tie_tolerance"]]
+    tied = [c for c in map(tuple, rule["simplicity_order"]) if score[c] <= best * (1 + rule["tie_relative"])]
     choice = tied[0]
     return {"pre_agg": choice[0], "readout": choice[1], "tied": [list(c) for c in tied],
             "scores": [{"pre_agg": c[0], "readout": c[1], "score": score[c],

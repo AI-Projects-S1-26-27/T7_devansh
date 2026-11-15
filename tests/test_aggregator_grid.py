@@ -16,9 +16,8 @@ from synthetic import PROTOCOL, offline_batch, synthetic_seeds
 
 SMALL = {"max_epochs": 2, "hidden": 8, "layers": 2, "patience": 2}
 SEEDS = synthetic_seeds(5)
-# A rule for the tests only: D28 has not fixed the simplicity order, seed combination or tie tolerance
-# (OQ-P9a-1), so no rule is frozen in configs/.
-RULE = {"simplicity_order": [list(c) for c in AGGREGATOR_GRID], "seed_combination": "mean", "tie_tolerance": 0.0}
+# The decided rule (P9a2, OQ-P9a-1) with an exact tie, so the order tests see only exact ties.
+RULE = {"simplicity_order": [list(c) for c in AGGREGATOR_GRID], "seed_combination": "mean", "tie_relative": 0.0}
 
 
 @pytest.fixture(autouse=True)
@@ -74,7 +73,7 @@ def test_grid_refuses_uniform_labels_and_on_policy_data(ac_data):
 
 def test_select_lowest_mae_then_simplicity_order():
     s = {c: [0.5, 0.5, 0.5] for c in AGGREGATOR_GRID}
-    s[("max", "sum")] = [0.125, 0.25, 0.375]  # binary-exact: mean and median 0.25
+    s[("max", "sum")] = [0.125, 0.25, 0.375]  # binary-exact: mean 0.25
     assert (grid.select(rows(s), RULE)["pre_agg"], grid.select(rows(s), RULE)["readout"]) == ("max", "sum")
     s[("sum", "mean")] = [0.25, 0.25, 0.25]  # an exact tie on the mean: the first in simplicity order wins
     order = [["sum", "mean"], *[list(c) for c in AGGREGATOR_GRID if c != ("sum", "mean")]]
@@ -82,18 +81,26 @@ def test_select_lowest_mae_then_simplicity_order():
     assert (sel["pre_agg"], sel["readout"]) == ("sum", "mean") and len(sel["tied"]) == 2
     rev = grid.select(rows(s), {**RULE, "simplicity_order": order[::-1]})
     assert (rev["pre_agg"], rev["readout"]) == ("max", "sum")
-    med = grid.select(rows(s), {**RULE, "seed_combination": "median"})  # max/sum median 0.25 = sum/mean 0.25
-    assert len(med["tied"]) == 2
-    tol = grid.select(rows({**s, ("sum", "mean"): [0.26] * 3}), {**RULE, "tie_tolerance": 0.02})
-    assert len(tol["tied"]) == 2 and len(tol["scores"]) == 6
+    # 2% relative (the decided tolerance): 1% worse ties, 3% worse does not.
+    near = grid.select(rows({**s, ("sum", "mean"): [0.2525] * 3}), {**RULE, "simplicity_order": order, "tie_relative": 0.02})
+    assert (near["pre_agg"], near["readout"]) == ("sum", "mean") and len(near["tied"]) == 2
+    far = grid.select(rows({**s, ("sum", "mean"): [0.2575] * 3}), {**RULE, "simplicity_order": order, "tie_relative": 0.02})
+    assert (far["pre_agg"], far["readout"]) == ("max", "sum") and len(far["tied"]) == 1 and len(far["scores"]) == 6
+
+
+def test_decided_rule_file():
+    rule = grid.load_rule()
+    assert rule == {"simplicity_order": [["mean", "mean"], ["mean", "sum"], ["sum", "mean"], ["sum", "sum"],
+                                         ["max", "mean"], ["max", "sum"]],
+                    "seed_combination": "mean", "tie_relative": 0.02}
 
 
 @pytest.mark.parametrize("rule", [
-    {k: v for k, v in RULE.items() if k != "tie_tolerance"},
+    {k: v for k, v in RULE.items() if k != "tie_relative"},
     {**RULE, "simplicity_order": RULE["simplicity_order"][:5]},
     {**RULE, "simplicity_order": RULE["simplicity_order"][:5] + RULE["simplicity_order"][:1]},
-    {**RULE, "seed_combination": "min"},
-    {**RULE, "tie_tolerance": -0.1},
+    {**RULE, "seed_combination": "median"},
+    {**RULE, "tie_relative": -0.1},
     {**RULE, "extra": 1}])
 def test_selection_rule_is_never_defaulted(rule):
     with pytest.raises(ValueError):

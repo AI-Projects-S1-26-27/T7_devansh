@@ -29,9 +29,9 @@ D28 (P9a; real runs only after the CVE rebuild, generator and label generation):
       The GNN aggregator grid (Round 11): 6 cells x seeds 0-2 on `ac` offline data; every row recorded under
       results/training/grid/ac/. The --set values give the base GNN config, including cost_regime=ac and
       the train_batches / val_batches.
-  python scripts/train.py grid-freeze RUN --rule RULE.json --out configs/d28_aggregators.json
-      Select from a grid run by the rule (simplicity order, seed combination, tie tolerance) and freeze the
-      choice once; an existing file with another choice is never overwritten.
+  python scripts/train.py grid-freeze RUN [--rule configs/d28_grid_rule.json] --out configs/d28_aggregators.json
+      Select from a grid run by the decided rule (mean over seeds, 2% relative tie, simplest wins; P9a2) and
+      freeze the choice once; an existing file with another choice is never overwritten.
   python scripts/train.py onpolicy --index K --protocol PROTOCOL.json [--aggregators FROZEN] --set KEY=VALUE ...
       On-policy run K of onpolicy.plan() (regime x model x seed; 18 runs), exactly 2 rounds (Round 9), under
       results/training/onpolicy/. A GNN run needs the frozen grid file. The --set values give the base config
@@ -391,10 +391,9 @@ def cmd_grid(args):
 
 
 def cmd_grid_freeze(args):
-    from ahg.aggregator_grid import freeze, select
-    rows = load_raw(args.run)["rows"]
-    sel = select(rows, json.loads(args.rule.read_text()))
-    frozen = freeze(sel, json.loads(args.rule.read_text()), str(args.run.resolve().relative_to(ROOT)), args.out)
+    from ahg.aggregator_grid import freeze, load_rule, select
+    rows, rule = load_raw(args.run)["rows"], load_rule(args.rule)
+    frozen = freeze(select(rows, rule), rule, str(args.run.resolve().relative_to(ROOT)), args.out)
     print(f"{args.out}: pre_agg={frozen['pre_agg']} readout={frozen['readout']} (tied: {frozen['tied']})")
 
 
@@ -442,7 +441,7 @@ def main():
     p.add_argument("--set", action="append", required=True)
     p = sub.add_parser("grid-freeze")
     p.add_argument("run", type=Path)
-    p.add_argument("--rule", type=Path, required=True)
+    p.add_argument("--rule", type=Path, default=ROOT / "configs" / "d28_grid_rule.json")
     p.add_argument("--out", type=Path, required=True)
     p = sub.add_parser("onpolicy")
     p.add_argument("--index", type=int, required=True)

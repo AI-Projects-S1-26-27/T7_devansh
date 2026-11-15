@@ -1,0 +1,31 @@
+{
+ "decided": "15 Nov 2026, P9a2 (resolves OQ-P9a-1); D28 Round 11 GNN aggregators",
+ "simplicity_order": [
+  [
+   "mean",
+   "mean"
+  ],
+  [
+   "mean",
+   "sum"
+  ],
+  [
+   "sum",
+   "mean"
+  ],
+  [
+   "sum",
+   "sum"
+  ],
+  [
+   "max",
+   "mean"
+  ],
+  [
+   "max",
+   "sum"
+  ]
+ ],
+ "seed_combination": "mean",
+ "tie_relative": 0.02
+}
