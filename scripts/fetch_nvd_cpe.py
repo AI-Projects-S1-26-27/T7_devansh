@@ -1,7 +1,8 @@
-"""Fetch every NVD CVE record matching one CPE prefix, published in a date range, into data/raw/nvd/<date>/.
+"""Fetch every NVD CVE record matching some CPE prefixes, published in a date range, into
+data/raw/nvd/<date>/<label>/ (one folder and one manifest per invocation).
 
-Usage: python scripts/fetch_nvd_cpe.py CPE PUB_START PUB_END [--date YYYY-MM-DD]
-  e.g. python scripts/fetch_nvd_cpe.py cpe:2.3:o:linux:linux_kernel 2016-01-01 2026-10-21
+Usage: python scripts/fetch_nvd_cpe.py LABEL PUB_START PUB_END CPE [CPE ...] [--date YYYY-MM-DD]
+  e.g. python scripts/fetch_nvd_cpe.py linux_kernel 2016-01-01 2026-10-21 cpe:2.3:o:linux:linux_kernel
 
 The CVE API 2.0 allows at most 120 consecutive days per published-date query, so the range is split into
 WINDOW_DAYS-day windows, each paged at PAGE_SIZE records (2000-record pages were cut off mid-transfer
@@ -47,34 +48,37 @@ def page_url(cpe: str, w: tuple[date, date], start: int) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cpe")
+    ap.add_argument("label")
     ap.add_argument("pub_start", type=date.fromisoformat)
     ap.add_argument("pub_end", type=date.fromisoformat)
+    ap.add_argument("cpes", nargs="+")
     ap.add_argument("--date", default=datetime.now(timezone.utc).date().isoformat())
     a = ap.parse_args()
     date.fromisoformat(a.date)
-    f = Fetcher(ROOT / "data" / "raw" / "nvd" / a.date, "scripts/fetch_nvd_cpe.py", PACE)
-    slug = a.cpe.split(":", 3)[3].replace(":", "__")
+    if not a.label.replace("_", "").isalnum():
+        sys.exit("LABEL: letters, digits and _ only")
+    f = Fetcher(ROOT / "data" / "raw" / "nvd" / a.date / a.label, "scripts/fetch_nvd_cpe.py", PACE)
     pages = []  # (query key, requested start, page size, response) for REP6
-    for w in windows(a.pub_start, a.pub_end):
+    for cpe, w in ((c, w) for c in a.cpes for w in windows(a.pub_start, a.pub_end)):
+        slug = cpe.split(":", 3)[3].replace(":", "__")
         start, total = 0, None
         while total is None or start < total:
             name = f"{slug}__{w[0]}__{start:06d}.json"
-            rec = f.fetch(name, page_url(a.cpe, w, start))
+            rec = f.fetch(name, page_url(cpe, w, start))
             if rec.get("http", 200) != 200:
                 sys.exit(f"failed {name}: {rec}; rerun to resume")
             resp = json.loads((f.out / name).read_bytes())
             total = resp["totalResults"]
-            pages.append({"query": f"{a.cpe} {w[0]}..{w[1]}", "file": name, "requested_start": start,
+            pages.append({"query": f"{cpe} {w[0]}..{w[1]}", "file": name, "requested_start": start,
                           "page_size": PAGE_SIZE, "response": resp})  # fmt: skip
-            print(f"{w[0]}..{w[1]} start={start:5d} got={len(resp['vulnerabilities']):4d} total={total}", flush=True)
+            print(f"{slug} {w[0]}..{w[1]} start={start:5d} got={len(resp['vulnerabilities']):4d} total={total}", flush=True)
             start += PAGE_SIZE
     report = validate(pages)
     print(json.dumps({k: report[k] for k in ("ok", "pages", "records", "unique_cves", "errors")}, indent=1))
     if not report["ok"]:
         sys.exit("REP6 validation failed; manifest not written")
     # The full REP6 report is the manifest's "rep6" entry: the logged validation record of this snapshot.
-    m = write_manifest(f.out, {"api": API, "cpe": a.cpe, "pub_range": [str(a.pub_start), str(a.pub_end)],
+    m = write_manifest(f.out, {"api": API, "label": a.label, "cpes": a.cpes, "pub_range": [str(a.pub_start), str(a.pub_end)],
                                "page_size": PAGE_SIZE, "window_days": WINDOW_DAYS, "pace_seconds": PACE,
                                "rep6": report})  # fmt: skip
     print(f"manifest: {len(m['files'])} files")
