@@ -36,4 +36,7 @@ CLAUDE.md
 !/README.md
 !LICENSE*
 !NOTICE*
-!/results/**/*.md
+# Re-include run reports inside results/<dir>/, but not .md files directly in results/ or in results/raw/
+# (those stay ignored, as before P-1).
+!/results/*/**/*.md
+/results/raw/**/*.md
