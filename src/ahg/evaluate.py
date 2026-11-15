@@ -28,8 +28,10 @@ from .task import plan_cost
 
 BASELINES = {"h0": h0, "hmax": hmax, "hsp": hsp, "hadd": hadd, "lmcut": lmcut}  # each in A*
 # D23 §2: h_add in the other best-first searches, f = w_g*g + w_h*h (search.py): GBFS and weighted A*.
-HADD_SEARCHES = {"gbfs_hadd": {"w_g": 0.0, "w_h": 1.0}, "wastar1.5_hadd": {"w_g": 1.0, "w_h": 1.5},
-                 "wastar2_hadd": {"w_g": 1.0, "w_h": 2.0}}
+# Reopening as Fast Downward 24.06.1 (D28 Round 7, search.py): GBFS never reopens, weighted A* does.
+HADD_SEARCHES = {"gbfs_hadd": {"w_g": 0.0, "w_h": 1.0, "reopen": False},
+                 "wastar1.5_hadd": {"w_g": 1.0, "w_h": 1.5, "reopen": True},
+                 "wastar2_hadd": {"w_g": 1.0, "w_h": 2.0, "reopen": True}}
 COMPARATORS = (*BASELINES, *HADD_SEARCHES)
 INADMISSIBLE_SEARCHES = ("hadd", *HADD_SEARCHES)  # plan cost measured, never bounded (rule 8)
 STATE_GROUPS = {"walk": {"walk"}, "astar_expanded": {"expanded_lmcut", "expanded_hmax"}, "successor": {"successor"}}
@@ -74,8 +76,8 @@ def sibling_order(groups, h: dict) -> dict:
     return {"pairs": pairs, "concordant": concordant, "ties": ties}
 
 
-def _run(task, h, budget, w_g=1.0, w_h=1.0):
-    r = best_first_search(task, h, w_g=w_g, w_h=w_h, max_expansions=budget)
+def _run(task, h, budget, w_g=1.0, w_h=1.0, reopen=True):
+    r = best_first_search(task, h, w_g=w_g, w_h=w_h, reopen=reopen, max_expansions=budget)
     if r.solved:
         assert plan_cost(task, r.plan) == r.cost  # the plan is executable and its cost is what search says
     return {"expanded": r.expanded, "generated": r.generated, "evaluations": r.evaluations,
