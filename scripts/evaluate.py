@@ -3,6 +3,7 @@
 Usage:
   python scripts/evaluate.py --batches DIR [DIR ...] [--models RUN ...] [--max-hmax RUN ...] [--manifest FROZEN]
                              [--name NAME] [--purpose evaluation --permitted-by D-ENTRY]
+                             [--repeats R] [--warmup W] [--tie-break fifo|lifo]
 
   RUN: a results/training/ run folder (its model.pt is loaded).
   --max-hmax RUN: also search with max(h_max, h_θ) for that model, named <model>+max (D22 variant b).
@@ -11,6 +12,10 @@ Usage:
   A test-split batch is opened only with --purpose; open_batch logs the read in
   results/test_access_log.jsonl before anything is loaded, and refuses a second
   evaluation of a split without --permitted-by.
+
+--repeats / --warmup: timed and discarded runs per search (default 5 and 1, D28 Round 12 M1); the time is
+the median of the timed repeats, and a censored time is marked, never replaced. --tie-break: the search
+tie rule for every method (D28 Round 7: fifo is D3, lifo the second rule). All three are recorded.
 
 The learned heuristics run with one torch thread: the baselines are single-threaded
 Python, so every heuristic gets one core and the end-to-end times compare like with like.
@@ -29,6 +34,8 @@ from ahg.evaluate import STATE_GROUPS, comparators, evaluate, summarise, summari
 from ahg.learning.heuristic import Learned
 from ahg.learning.train import load
 from ahg.runlog import load_raw, write_run
+from ahg.search import TIE_RULES
+from ahg.timing import REPEATS, WARMUP
 
 ROOT = Path(__file__).resolve().parents[1]
 EVALUATION = ROOT / "results" / "evaluation"
@@ -52,7 +59,8 @@ def render(raw) -> str:
     s, split = raw["summary"], raw["split"]
     comps = comparators(raw["records"])
     L = [f"# evaluation on {split} (D21 §4)", "", f"{raw['instances']} labelled instances; budget {BUDGET:,} "
-         f"expansions; torch threads {raw['torch_threads']}. Ratios are model / comparator, geometric mean "
+         f"expansions; torch threads {raw['torch_threads']}; tie rule {raw['tie_break']}; time = median of "
+         f"{raw['repeats']} timed repeats after {raw['warmup']} discarded warm-up(s). Ratios are model / comparator, geometric mean "
          "[bootstrap 95% CI over instances, one checkpoint each]; < 1 means the model expands fewer nodes or is "
          "faster. Comparators are A* with each heuristic, then GBFS+h_add and weighted A*+h_add (D23 §2).", "",
          "## Expansions", "", "| model | " + " | ".join(comps) + " |", "|---|" + "---|" * len(comps)]
@@ -79,7 +87,7 @@ def render(raw) -> str:
     return "\n".join(L) + "\n"
 
 
-def main():
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--batches", type=Path, nargs="+", required=True)
     ap.add_argument("--models", type=Path, nargs="*", default=[])
@@ -88,7 +96,14 @@ def main():
     ap.add_argument("--name")
     ap.add_argument("--purpose", choices=["evaluation"])
     ap.add_argument("--permitted-by")
-    args = ap.parse_args()
+    ap.add_argument("--repeats", type=int, default=REPEATS)
+    ap.add_argument("--warmup", type=int, default=WARMUP)
+    ap.add_argument("--tie-break", choices=TIE_RULES, default="fifo")
+    return ap
+
+
+def main():
+    args = parser().parse_args()
     torch.set_num_threads(1)
     batches = [open_batch(b, purpose=args.purpose, permitted_by=args.permitted_by) for b in args.batches]
     splits = {b.manifest["split"] for b in batches}
@@ -116,12 +131,15 @@ def main():
                        "model_sha256": hashlib.sha256((run / "model.pt").read_bytes()).hexdigest()})
     if len({m["name"] for m in models}) != len(models):
         raise SystemExit(f"model names must be unique: {[m['name'] for m in models]}")
-    records = evaluate(batches, learned, BUDGET)
+    records = evaluate(batches, learned, BUDGET, args.tie_break, repeats=args.repeats, warmup=args.warmup)
     raw = {"split": split, "batches": [b.manifest["batch_id"] for b in batches], "models": models, "manifest": manifest,
            "instances": len(records), "torch_threads": torch.get_num_threads(), "budget": BUDGET,
+           "repeats": args.repeats, "warmup": args.warmup, "tie_break": args.tie_break,
            "records": records, "summary": summarise(records, [m["name"] for m in models], BUDGET),
            "searches": summarise_searches(records)}
-    out = write_run(args.name or split, raw, render(raw), [], {"batches": raw["batches"], "models": models},
+    out = write_run(args.name or split, raw, render(raw), [], {"batches": raw["batches"], "models": models,
+                                                              "repeats": args.repeats, "warmup": args.warmup,
+                                                              "tie_break": args.tie_break},
                     root=EVALUATION)
     print(out)
     print(render(raw))

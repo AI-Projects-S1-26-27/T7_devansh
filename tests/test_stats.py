@@ -98,7 +98,9 @@ def test_analyse_pairs_seeds_and_builds_the_holm_family():
     """Two primaries with two seeds each and one ablation: the H1 family holds primaries x comparators only,
     the per-seed ratios are each seed's own geometric mean, and the Wilcoxon d_i uses the seed-mean log."""
     from ahg.evaluate import COMPARATORS
-    run = lambda e, c=100: {"expanded": e, "cost": c, "seconds": e / 1000, "budget_hit": False}
+    # Records in the D28 harness format (P9a port of analyse.py, OQ-P7-2): Timing records, not "seconds".
+    run = lambda e, c=100: {"expanded": e, "cost": c, "budget_hit": False,
+                            "time": {"ns": [e * 1_000_000] * 5, "resolution_ns": 1, "censored": False}}
     over = {"walk": {"rate": 0.5}, "astar_expanded": {"rate": 0.5}, "successor": {"rate": 0.5}}
     names = {"A": ["a0", "a1"], "B": ["b0", "b1"], "mlp": ["m0", "m1"]}
     recs = []
@@ -106,7 +108,7 @@ def test_analyse_pairs_seeds_and_builds_the_holm_family():
         runs = {c: run(100 + i) for c in COMPARATORS}
         runs.update({"a0": run(50 + i), "a1": run(60 + i), "b0": run(90 + i), "b1": run(90 + i, 110),
                      "m0": run(300), "m1": run(300)})
-        recs.append({"hstar": 100, "runs": runs})
+        recs.append({"hstar": 100, "repeats": 5, "warmup": 1, "runs": runs})
     frozen = {"runs": [{"id": g, "role": "primary" if g in "AB" else "ablation", "seed": s, "run": f"r/{n}"}
                        for g, ns in names.items() for s, n in enumerate(ns)]}
     raw = {"split": "val", "budget": 10_000, "records": recs,

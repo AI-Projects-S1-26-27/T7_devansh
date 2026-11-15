@@ -9,6 +9,7 @@ Usage:
               model, next to each model's MSE on all val labels (effort units).
   ties        each --tie-models model in A* as is, with h rounded to whole D9 units (a control), and
               rounded to whole effort units (38 D9 units, which creates f-ties); expansion ratios vs h_max.
+--repeats / --warmup: timed and discarded runs per search in the ties part (default 5 and 1, D28 M1); recorded.
 Refuses test splits: D22 is validation only.
 Output: results/evaluation/<name>/<stamp>-<commit>/.
 """
@@ -28,6 +29,7 @@ from ahg.learning.heuristic import Learned
 from ahg.learning.train import load
 from ahg.runlog import load_raw, write_run
 from ahg.search import astar
+from ahg.timing import REPEATS, WARMUP
 
 ROOT = Path(__file__).resolve().parents[1]
 EVALUATION = ROOT / "results" / "evaluation"
@@ -144,13 +146,19 @@ def render(raw) -> str:
     return "\n".join(L) + "\n"
 
 
-def main():
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--batches", type=Path, nargs="+", required=True)
     ap.add_argument("--models", type=Path, nargs="+", required=True)
     ap.add_argument("--tie-models", type=Path, nargs="*", default=[])
     ap.add_argument("--name", default="d22-diagnostics")
-    args = ap.parse_args()
+    ap.add_argument("--repeats", type=int, default=REPEATS)
+    ap.add_argument("--warmup", type=int, default=WARMUP)
+    return ap
+
+
+def main():
+    args = parser().parse_args()
     torch.set_num_threads(1)
     batches = [open_batch(b) for b in args.batches]  # no purpose: a test split is refused
     if {b.manifest["split"] for b in batches} != {"val"}:
@@ -171,12 +179,14 @@ def main():
     for r in args.tie_models:
         base = learned(r)
         tie += [base, Rounded(base, 1), Rounded(base, SCALE)]
-    records = evaluate(batches, tie, BUDGET)
+    records = evaluate(batches, tie, BUDGET, repeats=args.repeats, warmup=args.warmup)
+    raw["repeats"], raw["warmup"] = args.repeats, args.warmup
     raw["ties"] = {name: {k: v[k] for k in ("vs", "plan_cost", "optimal", "solved")}
                    for name, v in summarise(records, [m.name for m in tie], BUDGET).items()}
     raw["tie_records"] = records
     out = write_run(args.name, raw, render(raw), [], {"batches": raw["batches"], "models": raw["models"],
-                                                      "tie_models": [str(r) for r in args.tie_models]}, root=EVALUATION)
+                                                      "tie_models": [str(r) for r in args.tie_models],
+                                                      "repeats": args.repeats, "warmup": args.warmup}, root=EVALUATION)
     print(out)
     print(render(raw))
 
