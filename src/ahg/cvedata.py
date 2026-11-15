@@ -174,6 +174,7 @@ def msrc_entries(doc: dict, doc_id: str) -> list[dict]:
                    for c in v.get("CVSSScoreSets", []) if c.get("Vector")]  # fmt: skip
         notes = v.get("Notes", [])
         revs = [r.get("Date") for r in v.get("RevisionHistory", []) if r.get("Date")]
+        first = [r["Date"] for r in v.get("RevisionHistory", []) if r.get("Number") in ("1.0", "1") and r.get("Date")]
         out.append({
             "cve_id": v.get("CVE"), "doc": doc_id, "title": (v.get("Title") or {}).get("Value"),
             "tags": sorted({n.get("Value") for n in notes if n.get("Type") == 7 and n.get("Value")}),
@@ -181,7 +182,11 @@ def msrc_entries(doc: dict, doc_id: str) -> list[dict]:
             "description": " ".join(note_text(n.get("Value")) for n in notes if n.get("Type") == 2),
             "cna_note": sorted({n.get("Value") for n in notes if n.get("Type") == 8 and n.get("Value")}),
             "cwe": sorted({c.get("ID") for c in v.get("CWE", []) or [] if c.get("ID")}),
-            "release_date": v.get("ReleaseDate"), "revision_dates": sorted(revs),
+            # ReleaseDate is often unset ("0001-01-01", ReleaseDateSpecified false); revision 1.0 is the
+            # first publication, else the earliest revision.
+            "release_date": v.get("ReleaseDate") if v.get("ReleaseDateSpecified") else None,
+            "initial_release": min(first or revs or [None], key=lambda d: d or ""),
+            "revision_dates": sorted(revs),
             "products": dict(sorted(products.items())), "vectors": vectors,
         })  # fmt: skip
     return out
@@ -248,6 +253,19 @@ def role_signals(text: str, source: str, short_name: bool = False) -> list[dict]
         m = re.search(pat, t, re.I)
         if m:
             found.append({"role": role, "source": source, "pattern": name, "match": m.group(0)[:120]})
+    return found
+
+
+def vocab_signals(text: str, vocab: dict[str, list[str]], source: str) -> list[dict]:
+    """Product-specific role wording (daemon and client-program names), after removing negated clauses."""
+    t = strip_negated(text or "")
+    found = []
+    for role in ("client", "server"):
+        for pat in vocab.get(role, []):
+            m = re.search(pat, t)
+            if m:
+                found.append({"role": role, "source": source, "pattern": f"vocabulary: {pat}", "match": m.group(0)[:120]})
+                break  # one hit per role and text is enough evidence
     return found
 
 

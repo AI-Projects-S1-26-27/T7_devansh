@@ -149,11 +149,13 @@ def test_msrc_entries_parse_impact_tags_builds_vectors():
                         {"Type": 3, "Description": {"Value": "Critical"}, "ProductID": ["1"]}],
             "Remediations": [{"Type": 2, "Description": {"Value": "4551762"}, "FixedBuild": "10.0.17763.1098", "ProductID": ["1"]}],
             "CVSSScoreSets": [{"BaseScore": 10, "Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H", "ProductID": ["1"]}],
-            "RevisionHistory": [{"Date": "2020-03-12T07:00:00"}], "ReleaseDate": "2020-03-12T07:00:00",
+            "RevisionHistory": [{"Number": "1.1", "Date": "2020-04-01T07:00:00"}, {"Number": "1.0", "Date": "2020-03-12T07:00:00"}],
+            "ReleaseDate": "0001-01-01T00:00:00", "ReleaseDateSpecified": False,
         }],
     }  # fmt: skip
     (e,) = cd.msrc_entries(doc, "2020-Mar")
     assert e["tags"] == ["Windows SMB Server"] and e["faq"] == "An unauthenticated attacker"
+    assert e["release_date"] is None and e["initial_release"] == "2020-03-12T07:00:00"  # unset ReleaseDate
     assert e["products"]["1"]["impact"] == "Remote Code Execution" and e["products"]["1"]["severity"] == "Critical"
     assert e["products"]["1"]["fixes"][0]["fixed_build"] == "10.0.17763.1098" and "fixes" not in e["products"]["2"]
     assert e["vectors"][0]["metrics"]["AV"] == "N" and e["vectors"][0]["product_ids"] == ["1"]
@@ -165,3 +167,11 @@ def test_ghsa_text_extracts_description_block():
             '<div class="Box-header">Severity</div></html>')  # fmt: skip
     assert cd.ghsa_text(page) == "Summary Affected FreeRDP based clients only."
     assert cd.ghsa_text("<html></html>") == ""
+
+
+def test_vocab_signals_product_wording():
+    vocab = {"server": [r"\b(?:in|causes?)\s+named\b", r"\bsmbd\b"], "client": [r"\bsmbclient\b"]}
+    assert [s["role"] for s in cd.vocab_signals("A flaw causes named to exit.", vocab, "d")] == ["server"]
+    assert cd.vocab_signals("a file named x.conf", vocab, "d") == []  # the English word is not the daemon
+    assert {s["role"] for s in cd.vocab_signals("smbd and smbclient both crash", vocab, "d")} == {"client", "server"}
+    assert cd.vocab_signals("smbd is not affected.", vocab, "d") == []
