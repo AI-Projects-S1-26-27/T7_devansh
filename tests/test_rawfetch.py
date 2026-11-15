@@ -67,3 +67,41 @@ def test_manifest_rejects_unlogged_or_modified_files_and_freezes_snapshot(tmp_pa
     assert json.loads((tmp_path / "manifest.json").read_text())["files"][0]["sha256"] == m["files"][0]["sha256"]
     with pytest.raises(FileExistsError):
         rawfetch.Fetcher(tmp_path, "s", pace=0)  # a snapshot with a manifest is final
+
+
+def test_truncated_read_and_503_are_retried_then_succeed(tmp_path):
+    """NVD cut a response mid-transfer (IncompleteRead) and returned 503: both must be retried, not crash."""
+    calls = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(1)
+            if len(calls) == 1:  # promise 100 bytes, send 5, close
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"short")
+                self.wfile.flush()
+                self.close_connection = True
+                return
+            if len(calls) == 2:
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        f = rawfetch.Fetcher(tmp_path, "s", pace=0, retry_wait=0)
+        rec = f.fetch("p.txt", f"http://127.0.0.1:{srv.server_address[1]}/p")
+    finally:
+        srv.shutdown()
+    assert rec["http"] == 200 and (tmp_path / "p.txt").read_bytes() == b"ok" and len(calls) == 3

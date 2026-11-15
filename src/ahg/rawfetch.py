@@ -9,6 +9,7 @@ Requests are paced per host, because NVD (no API key: 5 requests / 30 s) and MSR
 """
 
 import hashlib
+import http.client
 import json
 import time
 import urllib.error
@@ -20,6 +21,7 @@ from pathlib import Path
 from ahg import runlog
 
 USER_AGENT = "ahg-raw-fetch/1.0"  # generic client name; no personal details (privacy rule)
+ATTEMPTS = 4
 LOG_NAME, MANIFEST_NAME = "fetch_log.jsonl", "manifest.json"
 
 
@@ -49,20 +51,21 @@ class Fetcher:
         self._last[host] = time.time()
 
     def _get(self, url: str, headers: dict[str, str]) -> tuple[int, bytes, str]:
-        """One GET with a single delayed retry on network errors and 5xx/429. Returns (status, body, type)."""
+        """One GET with up to ATTEMPTS tries (waiting retry_wait * (try-1) s before a retry) on network errors,
+        truncated reads and 5xx/429. Returns (status, body, type)."""
         host = urllib.parse.urlsplit(url).netloc
-        for attempt in (1, 2):
-            self._wait(host, self.pace if attempt == 1 else self.retry_wait)
+        for attempt in range(1, ATTEMPTS + 1):
+            self._wait(host, self.pace if attempt == 1 else self.retry_wait * (attempt - 1))
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **headers})
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
                     return r.status, r.read(), r.headers.get("Content-Type", "")
             except urllib.error.HTTPError as e:
                 body, ctype = e.read(), e.headers.get("Content-Type", "")
-                if attempt == 2 or not (e.code == 429 or e.code >= 500):
+                if attempt == ATTEMPTS or not (e.code == 429 or e.code >= 500):
                     return e.code, body, ctype
-            except OSError as e:  # connection reset, TLS failure, timeout, truncated read
-                if attempt == 2:
+            except (OSError, http.client.HTTPException) as e:  # reset, TLS, timeout, IncompleteRead
+                if attempt == ATTEMPTS:
                     return 0, repr(e).encode(), ""
         raise AssertionError("unreachable")
 
