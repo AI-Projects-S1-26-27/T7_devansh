@@ -1,0 +1,21 @@
+{
+  "decision": "P6b (16 Nov 2026, Devansh): for each UNKNOWN entry, the vendor's own documentation of the vulnerable process's identity (man pages, admin guides, packaging docs, vendor advisories), cited verbatim; root or SYSTEM only where the page says so for that process. Fetched sequentially and paced.",
+  "pace_seconds": 4.0,
+  "pages": [
+    {"name": "openssh_release-9.8.txt", "url": "https://www.openssh.com/txt/release-9.8", "for": ["openbsd:openssh|ssh"]},
+    {"name": "samba_wiki_smbd.html", "url": "https://wiki.samba.org/index.php/Smbd", "for": ["samba:samba|smb"]},
+    {"name": "samba_CVE-2017-7494.html", "url": "https://www.samba.org/samba/security/CVE-2017-7494.html", "for": ["samba:samba|smb"]},
+    {"name": "samba_CVE-2017-14746.html", "url": "https://www.samba.org/samba/security/CVE-2017-14746.html", "for": ["samba:samba|smb"]},
+    {"name": "exim_security_index.html", "url": "https://www.exim.org/static/doc/security/", "for": ["exim:exim|mail"]},
+    {"name": "exim_CVE-2017-16943.txt", "url": "https://www.exim.org/static/doc/security/CVE-2017-16943.txt", "for": ["exim:exim|mail"]},
+    {"name": "exim_CVE-2018-6789.txt", "url": "https://www.exim.org/static/doc/security/CVE-2018-6789.txt", "for": ["exim:exim|mail"]},
+    {"name": "exim_CVE-2019-13917.txt", "url": "https://www.exim.org/static/doc/security/CVE-2019-13917.txt", "for": ["exim:exim|mail"]},
+    {"name": "exim_CVE-2019-15846.txt", "url": "https://www.exim.org/static/doc/security/CVE-2019-15846.txt", "for": ["exim:exim|mail"]},
+    {"name": "exim_CVE-2019-16928.txt", "url": "https://www.exim.org/static/doc/security/CVE-2019-16928.txt", "for": ["exim:exim|mail"]},
+    {"name": "exim_CVE-2020-qualys_21nails.txt", "url": "https://www.exim.org/static/doc/security/CVE-2020-qualys/21nails.txt", "for": ["exim:exim|mail"]},
+    {"name": "exim_CVE-2023-zdi.txt", "url": "https://www.exim.org/static/doc/security/CVE-2023-zdi.txt", "for": ["exim:exim|mail"]},
+    {"name": "proftpd_User.html", "url": "https://www.proftpd.org/docs/directives/linked/config_ref_User.html", "for": ["proftpd:proftpd|ftp"]},
+    {"name": "xrdp_security_advisories.json", "url": "https://api.github.com/repos/neutrinolabs/xrdp/security-advisories", "for": ["neutrinolabs:xrdp|rdp"]},
+    {"name": "wftpserver_history.html", "url": "https://www.wftpserver.com/serverhistory.htm", "for": ["wftpserver:wing_ftp_server|ftp"]}
+  ]
+}

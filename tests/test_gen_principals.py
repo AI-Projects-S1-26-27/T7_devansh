@@ -75,3 +75,13 @@ def test_the_table_covers_every_remote_pool_product():
         pytest.skip("pinned inputs not in this checkout")
     units, _, _ = pool.load_pool(cfg)
     assert {f"{u.product}|{u.family}" for u in units if u.kind == "remote"} == set(TABLE["entries"])
+
+
+def test_every_principal_sources_config_is_well_formed():
+    for path in sorted((ROOT / "configs" / "gen").glob("principal_sources*.json")):
+        cfg = json.loads(path.read_text())
+        names = [p["name"] for p in cfg["pages"]]
+        assert len(names) == len(set(names)) and cfg["pace_seconds"] >= 2, path
+        for p in cfg["pages"]:
+            assert re.fullmatch(r"https?://[^\s]+", p["url"]) and "/" not in p["name"]
+            assert p["for"] and all(re.fullmatch(r"[^|]+\|[a-z]+", k) for k in p["for"])

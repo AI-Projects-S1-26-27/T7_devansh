@@ -1,9 +1,9 @@
 """Fetch the candidate documentation pages for the runtime-principal table (D28 P6) into
 data/raw/principals/<date>/ with a manifest (BUILD_RULES rule 5).
 
-Usage: python scripts/fetch_principals.py [--date YYYY-MM-DD]
+Usage: python scripts/fetch_principals.py [--date YYYY-MM-DD] [--sources configs/gen/principal_sources.json]
 
-Pages come from configs/gen/principal_sources.json and are fetched one at a time, paced, by
+Pages come from the sources config (one snapshot per config and date) and are fetched one at a time, paced, by
 ahg.rawfetch (generic client name, per-host pacing, append-only). The table itself
 (configs/gen/principals.json) cites only what these pages state verbatim; anything else is UNKNOWN.
 """
@@ -22,13 +22,14 @@ SOURCES = ROOT / "configs" / "gen" / "principal_sources.json"
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    ap.add_argument("--sources", type=Path, default=SOURCES)
     a = ap.parse_args()
-    cfg = json.loads(SOURCES.read_text())
+    cfg = json.loads(a.sources.read_text())
     f = Fetcher(ROOT / "data" / "raw" / "principals" / a.date, "scripts/fetch_principals.py", cfg["pace_seconds"])
     for page in cfg["pages"]:  # sequential: one request at a time, paced per host by the Fetcher
         rec = f.fetch(page["name"], page["url"])
         print(page["name"], rec.get("http", rec.get("skipped")))
-    m = write_manifest(f.out, {"sources_config": "configs/gen/principal_sources.json"})
+    m = write_manifest(f.out, {"sources_config": a.sources.resolve().relative_to(ROOT).as_posix()})
     print(f"{len(m['files'])} files, {len(m['failed_fetches'])} failed")
 
 
