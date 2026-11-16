@@ -447,7 +447,7 @@ def test_build_end_to_end(tmp_path):
     assert tom["fixtures"][0]["affected_by"] == ["CVE-2023-46589"] and tom["fixtures"][1]["affected_by"] == []
     ev = tom["fixtures"][1]["fixed_for"][0]["evidence"][0]
     assert ev["url"] == "https://example.org/apache__tomcat/s.html" and len(ev["sha256"]) == 64 and ev["retrieved_utc"]
-    assert tom["fixtures"][0]["release_source"]["raw"] == "raw/apache__tomcat/l.html"  # snapshot folder / file
+    assert tom["fixtures"][0]["release_source"]["raw"] == f"{tmp_path.name}/raw/apache__tomcat/l.html"  # <source>/<date>/<file>
     assert cat["linux"]["oracle:mysql"]["status"] == "dropped"
     win = cat["windows"]["Windows Server 2019"]
     assert [(f["version"], f["affected_by"]) for f in win["fixtures"]] == [
@@ -462,13 +462,25 @@ def test_build_end_to_end(tmp_path):
 
 def test_raw_reads_a_base_and_its_supplement_and_refuses_duplicates(tmp_path):
     bf = load_script("build_fixtures")
-    write_raw(tmp_path / "2026-11-16", {"a/x.html": "x"})
-    write_raw(tmp_path / "2026-11-16-s1", {"a/y.html": "y"})
-    raw = bf.Raw([tmp_path / "2026-11-16", tmp_path / "2026-11-16-s1"])
-    assert raw.text("a/y.html") == "y" and raw.ref("a/x.html")["raw"] == "2026-11-16/a/x.html"
-    write_raw(tmp_path / "2026-11-16-s2", {"a/x.html": "other"})
+    base, sup = tmp_path / "fixtures" / "2026-11-16", tmp_path / "fixtures_supplement" / "2026-11-16"
+    write_raw(base, {"a/x.html": "x"})
+    write_raw(sup, {"a/y.html": "y"})
+    raw = bf.Raw([base, sup])
+    assert raw.text("a/y.html") == "y" and raw.ref("a/x.html")["raw"] == "fixtures/2026-11-16/a/x.html"
+    assert raw.ref("a/y.html")["raw"] == "fixtures_supplement/2026-11-16/a/y.html"
+    dup = tmp_path / "other" / "2026-11-16"
+    write_raw(dup, {"a/x.html": "other"})
     with pytest.raises(ValueError):
-        bf.Raw([tmp_path / "2026-11-16", tmp_path / "2026-11-16-s2"])
+        bf.Raw([base, dup])
+
+
+def test_fetch_never_shadows_its_base_snapshots():
+    """Regression: a local variable named `base` in the index branch once replaced the base snapshot list."""
+    import ast
+    tree = ast.parse((SCRIPTS / "build_fixtures.py").read_text())
+    fetch = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "fetch")
+    assigned = {t.id for n in ast.walk(fetch) if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+    assert "base" not in assigned
 
 
 def test_candidate_units_include_eligible_units_outside_candidate_stages():

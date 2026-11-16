@@ -9,7 +9,6 @@
   },
   "eligible_labels": "../ahg-effect/results/d28_effect/2026-11-16T062413Z-89dd346/frozen/p3-labels-v2.1.jsonl.gz",
   "eligible_labels_sha256": "5e80198a25d6eb55740bb83685689825e3372756a06dc1cbb3b74aa1f5ca28d6",
-  "raw_root": "data/raw/fixtures",
   "catalogue_root": "data/d28/fixtures",
   "results_root": "results/d28_fixtures",
   "pace_seconds": 2.0,

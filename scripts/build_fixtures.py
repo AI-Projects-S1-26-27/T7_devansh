@@ -1,8 +1,9 @@
 """Version-fixture catalogue (task P5; D28 Round 4 catalogue rule; see ahg.fixtures).
 
 Usage:
-  python scripts/build_fixtures.py fetch configs/fixtures/p5.json [--label YYYY-MM-DD[-sN]] [--base SNAPSHOT ...]
-  python scripts/build_fixtures.py build configs/fixtures/p5.json data/raw/fixtures/<label> [more snapshots]
+  python scripts/build_fixtures.py fetch configs/fixtures/p5.json [--date YYYY-MM-DD]
+  python scripts/build_fixtures.py fetch configs/fixtures/p5.json --source fixtures_supplement --base data/raw/fixtures/<date>
+  python scripts/build_fixtures.py build configs/fixtures/p5.json data/raw/fixtures/<date> [data/raw/fixtures_supplement/<date>]
 
 fetch: every upstream page the catalogue reads (release listings, vendor advisories and release notes,
 vendor CNA records) into data/raw/fixtures/<date>/ through ahg.rawfetch: one request at a time, paced
@@ -88,13 +89,14 @@ def github_pages(get, name: str, url: str, max_pages: int) -> None:
     sys.exit(f"{url}: more than {max_pages} pages; raise github_pages_max")
 
 
-def fetch(cfg: dict, label: str, base: list[Path]) -> None:
-    """Fetch every page the catalogue reads into <raw_root>/<label>/. Names already in a finished `base`
-    snapshot are not fetched again (a supplement holds only what the base lacks); build reads both."""
+def fetch(cfg: dict, date: str, base: list[Path], source: str) -> None:
+    """Fetch every page the catalogue reads into data/raw/<source>/<date>/ (BUILD_RULES rule 5). Names
+    already in a finished `base` snapshot are not fetched again: a supplement (source
+    "fixtures_supplement") holds only what the base lacks, and build reads both."""
     rows = load_master(cfg)
     cands, _ = candidates(cfg, rows)
     have = Raw(base) if base else None
-    f = Fetcher(ROOT / cfg["raw_root"] / label, "scripts/build_fixtures.py", cfg["pace_seconds"])
+    f = Fetcher(ROOT / "data" / "raw" / source / date, "scripts/build_fixtures.py", cfg["pace_seconds"])
     failed = []
 
     def get(name: str, url: str, headers: dict | None = None) -> dict:
@@ -127,9 +129,9 @@ def fetch(cfg: dict, label: str, base: list[Path]) -> None:
                 rec = get(f"{s}/{src['id']}/index.html", src["url"])
                 if rec.get("http", 200) == 200:
                     page = Path(rec["path"]).read_text(errors="replace")
-                    base = src["url"].rsplit("/", 1)[0] + "/"
+                    url_dir = src["url"].rsplit("/", 1)[0] + "/"
                     for link in sorted(set(re.findall(r'href="(' + src["link_pattern"] + r')"', page))):
-                        get(f"{s}/{src['id']}/{link}", base + link)
+                        get(f"{s}/{src['id']}/{link}", url_dir + link)
             elif kind == "ghsa_repo":
                 # The endpoint pages with cursors in a Link header, which rawfetch does not keep. Two
                 # requests sorted oldest-first and newest-first cover every advisory when they overlap;
@@ -186,7 +188,8 @@ class Raw:
 
     def ref(self, name: str) -> dict:
         r = self.files[name]
-        return {"raw": f"{self.where[name].name}/{name}", "url": r["url"], "retrieved_utc": r["date_utc"], "sha256": r["sha256"]}
+        d = self.where[name]  # <source>/<date>/<name>, as under data/raw/
+        return {"raw": f"{d.parent.name}/{d.name}/{name}", "url": r["url"], "retrieved_utc": r["date_utc"], "sha256": r["sha256"]}
 
     def under(self, prefix: str) -> list[str]:
         return sorted(n for n in self.files if n.startswith(prefix))
@@ -537,8 +540,9 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     a_f = sub.add_parser("fetch")
     a_f.add_argument("config", type=Path)
-    a_f.add_argument("--label", default=datetime.now(timezone.utc).date().isoformat(),
-                     help="snapshot folder name under raw_root (default: today's UTC date)")
+    a_f.add_argument("--date", default=datetime.now(timezone.utc).date().isoformat())
+    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement"],
+                     help="data/raw/<source>/<date>/; a supplement needs --base")
     a_f.add_argument("--base", type=Path, nargs="*", default=[], help="finished snapshots this one supplements")
     a_b = sub.add_parser("build")
     a_b.add_argument("config", type=Path)
@@ -546,9 +550,10 @@ def main() -> None:
     a = ap.parse_args()
     cfg = load_config(a.config)
     if a.cmd == "fetch":
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:-s\d+)?", a.label):
-            sys.exit("--label: YYYY-MM-DD, or YYYY-MM-DD-sN for a supplement")
-        fetch(cfg, a.label, [b.resolve() for b in a.base])
+        date_ = datetime.strptime(a.date, "%Y-%m-%d").date().isoformat()  # rejects anything but YYYY-MM-DD
+        if (a.source == "fixtures_supplement") != bool(a.base):
+            sys.exit("a fixtures_supplement snapshot needs --base, and only a supplement takes one")
+        fetch(cfg, date_, [b.resolve() for b in a.base], a.source)
     else:
         build(cfg, [d.resolve() for d in a.raw_dirs])
 
