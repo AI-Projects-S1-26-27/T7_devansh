@@ -1,0 +1,52 @@
+{
+  "task": "P6",
+  "decisions": "decisions.md 'P6 generator (decided 16 Nov 2026 by Devansh)'; Rounds 1-6, 8; OQ-P6-* in open_questions.md",
+  "schema": "ahg.gen/1",
+  "labels": "p3-labels-v2.1",
+  "master": {"path": "data/d28/master/2026-11-15T124455Z-cf2dc62/cves.jsonl.gz",
+             "sha256": "d7c7c2c849c8779e7b776d1653c602f6cedb3f55009f8ea641d90b2997dd082c"},
+  "catalogue": {"path": "data/d28/fixtures/2026-11-16T091054Z-b863e27/catalogue_eligible.json.gz",
+                "sha256": "150961a60ba4071732780d39e7b44d1371776bc867063c2025e3376caecc9c12",
+                "run": "results/d28_fixtures/catalogue/2026-11-16T091121Z-b863e27"},
+  "principals": "configs/gen/principals.json",
+  "topology": {
+    "tree": {"zone_divisor": 40, "user_subnet_max": 5},
+    "chain": {"dmz_hosts": 1, "sensitive_hosts": 1, "enterprise_share_divisor": 3},
+    "firewall_allow_probability": 0.5
+  },
+  "roles": {
+    "dmz": ["http", "mail", "dns", "ftp"],
+    "sensitive": ["sql", "smb", "ssh", "rdp"],
+    "enterprise": ["http", "smb", "ssh", "rdp", "dns", "sql"],
+    "users": ["smb", "rdp", "ssh"]
+  },
+  "families_per_host": [1, 3],
+  "reuse_alpha": 2,
+  "os_mix_default": {"linux": 0.5, "windows": 0.5},
+  "p_values": [1.0, 0.75, 0.5, 0.25],
+  "cohorts": ["core", "temporal"],
+  "never_products": {"mysql:mysql": "out of the D28 generator (P6 decision 16 Nov 2026)"},
+  "cpe_part": {"default": "a", "linux:linux_kernel": "o"},
+  "windows_versions": {
+    "Windows Server 2012 R2": "cpe:2.3:o:microsoft:windows_server_2012:r2:-:*:*:*:*:x64:*",
+    "Windows Server 2016": "cpe:2.3:o:microsoft:windows_server_2016:{build}:-:*:*:*:*:x64:*",
+    "Windows Server 2019": "cpe:2.3:o:microsoft:windows_server_2019:{build}:-:*:*:*:*:x64:*",
+    "Windows Server 2022": "cpe:2.3:o:microsoft:windows_server_2022:{build}:-:*:*:*:*:x64:*"
+  },
+  "windows_builtin": {"smb": "Windows SMB server", "rdp": "Remote Desktop Services", "dns": "Windows DNS Server",
+                      "http": "IIS", "ftp": "IIS", "ssh": "OpenSSH for Windows"},
+  "windows_products": {
+    "Exchange": {"family": "mail", "prefix": "Microsoft Exchange Server", "cpe": [
+      {"re": "^Microsoft Exchange Server (\\d{4}) Cumulative Update (\\d+)$",
+       "names": ["cpe:2.3:a:microsoft:exchange_server:{1}:cumulative_update_{2}:*:*:*:*:x64:*"]},
+      {"re": "^Microsoft Exchange Server Subscription Edition RTM$",
+       "names": ["cpe:2.3:a:microsoft:exchange_server_subscription_edition:{build}:-:*:*:*:*:x64:*"]}]},
+    "SQL Server": {"family": "sql", "prefix": "Microsoft SQL Server", "cpe": [
+      {"re": "^Microsoft SQL Server (\\d{4}) for x64-based Systems Service Pack (\\d+)",
+       "names": ["cpe:2.3:a:microsoft:sql_server:{1}:sp{2}:*:*:*:*:x64:*", "cpe:2.3:a:microsoft:sql_server_{1}:{build}:-:*:*:*:*:x64:*"]},
+      {"re": "^Microsoft SQL Server (\\d{4}) for x64-based Systems",
+       "names": ["cpe:2.3:a:microsoft:sql_server:{1}:-:*:*:*:*:x64:*", "cpe:2.3:a:microsoft:sql_server_{1}:{build}:-:*:*:*:*:x64:*"]}]}
+  },
+  "admin_principals": ["root", "SYSTEM"],
+  "smoke": {"namespace": "p6-smoke", "sizes": [12, 20, 30], "seeds_per_cell": 10}
+}
