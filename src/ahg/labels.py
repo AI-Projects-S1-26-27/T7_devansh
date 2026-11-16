@@ -45,18 +45,19 @@ def _rng(source: str, key: str) -> random.Random:
     return random.Random(f"labels:{source}:{key}")
 
 
-def label_instance(task: Task, key: str, n_hosts: int, cfg: dict) -> dict:
-    """Sample and label one instance. key names its rng streams ("<variant>:<n>:<seed>").
+def collect_states(task: Task, key: str, cfg: dict):
+    """The five offline sources of one instance (D19 §2; D28 Round 9, P0d), before any per-state labelling.
 
-    Returns {"rows": [[state, h*, sources], ...] sorted by state, "failures": [...], "stats": {...}}.
-    Raises HardFailure on any cross-check mismatch.
+    Returns (r_lm, r_hm, sources, known, expanded): the two initial-state searches, state -> set of source
+    names, the h* values the optimal plan already gives, and the states either search expanded. The last three
+    are None if A*+LM-cut from the initial state hit init_budget. Shared by label_instance and the D28 budget
+    pilot (ahg.pilots), so the pilot measures exactly the states labelling sees.
     """
-    t0 = time.perf_counter()
     tr_lm, tr_hm = [], []
     r_lm = astar(task, lmcut, max_expansions=cfg["init_budget"], trace=tr_lm)
     r_hm = astar(task, hmax, max_expansions=cfg["init_budget"], trace=tr_hm)
     if r_lm.budget_hit:
-        return {"rows": [], "failures": [{"kind": "init_budget", "expanded": r_lm.expanded}], "stats": None}
+        return r_lm, r_hm, None, None, None
     if not r_lm.solved:
         # make_instance guarantees a reachable goal (UnreachableGoal otherwise), so this is a bug.
         raise HardFailure("goal unreachable from the initial state of a generated instance")
@@ -89,6 +90,19 @@ def label_instance(task: Task, key: str, n_hosts: int, cfg: dict) -> dict:
     if len(succ) > cfg["successor_cap"]:
         succ = sorted(_rng("successor", key).sample(succ, cfg["successor_cap"]))
     add(succ, "successor")
+    return r_lm, r_hm, sources, known, expanded
+
+
+def label_instance(task: Task, key: str, n_hosts: int, cfg: dict) -> dict:
+    """Sample and label one instance. key names its rng streams ("<variant>:<n>:<seed>").
+
+    Returns {"rows": [[state, h*, sources], ...] sorted by state, "failures": [...], "stats": {...}}.
+    Raises HardFailure on any cross-check mismatch.
+    """
+    t0 = time.perf_counter()
+    r_lm, r_hm, sources, known, expanded = collect_states(task, key, cfg)
+    if sources is None:
+        return {"rows": [], "failures": [{"kind": "init_budget", "expanded": r_lm.expanded}], "stats": None}
 
     # Label every state: A*+LM-cut from it, unless a known optimal plan suffix already gives h*.
     rows, failures, label_expansions = [], [], 0
