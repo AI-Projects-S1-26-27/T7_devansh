@@ -573,36 +573,56 @@ def affected_by(fixture_names: list[str], index: ReleaseIndex, cves: dict[str, l
     return {n: sorted(s, key=cve_sort_key) for n, s in out.items()}
 
 
-def unverified_fixtures(cves: dict[str, list[Range]], nvd_criteria: dict[str, set[str]]) -> tuple[list[dict], list[dict]]:
-    """Vulnerable fixtures from exact NVD CPE version strings, for products with no verified fixture.
+def nvd_match_key(m: dict) -> tuple:
+    """Identity of one raw NVD CPE match: its criteria string and its four bounds."""
+    return (m["criteria"], m.get("versionStartIncluding"), m.get("versionStartExcluding"),
+            m.get("versionEndIncluding"), m.get("versionEndExcluding"))  # fmt: skip
 
-    Decision 16 Nov 2026 (Devansh, after P5): such fixtures carry "unverified_release": no release date, no
-    upstream validation, vulnerable role only, never a fixed fixture; usable in the primary (p = 1)
-    benchmark, not in p < 1 cohorts. Only strings NVD itself lists: the version (and update) field of a
-    vulnerable CPE match whose criteria string also appears in the raw NVD record of the CVE
-    (`nvd_criteria`). Range bounds are never used: a bound names an edge, not a listed affected version.
 
-    Per CVE, the fixture is its highest stable exact version (Round 4 takes the latest affected release;
-    without a release list the runs between versions are unknown). Returns (fixtures, dropped).
+def _range_key(rg: Range) -> tuple:
+    return (rg.criteria, rg.start_incl, rg.start_excl, rg.end_incl, rg.end_excl)
+
+
+def unverified_fixtures(cves: dict[str, list[Range]], nvd_matches: dict[str, set[tuple]]) -> tuple[list[dict], list[dict]]:
+    """Vulnerable fixtures from version strings NVD itself lists as affected, for products with no verified
+    fixture.
+
+    Decisions 16 Nov 2026 (Devansh, after P5; rule 13): such fixtures carry "unverified_release": no release
+    date, no upstream validation, vulnerable role only, never a fixed fixture; usable in the primary (p = 1)
+    benchmark, not in p < 1 cohorts. Allowed strings (never an invented version):
+    - the version (and update) field of a vulnerable CPE match (first decision);
+    - its inclusive bounds, versionStartIncluding and versionEndIncluding (OQ-P5-11). Exclusive bounds are
+      never used: NVD states that version is not affected.
+    The match, bounds included, must also appear in the CVE's raw NVD record (`nvd_matches`, keys from
+    nvd_match_key), so every string is one NVD lists. Per CVE, the fixture is the highest stable such
+    string (OQ-P5-12; Round 4 takes the latest affected release). Returns (fixtures, dropped).
     """
     fixtures: dict[str, dict] = {}
     dropped: list[dict] = []
     for cve in sorted(cves, key=cve_sort_key):
-        exact = [rg for rg in cves[cve] if rg.exact is not None]
-        listed = [rg for rg in exact if rg.criteria in nvd_criteria.get(cve, set())]
-        stable = [rg for rg in listed if not is_prerelease(rg.exact) and not is_prerelease(rg.update)]
+        def options(rgs: list[Range]) -> list[tuple[str, str, str, Range]]:
+            out = []
+            for rg in rgs:
+                upd = _update(rg.update)
+                for v, kind in ((rg.exact, "exact"), (rg.start_incl, "versionStartIncluding"), (rg.end_incl, "versionEndIncluding")):
+                    if v is not None:
+                        out.append((v.replace("\\", ""), upd, kind, rg))
+            return out
+
+        allowed = options(cves[cve])
+        listed = options([rg for rg in cves[cve] if _range_key(rg) in nvd_matches.get(cve, set())])
+        stable = [o for o in listed if not is_prerelease(o[0]) and not is_prerelease(o[1])]
         if not stable:
-            reason = ("no_exact_version_in_cpe_matches" if not exact else
-                      "exact_criteria_not_in_raw_nvd_record" if not listed else "only_prerelease_exact_versions")
+            reason = ("no_exact_or_inclusive_version_in_cpe_matches" if not allowed else
+                      "cpe_match_not_in_raw_nvd_record" if not listed else "only_prerelease_versions")
             dropped.append({"cve": cve, "interval": None, "reason": reason,
                             "cpe_matches": [rg.label() for rg in cves[cve]]})  # fmt: skip
             continue
-        best = max(stable, key=lambda rg: version_key(f"{rg.exact} {_update(rg.update)}"))
-        upd = _update(best.update)
-        name = f"{best.exact}:{upd}" if upd else best.exact
-        f = fixtures.setdefault(name, {"version": name, "cpe_version": best.exact, "cpe_update": upd, "release_date": None,
+        version, upd, kind, rg = max(stable, key=lambda o: version_key(f"{o[0]} {o[1]}"))
+        name = f"{version}:{upd}" if upd else version
+        f = fixtures.setdefault(name, {"version": name, "cpe_version": version, "cpe_update": upd, "release_date": None,
                                        "unverified_release": True, "vulnerable_for": [], "fixed_for": []})  # fmt: skip
-        f["vulnerable_for"].append({"cve": cve, "interval": best.label(), "cpe_criteria": best.criteria})
+        f["vulnerable_for"].append({"cve": cve, "interval": rg.label(), "cpe_criteria": rg.criteria, "version_from": kind})
     for f in fixtures.values():
         f["affected_by"] = sorted((c for c, rgs in cves.items() if any(rg.contains(f["cpe_version"], f["cpe_update"]) for rg in rgs)),
                                   key=cve_sort_key)  # fmt: skip
