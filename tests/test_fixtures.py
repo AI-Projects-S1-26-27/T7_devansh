@@ -564,3 +564,18 @@ def test_p5_config_inputs_are_repo_local_and_labels_match_frozen_registry():
     assert all(not Path(p).is_absolute() and ".." not in Path(p).parts for p in paths)
     frozen = json.loads((root / "configs" / "d28_effect_labels.json").read_text())["versions"]["p3-labels-v2.1"]
     assert (cfg["eligible_labels"], cfg["eligible_labels_sha256"]) == (frozen["path"], frozen["sha256"])
+
+
+def test_eligible_units_is_the_effect_rule_on_every_label_combination():
+    """OQ-P5-7 (M3): one eligibility rule. Every (label set, label, role, AC status) combination is eligible in
+    the fixtures view exactly when ahg.effect.eligible says so."""
+    import itertools
+
+    from ahg import effect
+
+    combos = itertools.product(("remote", "local"), ("RCE_CONFIRMED", "ADMIN_CONFIRMED", "UNKNOWN", "NON_RCE"),
+                               ("server", "client", "both", None), ("explicit", "missing"))
+    rows = [{"cve_id": f"CVE-{i}", "product": "p", "label_set": s, "label": lab, "role": role, "ac_status": ac}
+            for i, (s, lab, role, ac) in enumerate(combos)]
+    assert fx.eligible_units(rows) == {(r["cve_id"], "p") for r in rows if effect.eligible(r)}
+    assert 0 < len(fx.eligible_units(rows)) < len(rows)

@@ -33,6 +33,7 @@ from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from ahg import effect
 from ahg.cvedata import parse_cpe, walk_matches
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}")
@@ -686,19 +687,10 @@ def windows_fixtures(row: dict, product_names: list[str], builds: dict[str, dict
 def eligible_units(label_rows) -> set[tuple[str, str]]:
     """(CVE, product) units eligible after effect classification (frozen P3 labels, e.g. p3-labels-v2.1).
 
-    Same rule as ahg.effect.eligible on branch d28-effect (D28 E5 and OQ-P4-1), restated here because that
-    module is not on this track: AC explicit; remote units RCE_CONFIRMED with a server role; local units
-    ADMIN_CONFIRMED with no role filter.
+    Uses the one eligibility rule, ahg.effect.eligible (D28 E5 and OQ-P4-1). P5 restated it here while the
+    tracks were apart; the copy was removed when d28-fixtures met d28-effect in d28-rebuild (OQ-P5-7, M3).
     """
-    out = set()
-    for r in label_rows:
-        if r["ac_status"] != "explicit":
-            continue
-        ok = (r["label"] == "RCE_CONFIRMED" and r["role"] == "server") if r["label_set"] == "remote" \
-            else r["label"] == "ADMIN_CONFIRMED"
-        if ok:
-            out.add((r["cve_id"], r["product"]))
-    return out
+    return {(r["cve_id"], r["product"]) for r in label_rows if effect.eligible(r)}
 
 
 def _keep(items: list[dict], ok) -> list[dict]:
