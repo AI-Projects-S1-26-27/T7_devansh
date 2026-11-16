@@ -27,10 +27,10 @@ def node(*matches, operator="OR", negate=False):
     return {"cpeMatch": list(matches), "operator": operator, "negate": negate}
 
 
-def both(configs, host, comp):
-    """Configuration indices from both evaluators; the test fails if they differ."""
-    a = [e["configuration"] for e in cpe.component_matches(configs, host, comp)]
-    b = cpe_check.applies(configs, host, comp)
+def both(configs, host, comp, msrc=None):
+    """Configuration indices (and "msrc") from both evaluators; the test fails if they differ."""
+    a = [e["configuration"] for e in cpe.component_matches(configs, host, comp, msrc)]
+    b = cpe_check.applies(configs, host, comp, msrc)
     assert a == b, (a, b)
     return a
 
@@ -48,10 +48,71 @@ def test_exact_version_and_any_value():
                 ["cpe:2.3:a:apache:http_server:2.4.50:-:*:*:*:*:*:*"]) == []
 
 
-def test_na_version_matches_only_na():
-    """Strict CPE 2.3: criteria '-' (NA) does not match a build-numbered host (OQ-P6-6)."""
+def test_dash_version_means_the_whole_product():
+    """P6b (OQ-P6-6): criteria version '-' matches every version of the product."""
+    c = [cfg(node(m("cpe:2.3:a:apache:http_server:-:*:*:*:*:*:*:*")))]
+    assert both(c, [HTTPD], [HTTPD]) == [0]
+    assert both(c, [KERNEL], [KERNEL]) == []  # still the same product only
+
+
+def ms(name, build, fixes, status=3, ids=("1",), kbs=(), fix_kb="5000000"):
+    """An MSRC context: the CVE's product records, the unit's IDs, the host's MSRC product, build and
+    standalone KBs."""
+    return {"products": {"1": {"name": name, "status_type": status,
+                               "fixes": [{"fixed_build": f, "kb": fix_kb} for f in fixes]}},
+            "unit_ids": list(ids), "name": name, "build": build, "kbs": list(kbs)}
+
+
+def test_host_with_build_at_or_above_the_fixed_build_is_unaffected():
+    """P6b addendum, case 1: at or above the fixed build, whatever the KB list."""
     c = [cfg(node(m("cpe:2.3:o:microsoft:windows_server_2019:-:*:*:*:*:*:*:*")))]
-    assert both(c, [WIN19], [WIN19]) == []
+    for build in ("10.0.17763.3165", "10.0.17763.4000"):
+        assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", build, ["10.0.17763.3165"])) == []
+        assert both([], [WIN19], [WIN19], ms("Windows Server 2019", build, ["10.0.17763.3165"], kbs=["KB1"])) == []
+
+
+def test_host_with_the_fixing_standalone_kb_installed_is_unaffected():
+    """P6b addendum, case 2: below the fixed build, but the CVE's fixing standalone KB is installed."""
+    c = [cfg(node(m("cpe:2.3:o:microsoft:windows_server_2019:-:*:*:*:*:*:*:*")))]
+    below = "10.0.17763.3046"
+    assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", below, ["10.0.17763.3165"], kbs=["KB5000000"])) == []
+    assert both([], [WIN19], [WIN19], ms("Windows Server 2019", below, ["10.0.17763.3165"], kbs=["5000000"])) == []
+    # another KB installed does not help; neither does the fixing KB of a different product
+    assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", below, ["10.0.17763.3165"], kbs=["KB5009999"])) == [0, "msrc"]
+    other = ms("Windows Server 2019", below, ["10.0.17763.3165"], kbs=["KB5000000"])
+    other["products"]["2"] = {"name": "Windows Server 2022", "status_type": 3,
+                              "fixes": [{"fixed_build": "10.0.20348.1", "kb": "5000000"}]}
+    other["products"]["1"]["fixes"][0]["kb"] = "5000001"
+    other["unit_ids"] = ["1", "2"]
+    assert both(c, [WIN19], [WIN19], other) == [0, "msrc"]
+
+
+def test_microsoft_criteria_without_bounds_need_the_msrc_build_check():
+    c = [cfg(node(m("cpe:2.3:o:microsoft:windows_server_2019:-:*:*:*:*:*:*:*")))]
+    assert both(c, [WIN19], [WIN19]) == []  # no MSRC data: the build cannot be placed
+    assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.3165"])) == [0, "msrc"]
+    assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.3046"])) == []
+    assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", [None])) == []  # KB only
+    assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.9", "10.0.17763.9999"])) == []
+    assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.9999"], status=2)) == []
+    other = ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.9999"])
+    other["products"]["1"]["name"] = "Windows Server 2022"
+    assert both(c, [WIN19], [WIN19], other) == []
+    assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.9999"], ids=())) == []
+
+
+def test_bounded_microsoft_criteria_use_their_own_bounds():
+    c = [cfg(node(m("cpe:2.3:o:microsoft:windows_server_2019:*:*:*:*:*:*:*:*", versionEndExcluding="10.0.17763.3165")))]
+    assert both(c, [WIN19], [WIN19]) == [0]
+    assert both(c, [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.1"])) == [0]
+
+
+def test_an_msrc_affected_record_is_an_applicability_record_of_its_own():
+    """OQ-P6-10: a Microsoft CVE with no NVD configuration still applies through its MSRC record."""
+    assert both([], [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.3165"])) == ["msrc"]
+    ev = cpe.component_matches([], [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.3165"]))
+    assert ev == [{"configuration": "msrc", "product": "Windows Server 2019", "build": "10.0.17763.3046",
+                   "fixed_build": "10.0.17763.3165", "kbs": []}]
 
 
 def test_specific_criteria_value_needs_equal_host_value():
@@ -75,11 +136,15 @@ def test_range_bounds(bounds, inside):
 
 
 def test_non_numeric_version_is_never_inside_a_range():
-    """Server 2012 R2 carries version 'r2'; a numeric range on windows_server_2012 never contains it."""
+    """Server 2012 R2 carries version 'r2'; a numeric range on windows_server_2012 never contains it, and its
+    build is placed by the MSRC build check (P6b)."""
     c = [cfg(node(m("cpe:2.3:o:microsoft:windows_server_2012:*:*:*:*:*:*:*:*", versionEndExcluding="6.2.9200.24710")))]
     assert both(c, [WIN12R2], [WIN12R2]) == []
     c = [cfg(node(m("cpe:2.3:o:microsoft:windows_server_2012:r2:*:*:*:*:*:*:*")))]
-    assert both(c, [WIN12R2], [WIN12R2]) == [0]
+    assert both(c, [WIN12R2], [WIN12R2]) == []
+    old = ms("Windows Server 2012 R2", "6.3.9600.20402", ["6.3.9600.20478"])
+    assert both(c, [WIN12R2], [WIN12R2], old) == [0, "msrc"]
+    assert both(c, [WIN12R2], [WIN12R2], ms("Windows Server 2012 R2", "6.3.9600.20571", ["6.3.9600.20478"])) == []
 
 
 def test_platform_co_condition_needs_the_platform_and_never_marks_it():
@@ -125,7 +190,7 @@ def test_evaluators_agree_on_fuzzed_configurations():
     """Seeded random configurations over a small vocabulary: both evaluators give the same indices."""
     rng = random.Random(20261116)
     prods = [("a", "apache", "http_server"), ("o", "linux", "linux_kernel"), ("o", "canonical", "ubuntu_linux"),
-             ("a", "samba", "samba")]
+             ("a", "samba", "samba"), ("o", "microsoft", "windows_server_2019")]
     versions = ["1.0", "1.2", "2.0", "2.0.1", "2.1-rc1", "3", "r2", "-"]
 
     def rand_match():
@@ -152,7 +217,12 @@ def test_evaluators_agree_on_fuzzed_configurations():
         host = [f"cpe:2.3:{pt}:{v}:{p}:{rng.choice(versions[:7])}:-:*:*:*:*:{rng.choice(['*', 'x64'])}:*"
                 for pt, v, p in rng.sample(prods, rng.randint(1, 3))]
         comp = [rng.choice(host)]
-        agree += bool(both(configs, host, comp))
+        ctx = None
+        if rng.random() < 0.5:
+            ctx = ms(rng.choice(["Windows Server 2019", "Windows Server 2022"]), rng.choice(versions[:6]),
+                     [rng.choice(versions[:6] + [None]) for _ in range(rng.randint(0, 2))], status=rng.choice([2, 3]),
+                     kbs=rng.sample(["KB5000000", "5000001", "KB7"], rng.randint(0, 2)), fix_kb=rng.choice(["5000000", "KB5000001", None]))
+        agree += bool(both(configs, host, comp, ctx))
     assert agree > 50  # the fuzz reaches positive matches, not only empty ones
 
 

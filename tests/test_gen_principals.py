@@ -20,27 +20,49 @@ def test_principal_sources_are_well_formed():
 TABLE = json.loads((ROOT / "configs" / "gen" / "principals.json").read_text())
 
 
-def page_text(raw: bytes) -> str:
-    """Tags and scripts removed, entities decoded, whitespace collapsed (how quotes are compared)."""
+def page_text(raw: bytes, html_page: bool = True) -> str:
+    """Whitespace collapsed (how quotes are compared); for an HTML page also tags and scripts removed and
+    entities decoded. Plain-text pages keep their '<' and '>' (e.g. 'Exim < 4.92')."""
     import html
 
     t = raw.decode("utf-8", "replace")
-    t = re.sub(r"(?is)<(script|style).*?</\1>", " ", t)
-    t = html.unescape(re.sub(r"<[^>]+>", " ", t))
+    if html_page:
+        t = re.sub(r"(?is)<(script|style).*?</\1>", " ", t)
+        t = html.unescape(re.sub(r"<[^>]+>", " ", t))
     return " ".join(t.split())
 
 
+URLS = {p["url"] for f in sorted((ROOT / "configs" / "gen").glob("principal_sources*.json"))
+        for p in json.loads(f.read_text())["pages"]}
+
+
+def cited():
+    """(key, statement) for every cited statement: product entries and CVE-specific ones."""
+    for key, e in TABLE["entries"].items():
+        if e["principal"] != "UNKNOWN":
+            yield key, e
+        for cve, c in e.get("cves", {}).items():
+            yield f"{key}|{cve}", c
+
+
 def test_every_entry_is_cited_or_unknown_with_a_reason():
-    urls = {p["url"] for p in SOURCES["pages"]}
     assert TABLE["entries"]
     for key, e in TABLE["entries"].items():
         assert re.fullmatch(r"[^|]+\|[a-z]+", key)
         if e["principal"] == "UNKNOWN":
             assert e["reason"] and "evidence" not in e
-        else:
-            ev = e["evidence"]
-            assert ev["url"] in urls and re.fullmatch(r"[0-9a-f]{64}", ev["sha256"]) and ev["quotes"]
-            assert ev["retrieved_utc"].startswith("20") and e["process"]
+        assert all(re.fullmatch(r"CVE-\d{4}-\d+", c) for c in e.get("cves", {}))
+    for key, e in cited():
+        ev = e["evidence"]
+        assert e["principal"] != "UNKNOWN" and e["process"]
+        assert ev["url"] in URLS and re.fullmatch(r"[0-9a-f]{64}", ev["sha256"]) and ev["quotes"]
+        assert ev["retrieved_utc"].startswith("20")
+
+
+def test_root_or_system_only_where_the_quote_says_so():
+    for key, e in cited():
+        if e["principal"] in ("root", "SYSTEM"):
+            assert any(e["principal"].lower() in q.lower() for q in e["evidence"]["quotes"]), key
 
 
 def test_cited_quotes_are_verbatim_in_the_hashed_raw_page():
@@ -48,19 +70,18 @@ def test_cited_quotes_are_verbatim_in_the_hashed_raw_page():
 
     import pytest
 
-    man_path = ROOT / TABLE["raw_manifest"]
-    if not man_path.exists():
+    if not all((ROOT / m).exists() for m in TABLE["raw_manifests"]):
         pytest.skip("raw principal pages not in this checkout")
-    assert hashlib.sha256(man_path.read_bytes()).hexdigest() == TABLE["raw_manifest_sha256"]
-    man = {f["name"]: f for f in json.loads(man_path.read_text())["files"]}
-    for key, e in TABLE["entries"].items():
-        if e["principal"] == "UNKNOWN":
-            continue
+    man = {}
+    for m, sha in TABLE["raw_manifests"].items():
+        assert hashlib.sha256((ROOT / m).read_bytes()).hexdigest() == sha
+        man |= {f"{Path(m).parent.as_posix()}/{f['name']}": f for f in json.loads((ROOT / m).read_text())["files"]}
+    for key, e in cited():
         ev = e["evidence"]
         raw = (ROOT / ev["raw"]).read_bytes()
-        assert hashlib.sha256(raw).hexdigest() == ev["sha256"] == man[Path(ev["raw"]).name]["sha256"]
-        assert man[Path(ev["raw"]).name]["url"] == ev["url"]
-        text = page_text(raw)
+        assert hashlib.sha256(raw).hexdigest() == ev["sha256"] == man[ev["raw"]]["sha256"]
+        assert man[ev["raw"]]["url"] == ev["url"]
+        text = page_text(raw, html_page=ev["raw"].endswith(".html"))
         for q in ev["quotes"]:
             assert q in text, (key, q)
 

@@ -3,19 +3,20 @@
 Sources: the P5 eligible-view catalogue (SHA-256-pinned) for fixtures and the action pool (ahg.gen.pool)
 for CVEs. Every number the generator can draw comes from these two files.
 
-Components and their CPE names (matching is CPE-only, ahg.gen.cpe):
+Components and their CPE names (matching: NVD configurations plus MSRC records, ahg.gen.cpe):
 - Linux service: `cpe:2.3:a:<vendor>:<product>:<version>:<update or ->:...`; the kernel is part `o`.
 - Windows OS: the version's CPE name from the config, with the MSRC build as its version where NVD encodes
-  builds (2016/2019/2022). NVD encodes Server 2012 R2 as `windows_server_2012:r2`, so a 2012 R2 build is
-  not visible to CPE matching; the build is still recorded.
+  builds (2016/2019/2022). Server 2012 R2 is `windows_server_2012:r2`, as NVD encodes it (P6b); its build
+  is placed by the MSRC build check, not by the CPE name.
 - Windows built-in services (SMB, RDS, DNS, IIS for http and ftp, OpenSSH for Windows) are components of
   the OS: they carry the OS CPE name and the OS build. A built-in is OS-compatible with a Windows version
   only if MSRC lists it for that version (the catalogue's `units`).
 - Exchange, SQL Server: own builds from MSRC, CPE names by the config's name patterns.
 
 Status of a fixture for a cohort (Round 4: from that cohort's pool CVEs only): `vulnerable` if some cohort
-unit of the component has a non-negated vulnerable cpeMatch that matches one of the fixture's CPE names,
-else `unaffected`. Co-conditions are ignored here, so an unaffected fixture is unaffected on every host;
+unit of the component has a non-negated vulnerable cpeMatch that marks one of the fixture's CPE names (with
+the MSRC build check for unbounded Microsoft criteria), or an MSRC affected record that applies to the
+fixture's build; else `unaffected`. Co-conditions are ignored here, so an unaffected fixture is unaffected on every host;
 a vulnerable one is vulnerable on its own (the final match on a real host still evaluates every
 co-condition). A Windows OS build's status counts the units of the OS and of every built-in service,
 because they all ride on that build. `unverified_release` fixtures are vulnerable-only and used at p = 1
@@ -45,6 +46,7 @@ class Fixture:
     unverified: bool = False
     release_line: str = ""  # MSRC product name for Windows builds; "" for Linux
     builtins: tuple[str, ...] = ()  # Windows OS builds: the built-in products MSRC lists for this version
+    kbs: tuple[str, ...] = ()  # Microsoft builds: standalone KBs installed on top of the cumulative build
 
 
 @dataclass
@@ -54,6 +56,11 @@ class Product:
     name: str  # label product, e.g. "apache:http_server", "Exchange", "Windows DNS Server", "Windows Server 2019"
     fixtures: list[Fixture] = field(default_factory=list)
     builtin: bool = False  # Windows built-in: no fixtures of its own, rides on the OS build
+
+
+# Catalogue field holding a Windows fixture's standalone KBs (P6b addendum). The b863e27 catalogue has none;
+# the field name must be checked against the P5w catalogue when it is pinned (OQ-P6b-3).
+KB_FIELD = "standalone_kbs"
 
 
 def load_catalogue(cfg: dict, root: Path = ROOT) -> dict:
@@ -99,8 +106,8 @@ def products(cfg: dict, catalogue: dict) -> tuple[list[Product], list[dict]]:
     for version, template in cfg["windows_versions"].items():
         row = win[version]
         builtins = tuple(u for u in row["units"] if u != "windows_os")
-        fx = [Fixture(version, f["version"], (template.replace("{build}", f["version"]),), False, version, builtins)
-              for f in row["fixtures"]]
+        fx = [Fixture(version, f["version"], (template.replace("{build}", f["version"]),), False, version, builtins,
+                      tuple(f.get(KB_FIELD) or ())) for f in row["fixtures"]]
         out.append(Product("windows", "os", version, fx))
     for prod, spec in cfg["windows_products"].items():
         fx = []
@@ -112,26 +119,35 @@ def products(cfg: dict, catalogue: dict) -> tuple[list[Product], list[dict]]:
                 if names is None:
                     notes.append({"product": prod, "release_line": msrc_name, "dropped": "no CPE name pattern"})
                     break
-                fx.append(Fixture(prod, f["version"], names, False, msrc_name))
+                fx.append(Fixture(prod, f["version"], names, False, msrc_name, (), tuple(f.get(KB_FIELD) or ())))
         out.append(Product("windows", spec["family"], prod, fx))
     for fam, prod in cfg["windows_builtin"].items():
         out.append(Product("windows", fam, prod, [], builtin=True))
     return out, notes
 
 
-def potential_cves(units: list[Unit], vuln: dict[str, list[dict]], names: tuple[str, ...]) -> list[str]:
-    """CVE IDs of `units` with a non-negated vulnerable cpeMatch matching one of `names` (status rule).
+def potential_cves(units: list[Unit], vuln: dict[str, list[dict]], master: dict[str, dict], fx: Fixture) -> list[str]:
+    """CVE IDs of `units` that can make fixture `fx` vulnerable (status rule): a non-negated vulnerable cpeMatch
+    marks one of its CPE names (with the MSRC build check where it applies), or an MSRC affected record
+    applies to its build.
 
     vuln: CVE ID -> its vulnerable matches (cpe.vulnerable_matches), computed once per inventory.
     """
-    keys = {tuple(n.split(":")[2:5]) for n in names}  # (part, vendor, product): a cheap pre-filter only
+    keys = {tuple(n.split(":")[2:5]) for n in fx.cpe_names}  # (part, vendor, product): a cheap pre-filter only
     hits = []
     for u in units:
-        if any(tuple(m["criteria"].split(":")[2:5]) in keys and cpe_eval.name_matches(m, n)
-               for m in vuln[u.cve_id] for n in names):
+        ms = None
+        if fx.release_line:
+            row = master[u.cve_id]
+            ms = {"products": (row.get("msrc") or {}).get("products") or {}, "name": fx.release_line, "build": fx.version,
+                  "kbs": list(fx.kbs),
+                  "unit_ids": [i for x in row["units"] if (x["product"], x["family"]) == (u.product, u.family)
+                               for i in x.get("msrc_products", [])]}
+        fb = cpe_eval.msrc_affected(ms)
+        if fb is not None or any(tuple(m["criteria"].split(":")[2:5]) in keys and cpe_eval.marks(m, list(fx.cpe_names), False)
+                                 for m in vuln[u.cve_id]):
             hits.append(u.cve_id)
     return sorted(set(hits))
-
 
 
 @dataclass
@@ -169,7 +185,7 @@ def build_inventory(cfg: dict, catalogue: dict, units: list[Unit], master: dict[
     def classify(prod: Product, relevant: list[Unit]) -> dict:
         n = {"vulnerable": 0, "vulnerable_verified": 0, "unaffected": 0}
         for f in prod.fixtures:
-            hit = potential_cves(relevant, vuln, f.cpe_names)
+            hit = potential_cves(relevant, vuln, master, f)
             st = "vulnerable" if hit else "unaffected"
             if st == "unaffected" and f.unverified:
                 st = "unusable"  # unverified releases are vulnerable-only (Round 4)
@@ -228,7 +244,7 @@ def build_inventory(cfg: dict, catalogue: dict, units: list[Unit], master: dict[
             if prod.builtin:
                 rel = by_prod.get((prod.name, prod.family), [])
                 fx = [f for v in versions if prod.name in v.fixtures[0].builtins for f in v.fixtures]
-                if not any(potential_cves(rel, vuln, f.cpe_names) for f in fx):
+                if not any(potential_cves(rel, vuln, master, f) for f in fx):
                     next(r for r in report["products"] if r["product"] == prod.name and r["family"] == prod.family
                          ).update(available=False, reason="no_matching_windows_build")
                     continue

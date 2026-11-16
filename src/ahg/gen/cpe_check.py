@@ -12,9 +12,14 @@ implements the same declared semantics by a different route:
 
 Declared semantics (identical to ahg.gen.cpe): configurations OR'ed; nodes combined by their operator (OR
 by default), `negate` inverts; a cpeMatch holds if any host CPE name satisfies it; criteria `*` matches any
-value and any other criteria value only the equal value (case-insensitive); bounds apply to a `*` version,
-compare the version field only, and only to a digit-led host version; a component is vulnerable if a true
-configuration has a non-negated `vulnerable: true` cpeMatch satisfied by one of the component's names.
+value, a criteria version `-` means the whole product (P6b), any other criteria value matches only the
+equal value (case-insensitive); bounds apply to a `*` version, compare the version field only, and only to
+a digit-led host version; a component is vulnerable if a true configuration has a non-negated
+`vulnerable: true` cpeMatch satisfied by one of the component's names and, for a Microsoft criteria with no
+bounds, the MSRC build check passes. MSRC (P6b): among the unit's MSRC product IDs, the records with status
+type 3 named as the host's MSRC product; the check passes if one has a fixed build and the host build is
+below the lowest, unless one of the record's fixing KBs is among the host's standalone KBs; such a record
+is also an applicability record of its own ("msrc").
 Version order: numbers numerically; the words dev < alpha < beta < m/milestone < pre/preview < rc sort
 below the bare release; any other word sorts above it; a run of trailing zero numbers is ignored
 (5.10 == 5.10.0).
@@ -103,6 +108,8 @@ def satisfies(match: dict, name: str) -> bool:
     crit, host = split_cpe(match["criteria"]), split_cpe(name)
     ranged = crit[3] == "*" and any(b in match for b in BOUNDS)
     for idx in range(FIELDS):
+        if idx == 3 and crit[3] == "-":
+            continue  # the whole product
         if idx == 3 and ranged:
             v = host[3]
             if not v or not v[0].isdigit():
@@ -155,10 +162,45 @@ def _positive_vulnerable(cfg: dict) -> list[dict]:
     return out
 
 
-def applies(configurations: list[dict], host: list[str], component: list[str]) -> list[int]:
-    """Indices of the configurations that make `component` vulnerable on this host (empty: no match)."""
-    hits = []
+def msrc_check(msrc: dict | None) -> bool:
+    """True if the host build is below the lowest fixed build of an affected MSRC record for its product."""
+    if msrc is None or not msrc.get("name"):
+        return False
+    installed = set()
+    for k in msrc.get("kbs") or []:
+        k = str(k).strip().upper()
+        installed.add(k[2:] if k.startswith("KB") else k)
+    lowest = None
+    for pid in msrc["unit_ids"]:
+        rec = msrc["products"].get(pid)
+        if rec is None or rec["name"] != msrc["name"] or rec.get("status_type") != 3:
+            continue
+        for fix in rec.get("fixes") or []:
+            kb = str(fix.get("kb") or "").strip().upper()
+            if kb and (kb[2:] if kb.startswith("KB") else kb) in installed:
+                return False  # the fixing standalone KB is installed
+            b = fix.get("fixed_build")
+            if b and (lowest is None or compare_versions(b, lowest) < 0):
+                lowest = b
+    return lowest is not None and compare_versions(msrc["build"], lowest) < 0
+
+
+def _microsoft_unbounded(match: dict) -> bool:
+    return split_cpe(match["criteria"])[1] == "microsoft" and not any(b in match for b in BOUNDS)
+
+
+def applies(configurations: list[dict], host: list[str], component: list[str], msrc: dict | None = None) -> list:
+    """Indices of the configurations that make `component` vulnerable on this host, then "msrc" if the MSRC
+    affected record applies (empty: no match)."""
+    build_ok = msrc_check(msrc)
+    hits: list = []
     for i, cfg in enumerate(configurations):
-        if _evaluate(cfg, host) and any(satisfies(m, n) for m in _positive_vulnerable(cfg) for n in component):
-            hits.append(i)
+        if not _evaluate(cfg, host):
+            continue
+        for m in _positive_vulnerable(cfg):
+            if any(satisfies(m, n) for n in component) and (build_ok or not _microsoft_unbounded(m)):
+                hits.append(i)
+                break
+    if build_ok:
+        hits.append("msrc")
     return hits

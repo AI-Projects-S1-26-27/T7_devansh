@@ -100,7 +100,8 @@ def generate(ctx: Context, archetype: str, seed: str, n: int, cohort: str = "cor
     reason = build.unsolvable_reason(built, goal_host, held)
     zone = lay.zone_of()
     remote_m = [m for m in matches if m["kind"] == "remote"]
-    unknown = sum(build.principal_of(ctx.principals, m["unit_product"], m["family"]) == build.UNKNOWN for m in remote_m)
+    unknown = sum(build.principal_of(ctx.principals, m["unit_product"], m["family"], m["cve"]) == build.UNKNOWN
+                  for m in remote_m)
     unverified = any(x.fixture.unverified for c in configs.values() for x in c.components)
     return {
         "schema": cfg["schema"],
@@ -130,7 +131,8 @@ def generate(ctx: Context, archetype: str, seed: str, n: int, cohort: str = "cor
             "principals": built.principals,
             "hosts": [{"id": h, "os": c.os, "copied_from": c.copied_from,
                        "components": [{"family": x.family, "product": x.product, "version": x.fixture.version,
-                                       "release_line": x.fixture.release_line, "cpe_names": list(x.fixture.cpe_names),
+                                       "release_line": x.fixture.release_line, "kbs": list(x.fixture.kbs),
+                                       "cpe_names": list(x.fixture.cpe_names),
                                        "status": x.status, "unverified_release": x.fixture.unverified,
                                        "builtin": x.builtin} for x in c.components]}
                       for h, c in sorted(configs.items())],

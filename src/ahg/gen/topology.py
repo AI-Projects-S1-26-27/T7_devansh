@@ -3,8 +3,9 @@ ahg.topology and its goldens are untouched.
 
 Two archetypes, both from published benchmark generators:
 
-- "tree": the network generator of Speicher, Steinmetz, Hoffmann et al. (2019), arXiv:1705.05088,
-  Appendix A [VERIFY title]; NASim (Schwartz and Kurniawati) generates its scenarios after it. Zones: internet (one host,
+- "tree": the network generator of Speicher, Steinmetz, Hoffmann, Backes and Künnemann, "Towards Automated
+  Network Mitigation Analysis (extended)", SAC 2019, arXiv:1705.05088, Appendix A; NASim (Schwartz and
+  Kurniawati) generates its scenarios after it. Zones: internet (one host,
   the attacker's start), DMZ, sensitive, users. DMZ and sensitive get max(1, round(n/40)) hosts each; the
   remaining hosts are users, in subnets of at most 5 hosts arranged as a binary tree. Links: internet-DMZ,
   DMZ-sensitive, every user subnet to its parent subnet and to sensitive, the root user subnet to DMZ.

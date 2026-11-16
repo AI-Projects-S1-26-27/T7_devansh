@@ -66,21 +66,37 @@ def _criteria_products(configs: list[dict]) -> set[tuple[str, ...]] | None:
     return out
 
 
-def evaluate(cve_id: str, configs: list[dict], host: list[str], comp: list[str]) -> list[dict]:
-    """Both evaluators on one (host, component, CVE); raises EvaluatorDisagreement if they differ.
+def msrc_context(master_row: dict, unit: Unit, comp: Component) -> dict | None:
+    """The MSRC inputs of one (CVE unit, component) pair, raw, for both evaluators; None off Microsoft data."""
+    if not comp.fixture.release_line:
+        return None
+    ids = [i for x in master_row["units"] if (x["product"], x["family"]) == (unit.product, unit.family)
+           for i in x.get("msrc_products", [])]
+    products = (master_row.get("msrc") or {}).get("products") or {}
+    return {"products": products, "unit_ids": ids, "name": comp.fixture.release_line, "build": comp.fixture.version,
+            "kbs": list(comp.fixture.kbs)}
+
+
+def evaluate(unit: Unit, master_row: dict, host: list[str], comp: Component) -> list[dict]:
+    """Both evaluators on one (host, component, CVE unit); raises EvaluatorDisagreement if they differ.
 
     Host names whose (part, vendor, product) no criteria of the CVE names cannot satisfy any cpeMatch, so
     both evaluators are given only the others (unless a criteria wildcards one of those fields). Results are
-    cached on that reduced input, which is all either evaluator reads.
+    cached on that reduced input plus the MSRC inputs, which is all either evaluator reads.
     """
+    configs = master_row["configurations"]
+    names = list(comp.fixture.cpe_names)
+    ms = msrc_context(master_row, unit, comp)
     keys = _criteria_products(configs)
     rel = tuple(host) if keys is None else tuple(n for n in host if tuple(n.split(":")[2:5]) in keys)
-    key = (cve_id, rel, tuple(comp))
+    key = (unit.cve_id, unit.product, unit.family, rel, tuple(names), comp.fixture.release_line, comp.fixture.version,
+           comp.fixture.kbs)
     if key not in _CACHE:
-        ev = cpe_eval.component_matches(configs, list(rel), list(comp))
-        ev2 = cpe_check.applies(configs, list(rel), list(comp))
+        ev = cpe_eval.component_matches(configs, list(rel), names, ms)
+        ev2 = cpe_check.applies(configs, list(rel), names, ms)
         if [e["configuration"] for e in ev] != ev2:
-            raise EvaluatorDisagreement(f"{cve_id} on {comp}: primary {[e['configuration'] for e in ev]} vs second {ev2}")
+            raise EvaluatorDisagreement(f"{unit.cve_id} on {names}: primary {[e['configuration'] for e in ev]} "
+                                        f"vs second {ev2}")
         _CACHE[key] = ev
     return _CACHE[key]
 
@@ -96,7 +112,7 @@ def match_records(hosts: dict[int, HostConfig], units: list[Unit], master: dict[
         names = cfg.cpe_names()
         for ci, comp in enumerate(cfg.components):
             for u in by.get((label_product(cfg, comp), comp.family), []):
-                ev = evaluate(u.cve_id, master[u.cve_id]["configurations"], names, list(comp.fixture.cpe_names))
+                ev = evaluate(u, master[u.cve_id], names, comp)
                 if ev:
                     out.append({"host": h, "component": ci, "family": comp.family, "product": comp.product,
                                 "version": comp.fixture.version, "cve": u.cve_id, "kind": u.kind, "ac": u.ac,
@@ -114,9 +130,17 @@ class Built:
     merges: int  # transitions folded into another one with the same pre and add
 
 
-def principal_of(table: dict, product: str, family: str) -> str:
+def principal_of(table: dict, product: str, family: str, cve: str | None = None) -> str:
+    """The cited run-as identity for a remote CVE on a service: a CVE-specific vendor statement if the table
+    has one (P6b: advisories often name the process a given CVE runs in), else the product entry, else
+    UNKNOWN."""
     entry = table["entries"].get(f"{product}|{family}")
-    return entry["principal"] if entry else UNKNOWN
+    if entry is None:
+        return UNKNOWN
+    by_cve = entry.get("cves", {})
+    if cve is not None and cve in by_cve:
+        return by_cve[cve]["principal"]
+    return entry["principal"]
 
 
 def build_task(lay: Layout, hosts: dict[int, HostConfig], firewall: dict, matches: list[dict], table: dict,
@@ -124,13 +148,14 @@ def build_task(lay: Layout, hosts: dict[int, HostConfig], firewall: dict, matche
     """Facts, merged actions and the goal fact for one configured network."""
     remote = [m for m in matches if m["kind"] == "remote"]
     local = [m for m in matches if m["kind"] == "local"]
-    principal = {(m["host"], m["component"]): principal_of(table, m["unit_product"], m["family"]) for m in remote}
+    principal = {(m["host"], m["component"], m["cve"]): principal_of(table, m["unit_product"], m["family"], m["cve"])
+                 for m in remote}
     principals = [ATTACKER] + sorted({UNKNOWN} | set(principal.values()))  # fixed: p0 attacker, then by name
     pidx = {p: i for i, p in enumerate(principals)}
     # foothold facts that can exist: the attacker's, and one per (host, principal) some remote match gives
-    foot = sorted({(0, 0)} | {(h, pidx[p]) for (h, _), p in principal.items()})
+    foot = sorted({(0, 0)} | {(h, pidx[p]) for (h, _, _), p in principal.items()})
     admin_hosts = sorted({goal_host} | {m["host"] for m in local}
-                         | {h for (h, _), p in principal.items() if p in admin_principals})
+                         | {h for (h, _, _), p in principal.items() if p in admin_principals})
     facts = [f"foothold(h{h},p{k})" for h, k in foot] + [f"admin(h{h})" for h in admin_hosts]
     fid = {f: i for i, f in enumerate(facts)}
     foot_on = defaultdict(list)
@@ -140,7 +165,7 @@ def build_task(lay: Layout, hosts: dict[int, HostConfig], firewall: dict, matche
     for m in remote:
         t, comp = m["host"], m["component"]
         fam = hosts[t].components[comp].family
-        p = principal[(t, comp)]
+        p = principal[(t, comp, m["cve"])]
         add = [fid[f"foothold(h{t},p{pidx[p]})"]] + ([fid[f"admin(h{t})"]] if p in admin_principals else [])
         for src in sorted(foot_on):
             if not can_reach(lay, firewall, src, t, fam):

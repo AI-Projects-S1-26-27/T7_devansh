@@ -9,13 +9,23 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import golden_d28  # noqa: E402
 
-GOLDEN = golden_d28.DATA / "golden_d28_gen_v1.json"
+def latest() -> Path:
+    """The newest golden version (v1, v2, ...). Older versions stay on disk unchanged (Round 8 C3)."""
+    files = sorted(golden_d28.DATA.glob("golden_d28_gen_v*.json"), key=lambda f: int(f.stem.rsplit("_v", 1)[1]))
+    return files[-1]
+
+
+GOLDEN = latest()
 CFG = json.loads((golden_d28.ROOT / "configs" / "gen" / "p6.json").read_text())
 HAVE = (golden_d28.ROOT / CFG["catalogue"]["path"]).exists() and (golden_d28.ROOT / CFG["master"]["path"]).exists()
 
 
 @pytest.mark.skipif(not HAVE, reason="pinned P6 inputs not in this checkout")
-def test_d28_generator_matches_golden_v1():
+def test_older_golden_versions_are_kept():
+    assert (golden_d28.DATA / "golden_d28_gen_v1.json").exists() and GOLDEN.name != "golden_d28_gen_v1.json"
+
+
+def test_d28_generator_matches_the_latest_golden():
     from ahg.gen.generate import Context
 
     g = json.loads(GOLDEN.read_text())

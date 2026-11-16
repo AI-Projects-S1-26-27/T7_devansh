@@ -135,8 +135,16 @@ def test_match_set_equals_an_independent_recheck():
             for ci, x in enumerate(h["components"]):
                 lp = "windows_os" if x["family"] == "os" and h["os"] == "windows" else x["product"]
                 for u in units:
-                    if (u.product, u.family) == (lp, x["family"]) and cpe_check.applies(
-                            c.master[u.cve_id]["configurations"], names, x["cpe_names"]):
+                    if (u.product, u.family) != (lp, x["family"]):
+                        continue
+                    row = c.master[u.cve_id]
+                    msrc = None
+                    if x["release_line"]:  # Microsoft component: the raw MSRC records of this unit
+                        ids = [i for y in row["units"] if (y["product"], y["family"]) == (u.product, u.family)
+                               for i in y.get("msrc_products", [])]
+                        msrc = {"products": (row.get("msrc") or {}).get("products") or {}, "unit_ids": ids,
+                                "name": x["release_line"], "build": x["version"], "kbs": x["kbs"]}
+                    if cpe_check.applies(row["configurations"], names, x["cpe_names"], msrc):
                         want.add((h["id"], ci, u.cve_id))
         assert want == {(m["host"], m["component"], m["cve"]) for m in d["metadata"]["matches"]}
 
@@ -181,7 +189,11 @@ def test_os_compatibility_and_role_family_sets():
             assert os_comp["family"] == "os"
             fams = [x["family"] for x in svcs]
             assert len(fams) == len(set(fams)) and 1 <= len(fams) <= 3 or not fams
-            assert set(fams) <= set(CFG["roles"][zone[h["id"]]])
+            if zone[h["id"]] == "dmz":  # P6b: only DMZ hosts keep a role list
+                assert set(fams) <= set(CFG["roles"]["dmz"])
+            else:
+                inv = c.inventory(d["params"]["cohort"], d["params"]["p"], frozenset(d["params"]["excluded"]))
+                assert set(fams) <= {f for (o, f) in inv.products if o == h["os"]}
             for x in svcs:
                 if h["os"] == "linux":
                     assert x["product"] in linux_products
@@ -467,3 +479,59 @@ def test_no_trust_login_credential_coupling_or_pr_gating_on_the_d28_path():
         text = _planner_text(d).lower()
         for word in ("trust", "login", "cred", "coupl", "capability", "pr_gat", "level"):
             assert word not in text
+
+
+# ---------------------------------------------------------------- P6b
+
+def test_non_dmz_hosts_draw_from_all_compatible_families():
+    """P6b: only the DMZ keeps a role list; e.g. a sensitive host may run http (outside the old lists)."""
+    old = {"sensitive": {"sql", "smb", "ssh", "rdp"}, "users": {"smb", "rdp", "ssh"},
+           "enterprise": {"http", "smb", "ssh", "rdp", "dns", "sql"}}
+    outside = 0
+    for s in range(20):
+        d = doc("chain", f"roles{s}", 12)
+        zone = {h["id"]: h["zone"] for h in d["network"]["hosts"]}
+        for h in d["network"]["hosts"]:
+            if zone[h["id"]] in old:
+                outside += bool(set(h["families"]) - old[zone[h["id"]]])
+    assert outside > 0
+
+
+def test_msrc_only_matches_are_stored_and_traced():
+    """OQ-P6-10: SQL Server CVEs have no NVD configuration; they apply through MSRC records only."""
+    found = 0
+    for s in range(30):
+        d = doc("tree", f"sql{s}", 12, "temporal", linux=0.25)
+        for m in d["metadata"]["matches"]:
+            if [e["configuration"] for e in m["evidence"]] == ["msrc"]:
+                found += 1
+                assert m["evidence"][0]["fixed_build"] and m["evidence"][0]["product"]
+                # a match need not have an action (no foothold on the host, or no reaching source);
+                # every action's matches are checked in test_every_action_traces_to_match_records
+    assert found
+
+
+def test_a_fixture_kb_list_reaches_both_evaluators():
+    from ahg.gen.inventory import Fixture
+
+    row = {"configurations": [], "units": [{"product": "SQL Server", "family": "sql", "msrc_products": ["9"]}],
+           "msrc": {"products": {"9": {"name": "SQL X", "status_type": 3,
+                                       "fixes": [{"fixed_build": "15.0.2", "kb": "5040000"}]}}}}
+    unit = pool.Unit("CVE-2099-1", "SQL Server", "sql", "windows", "remote", "L", "temporal")
+    name = ("cpe:2.3:a:microsoft:sql_server_2019:15.0.1:-:*:*:*:*:x64:*",)
+    plain = hosts_mod.Component("sql", "SQL Server", Fixture("SQL Server", "15.0.1", name, False, "SQL X"), "vulnerable")
+    patched = hosts_mod.Component("sql", "SQL Server", Fixture("SQL Server", "15.0.1", name, False, "SQL X", (),
+                                                                ("KB5040000",)), "vulnerable")
+    assert [e["configuration"] for e in build.evaluate(unit, row, list(name), plain)] == ["msrc"]
+    assert build.evaluate(unit, row, list(name), patched) == []
+
+
+def test_cve_specific_principal_overrides_the_product_entry():
+    table = {"entries": {"x:p|http": {"principal": "UNKNOWN", "reason": "r",
+                                      "cves": {"CVE-2020-1": {"principal": "root"}}}}}
+    assert build.principal_of(table, "x:p", "http", "CVE-2020-1") == "root"
+    assert build.principal_of(table, "x:p", "http", "CVE-2020-2") == "UNKNOWN"
+    b = _built([_m(1, 1, "CVE-2020-1", "remote", "L"), _m(1, 1, "CVE-2020-2", "remote", "L")], table)
+    adds = sorted(tuple(sorted(b.facts[i] for i in a["add"])) for a in b.actions)
+    root, unk = b.principals.index("root"), b.principals.index("UNKNOWN")
+    assert adds == sorted([("admin(h1)", f"foothold(h1,p{root})"), (f"foothold(h1,p{unk})",)])

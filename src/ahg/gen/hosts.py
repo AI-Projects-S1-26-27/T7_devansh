@@ -5,8 +5,9 @@ Draw order for a fresh configuration (one rng stream, consumed in this fixed ord
 2. Windows: the Server version, uniform among available versions.
 3. The OS component's status: vulnerable at p = 1, else vulnerable with probability p; then its fixture
    (kernel release or Windows build), uniform among the fixtures of that status.
-4. The families: k uniform in [1, 3], then min(k, m) families uniformly without replacement from the role's
-   families intersected with the OS-compatible ones (m of them; sorted before drawing).
+4. The families: k uniform in [1, 3], then min(k, m) families uniformly without replacement from the m
+   candidates (sorted before drawing): for a DMZ host its role families {http, mail, dns, ftp} intersected
+   with the OS-compatible ones, for every other host all OS-compatible families (P6b, as in Speicher et al.).
 5. Per family, in sorted order: the product, uniform among the available products of that OS and family;
    then its status (as in 3) and fixture. A Windows built-in service has no draw of its own: it is a
    component of the OS and shares its build and status (OQ-P6-4).
@@ -84,7 +85,7 @@ def compatible(inv: Inventory, os: str, version: Product | None) -> dict[str, li
     return out
 
 
-def fresh(rng: random.Random, inv: Inventory, role_families: list[str], os_mix: dict[str, float],
+def fresh(rng: random.Random, inv: Inventory, role_families: list[str] | None, os_mix: dict[str, float],
           k_range: tuple[int, int]) -> HostConfig:
     """Draw one new configuration (module docstring, steps 1-5)."""
     os = "linux" if rng.random() < os_mix["linux"] else "windows"
@@ -100,7 +101,7 @@ def fresh(rng: random.Random, inv: Inventory, role_families: list[str], os_mix: 
     os_fix = _fixture(rng, inv, version, st)
     comps = [Component("os", version.name, os_fix, st)]
     compat = compatible(inv, os, version if os == "windows" else None)
-    cands = sorted(set(role_families) & set(compat))
+    cands = sorted(set(compat) if role_families is None else set(role_families) & set(compat))
     k = rng.randint(*k_range)
     chosen = sorted(rng.sample(cands, min(k, len(cands))))
     for fam in chosen:
@@ -126,6 +127,6 @@ def configure(rng: random.Random, inv: Inventory, roles: list[tuple[int, str]], 
             cfg = out[src]
             out[host] = HostConfig(cfg.os, cfg.components, copied_from=src)
         else:
-            out[host] = fresh(rng, inv, role_families[role], os_mix, k_range)
+            out[host] = fresh(rng, inv, role_families.get(role), os_mix, k_range)  # no list: all compatible
         earlier.append(host)
     return out
