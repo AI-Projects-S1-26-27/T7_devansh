@@ -332,7 +332,7 @@ def nvd_raw_criteria(cfg: dict, product: str) -> tuple[dict[str, set[str]], dict
         data = (d / r["path"]).read_bytes()
         if hashlib.sha256(data).hexdigest() != r["sha256"]:
             sys.exit(f"{d / r['path']}: SHA-256 differs from its manifest record")
-        for v in json.loads(gzip.decompress(data))["vulnerabilities"]:
+        for v in json.loads(gzip.decompress(data))["response"]["vulnerabilities"]:  # page = {url, fetched_utc, params, response}
             cve = v["cve"]["id"]
             refs[cve] = {"raw": f"{cfg['unverified_release']['nvd_raw_dir']}/{r['path']}", "url": r["url"], "retrieved_utc": r["fetched_utc"], "sha256": r["sha256"],
                          "nvd_detail": f"https://nvd.nist.gov/vuln/detail/{cve}"}  # fmt: skip

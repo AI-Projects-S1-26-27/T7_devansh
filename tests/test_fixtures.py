@@ -452,7 +452,8 @@ def test_build_end_to_end(tmp_path):
         label("CVE-2023-9", "oracle:mysql", "local", "ADMIN_CONFIRMED"))).encode()))
     nvd = tmp_path / "nvd"
     nvd.mkdir()
-    page = gzip.compress(json.dumps({"vulnerabilities": [{"cve": {"id": "CVE-2023-9", "configurations": mysql_cfg}}]}).encode())
+    page = gzip.compress(json.dumps({"url": "u", "fetched_utc": "t", "params": {},
+                                     "response": {"vulnerabilities": [{"cve": {"id": "CVE-2023-9", "configurations": mysql_cfg}}]}}).encode())
     (nvd / "sql__oracle__mysql__00000.json.gz").write_bytes(page)
     (nvd / "manifest.json").write_text(json.dumps({"files": [{
         "product": "oracle:mysql", "path": "sql__oracle__mysql__00000.json.gz", "url": "https://services.nvd.nist.gov/x",
