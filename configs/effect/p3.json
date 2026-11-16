@@ -1,0 +1,84 @@
+{
+  "task": "P3",
+  "decisions": "D28 Rounds 1-2; OQ-P3-1 option (a), decided 15 Nov 2026",
+  "master_dataset": "../ahg-data/data/d28/master/2026-11-15T124455Z-cf2dc62/cves.jsonl.gz",
+  "master_sha256_file": null,
+  "ghsa_folder": "../ahg-data/data/raw/ghsa/2026-11-15",
+  "pool_stages": [
+    "remote_candidate",
+    "local_candidate"
+  ],
+  "role_ambiguous_stages": [
+    "role_not_server",
+    "local_candidate"
+  ],
+  "os_sample": {
+    "family": "os",
+    "stage": "local_candidate",
+    "per_group": null,
+    "seed": 20261115
+  },
+  "batch_size": 40,
+  "faq_max_chars": 800,
+  "pilot": {
+    "seed": 20261116,
+    "remote": 14,
+    "role_ambiguous": 12,
+    "local_service": 6,
+    "local_os_per_os": 4
+  },
+  "models": {
+    "annotator_default": "sonnet",
+    "adjudicator": "sonnet"
+  },
+  "model_rule": {
+    "kappa_min": 0.85,
+    "fields": [
+      "label",
+      "role"
+    ]
+  },
+  "rubric": "configs/effect/rubric.txt",
+  "adjudicator_rubric": "configs/effect/adjudicator_rubric.txt",
+  "audit": {
+    "per_pool": 150,
+    "seed": 20261117
+  },
+  "rules_version": "r1",
+  "decisions_15_nov": [
+    "rules-first pipeline; no OS sampling",
+    "strict flaw-type rule (OQ-P3-2 a)",
+    "text_product_mismatch flag instead of REVIEW_REQUIRED (OQ-P3-3 b)",
+    "Sonnet for annotators and adjudicator"
+  ],
+  "audit_unresolved": {
+    "n": 150,
+    "seed": 20261118,
+    "batch_size": 75,
+    "stop_fraction": 0.05
+  },
+  "p4": {
+    "sample_n": 300,
+    "sample_seed": 20261119,
+    "human_n": 60,
+    "human_seed": 20261120,
+    "batch_size": 100,
+    "rubric": "configs/effect/rubric_p4.txt",
+    "frozen_version": "p3-labels-v1"
+  },
+  "v2": {
+    "frozen_version": "p3-labels-v2",
+    "rubric": "configs/effect/rubric_r2.txt",
+    "rules_version": "r2",
+    "decisions": [
+      "OQ-P4-1 role rule remote only",
+      "OQ-P4-2 failure-without-consequence = UNKNOWN",
+      "OQ-P4-3 r2 hedge demotion with re-verification",
+      "OQ-P4-4 re-adjudicate REVIEW_REQUIRED",
+      "evidence enrichment deferred to paper phase",
+      "16 Nov: stock \"might/may/could allow\" is not a hedge (v2.1)"
+    ],
+    "frozen_version_v21": "p3-labels-v2.1",
+    "rubric_v21": "configs/effect/rubric_r21.txt"
+  }
+}

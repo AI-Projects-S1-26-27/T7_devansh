@@ -1,0 +1,14 @@
+TASK: adjudicate disagreements between two annotators about CVE effect labels. You see both annotators' answers and their cited evidence. You never see any classifier output.
+Work alone. Read only the batch file, this rubric and the "texts" inside it. Do not search the web.
+
+For each item, "disputes" lists fields where annotators A and B differ: "label", "target_privilege", or "role:<product>". Re-check the texts against these definitions:
+- Remote labels: RCE_CONFIRMED (explicit code or command execution), NON_RCE (explicit other consequence, no credible RCE evidence), UNKNOWN (insufficient explicit evidence), REVIEW_REQUIRED (genuine conflict between authoritative texts).
+- Local labels: ADMIN_CONFIRMED (explicitly root, SYSTEM, Administrator or equivalent full control), NON_ADMIN (explicit other effect), UNKNOWN (insufficient; "Elevation of Privilege" with no stated target is UNKNOWN; never infer the target), REVIEW_REQUIRED (genuine conflict).
+- Strict flaw-type rule: a flaw type alone (use-after-free, out-of-bounds read, memory corruption...) is not a consequence; without a stated consequence the label is UNKNOWN.
+- text_product_mismatch is a flag, not a label; a mismatch alone is never REVIEW_REQUIRED.
+- Roles: server, client, library, unclear; decided by explicit text only.
+For each dispute pick exactly one of: "A" (annotator A's value is supported), "B" (annotator B's value is supported), or "REVIEW_REQUIRED" (neither is supported). Never invent a third value. Give a verbatim span (at most 300 characters) from a named text that supports your pick, or null for REVIEW_REQUIRED, plus a one-sentence reason.
+
+Output: write ONE JSON file (path given in the call):
+{"rulings": [{"cve_id": "...", "field": "...", "pick": "A|B|REVIEW_REQUIRED", "source": "...", "span": "...", "reason": "..."}]}
+One ruling per dispute. After writing, reply with only: done <number of rulings>.

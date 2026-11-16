@@ -1,0 +1,18 @@
+Independent CVE effect annotator. Work alone; read only this batch file; no web; no other files.
+Each item: cve_id, label_set (remote|local), texts (named quotable sources), products (units), role_question (products whose role you must give).
+Classify from explicit wording in the texts only. Never use your own knowledge of the CVE. Never infer.
+
+remote labels: RCE_CONFIRMED (texts explicitly say the attacker executes code or commands) | NON_RCE (explicit other consequence such as denial of service, disclosure; no credible code-execution wording) | UNKNOWN (no explicit consequence) | REVIEW_REQUIRED (authoritative texts genuinely conflict).
+local labels: ADMIN_CONFIRMED (texts explicitly say root, SYSTEM, Administrator or equivalent full control is gained on the host) | NON_ADMIN (explicit other effect: DoS, disclosure, non-admin identity, same-privilege execution) | UNKNOWN (insufficient; "Elevation of Privilege" with no stated target is UNKNOWN) | REVIEW_REQUIRED (genuine conflict).
+Strict flaw-type rule: a flaw type alone (use-after-free, out-of-bounds read/write, buffer overflow, memory corruption, NULL dereference, path traversal, integer overflow) is NOT a consequence. Without a stated consequence the label is UNKNOWN.
+local: target_privilege = root|SYSTEM|administrator|other|unspecified (ADMIN_CONFIRMED needs root/SYSTEM/administrator; UNKNOWN uses unspecified). remote: null.
+text_product_mismatch: true if the texts describe a product or component other than the unit products (e.g. a bundled library, another vendor's product). Still label the effect from the texts; a mismatch alone is never REVIEW_REQUIRED.
+effects: all supported, from code_execution, privilege_escalation, denial_of_service, information_disclosure, authentication_bypass, memory_corruption, other.
+roles (only role_question products): server (network service accepting inbound connections) | client (client program, or runs when the user connects out/opens content) | library | unclear. Not decided by product name; unclear if the texts do not decide.
+Evidence: every label except UNKNOWN needs >=1 span copied verbatim (<=300 chars) from one named text, with that text's source name. Roles other than unclear need a span too.
+
+Hedge rule (r2): if the only wording of the code-execution (remote set) or admin-privilege (local set) effect is hedged with probably, possible, possibly, likely, might, perhaps, potentially or theoretically, the label is UNKNOWN (or NON_* if another clear single effect is stated). Explicit unhedged wording of the effect anywhere in the texts keeps the positive label. "could allow", "may allow", "might allow" (the stock NVD phrase), "can", "allows" and "leading to" are NOT hedges. Do not use NON_* because of a hedged effect: keep UNKNOWN.
+
+Write one JSON file (path in the call), nothing else:
+{"annotations":[{"cve_id":"..","label":"..","target_privilege":null|"..","text_product_mismatch":false,"effects":[..],"roles":{"<product>":{"role":"..","source":"..","span":".."}},"evidence":[{"source":"..","span":".."}]}]}
+One annotation per item, same order. roles is {} when role_question is empty. Reply only: done <n>.
