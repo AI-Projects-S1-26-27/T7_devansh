@@ -169,6 +169,8 @@ def fetch(cfg: dict, date: str, base: list[Path], source: str) -> None:
                     cna_cves[cve] = product
         if "cna_tarball" in pc:
             get(pc["cna_tarball"]["id"], pc["cna_tarball"]["url"])
+    for name, hc in sorted(cfg.get("windows_update_history", {}).items()):
+        get(f"windows_update_history/{hc['id']}", hc["url"])  # P5w: one Microsoft update-history page per version
     for cve in sorted(cna_cves, key=fx.cve_sort_key):
         get(f"cveawg/{cve}.json", CVEAWG + cve)
     m = write_manifest(f.out, {"task": "P5", "config": cfg, "candidate_products": sorted(cands),
@@ -498,23 +500,39 @@ def msrc_refs(cfg: dict) -> dict[str, list[dict]]:
     return out
 
 
-def build_windows(cands: dict, rows: list[dict], cfg: dict) -> dict[str, dict]:
-    """Windows catalogue, one entry per MSRC product name (Windows Server version, Exchange CU, SQL build)."""
+def build_windows(cands: dict, rows: list[dict], cfg: dict, raw: Raw | None = None) -> dict[str, dict]:
+    """Windows catalogue, one entry per MSRC product name (Windows Server version, Exchange CU, SQL build).
+
+    Versions with a configured update-history page (`windows_update_history`, P5w: Server 2012 R2, 2016,
+    2019, 2022) take their builds from that page: per CVE, the fixing KB MSRC lists for the product is
+    mapped to its release; the fixed fixture is that release and the vulnerable fixture the release before
+    it in the history (ahg.fixtures.history_pairs). Every other product keeps the P5 rule (prior MSRC
+    FixedBuild, OQ-P5-4).
+    """
     builds = fx.windows_builds(rows)
     refs = msrc_refs(cfg)
     rules = cfg["windows_products"]
+    history_cfg = cfg.get("windows_update_history", {})
     out: dict[str, dict] = {}
-    fixed_of: dict[str, dict[str, str]] = {}  # msrc product -> cve -> fixed build (for affected_by)
+    fixed_of: dict[str, dict[str, str]] = {}  # msrc product -> cve -> fixed build (for affected_by, P5 rule)
     hosted: dict[str, set[str]] = {}
+    kbs_of: dict[str, dict[str, dict]] = {}  # history product -> cve -> {"kbs", "units", "row"}
     for unit_product, info in sorted(cands.items()):
         if info["os"] != "windows":
             continue
         for cve in sorted(info["cves"], key=fx.cve_sort_key):
             row = info["cves"][cve]["row"]
             names = fx.msrc_product_names(unit_product, [p["name"] for p in row["msrc"]["products"].values()], rules)
-            pairs, dropped = fx.windows_fixtures(row, names, builds)
             for name in names:
                 hosted.setdefault(name, set()).add(cve)
+            for p in row["msrc"]["products"].values():
+                if p["name"] in names and p["name"] in history_cfg:
+                    e = kbs_of.setdefault(p["name"], {}).setdefault(cve, {"kbs": set(), "fixed_builds": set(), "units": {}, "row": row})
+                    e["kbs"].update(f["kb"] for f in p.get("fixes", []) if f.get("kb"))
+                    e["fixed_builds"].update(f["fixed_build"] for f in p.get("fixes", []) if f.get("fixed_build"))
+                    e["units"][unit_product] = info["cves"][cve]["cohort"]
+            p5_names = [n for n in names if n not in history_cfg]  # products that keep the P5 rule
+            pairs, dropped = fx.windows_fixtures(row, p5_names, builds)
             if not names:
                 dropped = [{"cve": cve, "product": None, "reason": "no_configured_msrc_product_listed"}]
             for d in dropped:
@@ -542,7 +560,56 @@ def build_windows(cands: dict, rows: list[dict], cfg: dict) -> dict[str, dict]:
             fixtures.append({**f, "affected_by": aff})
         result[name] = {"product": name, "os": "windows", "units": sorted(e["units"]), "status": "ok" if fixtures else "dropped",
                         "fixtures": fixtures, "dropped": e["dropped"], "affected_unknown_no_fixed_build": unknown}  # fmt: skip
+    for name, hc in sorted(history_cfg.items()):
+        if name in kbs_of:
+            result[name] = history_entry(name, hc, kbs_of[name], hosted.get(name, set()), refs, raw)
     return result
+
+
+def history_entry(name: str, hc: dict, cves: dict[str, dict], hosted: set[str], refs: dict, raw: Raw | None) -> dict:
+    """One Windows version's catalogue entry from its update-history page (P5w)."""
+    page = f"windows_update_history/{hc['id']}"
+    if raw is None or not raw.has(page):
+        sys.exit(f"{name}: update-history page {page} is not in the raw snapshots")
+    ordered = fx.history_order(fx.parse_update_history(raw.text(page), hc.get("build_line")), bool(hc.get("build_line")))
+    if not ordered:
+        sys.exit(f"{name}: no release parsed from {page}")
+    src = raw.ref(page)
+    pairs, dropped_by_cve = fx.history_pairs({c: sorted(v["kbs"]) for c, v in cves.items()}, ordered)
+    fixtures: dict[int, dict] = {}
+
+    def fixture(i: int) -> dict:
+        r = ordered[i]
+        return fixtures.setdefault(i, {"version": r["version"], "kb": f"KB{r['kb']}", "builds": r["builds"], "release_date": r["date"],
+                                       "release_entry": r["entry"], "release_source": [src], "vulnerable_for": [], "fixed_for": []})  # fmt: skip
+
+    mismatch = []
+    for cve in sorted(pairs, key=fx.cve_sort_key):
+        p, info = pairs[cve], cves[cve]
+        fixed_r = ordered[p["fixed"]]
+        docs = sorted(info["row"]["msrc"].get("docs") or [info["row"]["msrc"].get("doc")])
+        evidence = {"fix_kbs": sorted(info["kbs"]), "mapped_kb": f"KB{p['kb']}", "msrc_docs": docs,
+                    "msrc_sources": [r for d in docs for r in refs.get(d, [])],
+                    "msrc_fixed_builds": sorted(info["fixed_builds"])}  # fmt: skip
+        # MSRC's own FixedBuild (2021+ documents), where given, must name the mapped release's build.
+        if info["fixed_builds"] and fixed_r["builds"] and not set(info["fixed_builds"]) & set(fixed_r["builds"]):
+            mismatch.append({"cve": cve, "mapped_kb": f"KB{p['kb']}", "history_builds": fixed_r["builds"],
+                             "msrc_fixed_builds": sorted(info["fixed_builds"])})  # fmt: skip
+        for unit, cohort in sorted(info["units"].items()):
+            fixture(p["vulnerable"])["vulnerable_for"].append({"cve": cve, "unit": unit, "cohort": cohort})
+            fixture(p["fixed"])["fixed_for"].append({"cve": cve, "unit": unit, "cohort": cohort,
+                                                     "after": ordered[p["vulnerable"]]["version"], "evidence": evidence})  # fmt: skip
+    for i, f in fixtures.items():
+        # A release is affected by every hosted CVE whose fix comes later in the servicing order.
+        f["affected_by"] = sorted((c for c, p in pairs.items() if i < p["fixed"]), key=fx.cve_sort_key)
+    dropped = [{"cve": c, "product": name, "unit": u, "cohort": co, **d}
+               for c, d in sorted(dropped_by_cve.items(), key=lambda kv: fx.cve_sort_key(kv[0])) for u, co in sorted(cves[c]["units"].items())]
+    units = sorted({u for v in cves.values() for u in v["units"]})
+    return {"product": name, "os": "windows", "units": units, "status": "ok" if fixtures else "dropped",
+            "rule": "P5w update history", "release_source": src, "n_releases": len(ordered),
+            "fixtures": [fixtures[i] for i in sorted(fixtures)], "dropped": dropped,
+            "msrc_fixed_build_mismatch": mismatch,
+            "affected_unknown_no_fixed_build": sorted(set(dropped_by_cve) | (hosted - set(cves)), key=fx.cve_sort_key)}  # fmt: skip
 
 
 def summarize(entry: dict) -> dict:
@@ -633,6 +700,54 @@ def regained_table(rows: list[dict]) -> list[str]:
     return lines
 
 
+def windows_history_rows(catalogue: dict) -> list[dict]:
+    """Per Windows version built from its update history (P5w) and cohort: CVEs, fixtures and drops."""
+    out = []
+    for name, e in sorted(catalogue["windows"].items()):
+        if e.get("rule") != "P5w update history":
+            continue
+        cohorts = sorted({i["cohort"] for f in e["fixtures"] for i in f["vulnerable_for"] + f["fixed_for"]} | {d["cohort"] for d in e["dropped"]})
+        for co in cohorts:
+            vul = {i["cve"] for f in e["fixtures"] for i in f["vulnerable_for"] if i["cohort"] == co}
+            fix = {i["cve"] for f in e["fixtures"] for i in f["fixed_for"] if i["cohort"] == co}
+            drops = {(d["cve"], d["reason"]) for d in e["dropped"] if d["cohort"] == co}
+            out.append({"product": name, "cohort": co, "n_releases": e["n_releases"], "cves": len(vul | fix | {c for c, _ in drops}),
+                        "cves_with_vulnerable_fixture": len(vul), "cves_with_fixed_fixture": len(fix),
+                        "vulnerable_fixtures": sum(any(i["cohort"] == co for i in f["vulnerable_for"]) for f in e["fixtures"]),
+                        "fixed_fixtures": sum(any(i["cohort"] == co for i in f["fixed_for"]) for f in e["fixtures"]),
+                        "dropped_by_reason": dict(Counter(r for _, r in drops)),
+                        "msrc_fixed_build_mismatch": sum(1 for m in e["msrc_fixed_build_mismatch"] if m["cve"] in vul | fix)})  # fmt: skip
+    return out
+
+
+def windows_history_table(rows: list[dict]) -> list[str]:
+    lines = ["| version | cohort | releases in history | CVEs | with vulnerable fixture | with fixed fixture | vulnerable fixtures | fixed fixtures | dropped CVEs by reason | MSRC FixedBuild mismatch |",
+             "|---|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
+    for r in rows:
+        reasons = ", ".join(f"{k} {v}" for k, v in sorted(r["dropped_by_reason"].items())) or "-"
+        lines.append(f"| {r['product']} | {r['cohort']} | {r['n_releases']} | {r['cves']} | {r['cves_with_vulnerable_fixture']} | "
+                     f"{r['cves_with_fixed_fixture']} | {r['vulnerable_fixtures']} | {r['fixed_fixtures']} | {reasons} | {r['msrc_fixed_build_mismatch']} |")  # fmt: skip
+    return lines
+
+
+def windows_history_fixture_lines(catalogue: dict) -> list[str]:
+    """Every update-history fixture with the CVEs it is the vulnerable or fixed fixture for, per cohort."""
+    lines = []
+    for name, e in sorted(catalogue["windows"].items()):
+        if e.get("rule") != "P5w update history":
+            continue
+        lines += ["", f"### {name}", ""]
+        for f in e["fixtures"]:
+            parts = []
+            for role, label in (("vulnerable_for", "vulnerable for"), ("fixed_for", "fixed for")):
+                for co in ("core", "temporal"):
+                    ids = sorted({i["cve"] for i in f[role] if i["cohort"] == co}, key=fx.cve_sort_key)
+                    if ids:
+                        parts.append(f"{label} ({co}) {', '.join(ids)}")
+            lines.append(f"- {f['version']} ({f['kb']}, {f['release_date']}): " + "; ".join(parts))
+    return lines
+
+
 def report(summary: dict, catalogue: dict, meta: dict, el_summary: dict, el_catalogue: dict, regained: list[dict]) -> str:
     lines = ["# P5 fixture catalogue", "", f"Catalogue: `{meta['catalogue_path']}` (SHA-256 `{meta['catalogue_sha256']}`)",
              f"Eligible view: `{meta['eligible_path']}` (SHA-256 `{meta['eligible_sha256']}`), labels SHA-256 `{meta['eligible_labels_sha256']}`, "
@@ -643,13 +758,17 @@ def report(summary: dict, catalogue: dict, meta: dict, el_summary: dict, el_cata
              "## Products of the unverified_release list (decision 16 Nov 2026; P5v)", "",
              "Verified fixtures come from vendor release evidence by the catalogue rule. Unverified fixtures (vulnerable role only, "
              "p = 1 only) remain for the CVEs that have no verified vulnerable fixture.", ""]  # fmt: skip
-    lines += regained_table(regained) + ["", "## Eligible view (p3-labels-v2.1)", ""]
+    lines += regained_table(regained)
+    lines += ["", "## Windows versions from Microsoft update history (P5w)", "", "Superset:", ""] + windows_history_table(windows_history_rows(catalogue))
+    lines += ["", "Eligible view:", ""] + windows_history_table(windows_history_rows(el_catalogue))
+    lines += ["", "## Eligible view (p3-labels-v2.1)", ""]
     lines += summary_table(el_summary)
     lines += ["", "## Superset (pre-P3 candidates)", ""] + summary_table(summary)
     lines += ["", "## Eligible view: fixtures and the eligible CVEs each is affected by", "",
               "One line per fixture: version (release date): roles; affected-by count; CVE IDs (first 12)."]
     lines += fixture_lines(el_catalogue)
     lines += ["", "## Superset: fixtures and the CVEs each is affected by", ""] + fixture_lines(catalogue)
+    lines += ["", "## P5w: update-history fixtures and the CVEs each is the vulnerable or fixed fixture for (superset)"] + windows_history_fixture_lines(catalogue)
     return "\n".join(lines) + "\n"
 
 
@@ -678,7 +797,7 @@ def build(cfg: dict, raw_dirs: list[Path]) -> None:
         if product in cfg["unverified_release"]["products"]:
             linux[product] = add_unverified(linux[product], info, cfg)
         print(f"{product}: {summarize(linux[product])}", flush=True)
-    windows = build_windows(cands, rows, cfg)
+    windows = build_windows(cands, rows, cfg, raw)
     catalogue = {"schema": "ahg.fixtures/1", "task": "P5", "decisions": cfg["decisions"], "linux": linux, "windows": windows,
                  "raw_failed_fetches": raw.failed}  # fmt: skip
     summary = {("linux", p): summarize(e) for p, e in linux.items()} | {("windows", p): summarize(e) for p, e in windows.items()}
@@ -703,7 +822,8 @@ def build(cfg: dict, raw_dirs: list[Path]) -> None:
             "master_sha256": cfg["master_sha256"]}  # fmt: skip
     (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     regained = unverified_regained(catalogue, eligible_by_set)
-    run_raw = {"meta": meta, "unverified_regained": regained, "summary": [{"os": k[0], "product": k[1], **v} for k, v in sorted(summary.items())],
+    run_raw = {"meta": meta, "unverified_regained": regained, "windows_history": windows_history_rows(catalogue),
+               "windows_history_eligible": windows_history_rows(el_cat), "summary": [{"os": k[0], "product": k[1], **v} for k, v in sorted(summary.items())],
                "eligible_summary": [{"os": k[0], "product": k[1], **v} for k, v in sorted(el_summary.items())]}  # fmt: skip
     run = runlog.write_run("catalogue", run_raw, report(summary, catalogue, meta, el_summary, el_cat, regained), [], cfg,
                            root=ROOT / cfg["results_root"])  # fmt: skip
@@ -716,7 +836,7 @@ def main() -> None:
     a_f = sub.add_parser("fetch")
     a_f.add_argument("config", type=Path)
     a_f.add_argument("--date", default=datetime.now(timezone.utc).date().isoformat())
-    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement", "fixtures_p5v", "fixtures_p5v2"],
+    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement", "fixtures_p5v", "fixtures_p5v2", "fixtures_p5w"],
                      help="data/raw/<source>/<date>/; any source but 'fixtures' is a supplement and needs --base")
     a_f.add_argument("--base", type=Path, nargs="*", default=[], help="finished snapshots this one supplements")
     a_b = sub.add_parser("build")
@@ -727,7 +847,7 @@ def main() -> None:
     if a.cmd == "fetch":
         date_ = datetime.strptime(a.date, "%Y-%m-%d").date().isoformat()  # rejects anything but YYYY-MM-DD
         if (a.source != "fixtures") != bool(a.base):
-            sys.exit("a supplement snapshot (fixtures_supplement, fixtures_p5v, fixtures_p5v2) needs --base, and only a supplement takes one")
+            sys.exit("a supplement snapshot (fixtures_supplement, fixtures_p5v, fixtures_p5v2, fixtures_p5w) needs --base, and only a supplement takes one")
         fetch(cfg, date_, [b.resolve() for b in a.base], a.source)
     else:
         build(cfg, [d.resolve() for d in a.raw_dirs])

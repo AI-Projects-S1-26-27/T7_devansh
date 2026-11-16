@@ -15,6 +15,13 @@
   "github_pages_max": 10,
   "candidate_stages": ["remote_candidate", "local_candidate"],
   "cpe_part": {"default": "a", "linux:linux_kernel": "o"},
+  "windows_update_history_note": "P5w (Devansh 16 Nov 2026): Windows Server 2012 R2, 2016, 2019 and 2022 take dated build fixtures from Microsoft's official per-version update-history pages; per CVE the fixing KB MSRC lists for the product maps to its release (fixed fixture), and the release before it in the history is the vulnerable fixture. Supersedes OQ-P5-4 (prior MSRC FixedBuild) and Round 4 'No full build histories' for these four versions. The 2016/2019/2022 pages give each KB's OS build (version 10.0.<build>); the 2012 R2 page gives none, so its releases are the cumulative monthly rollups identified by KB. Exchange and SQL Server keep the P5 rule.",
+  "windows_update_history": {
+    "Windows Server 2012 R2": {"id": "windows_8.1_server_2012_r2_update_history.html", "url": "https://support.microsoft.com/en-us/topic/windows-8-1-and-windows-server-2012-r2-update-history-47d81dd2-6804-b6ae-4112-20089467c7a6"},
+    "Windows Server 2016": {"id": "windows_10_server_2016_update_history.html", "url": "https://support.microsoft.com/en-us/topic/windows-10-and-windows-server-2016-update-history-4acfbc84-a290-1b54-536a-1c0430e9f3fd", "build_line": "14393"},
+    "Windows Server 2019": {"id": "windows_10_server_2019_update_history.html", "url": "https://support.microsoft.com/en-us/topic/windows-10-and-windows-server-2019-update-history-725fc2e1-4443-6831-a5ca-51ff5cbcb059", "build_line": "17763"},
+    "Windows Server 2022": {"id": "windows_server_2022_update_history.html", "url": "https://support.microsoft.com/en-us/topic/windows-server-2022-update-history-e1caa597-00c5-4ab9-9f3e-8212fe80b2ee", "build_line": "20348"}
+  },
   "windows_products": {
     "default": {"names": ["Windows Server 2012 R2", "Windows Server 2016", "Windows Server 2019", "Windows Server 2022"]},
     "Exchange": {"prefix": "Microsoft Exchange Server"},

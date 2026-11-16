@@ -740,6 +740,78 @@ def windows_fixtures(row: dict, product_names: list[str], builds: dict[str, dict
     return pairs, dropped
 
 
+# ---------------------------------------------------------------- Windows update history (P5w, decided 16 Nov 2026)
+
+_UH_ENTRY = re.compile(r"^(?P<date>[A-Z][a-z]+ \d{1,2}, \d{4})(?:, \d{4})?\s*[—–-]\s*KB(?P<kb>\d{6,8})\s*\((?P<what>[^)]*)\)")
+ROLLUP_KINDS = ("Monthly Rollup", "Preview of Monthly Rollup")  # cumulative 8.1/2012 R2 releases; Security-only updates are not
+
+
+def parse_update_history(page: str, build_line: str | None) -> list[dict]:
+    """Releases on a Microsoft per-version update-history page (P5w).
+
+    The page's navigation lists every update as a link, "March 12, 2024—KB5035855 (OS Build 17763.5576)"
+    on the Windows 10 / Server 2016+ pages, "June 9, 2026—KB5094041 (Monthly Rollup)" on the 8.1 / Server
+    2012 R2 page. With `build_line` ("17763"), each entry whose OS build is on that line is a release with
+    version "10.0.<line>.<n>" (MSRC's FixedBuild form); an entry naming two builds of the line keeps the
+    lower as its version. Without it (2012 R2, whose page gives no OS build), each cumulative monthly rollup
+    is a release identified by its KB ("KB5094041"). One release per KB, earliest listed date kept.
+    """
+    out: dict[str, dict] = {}
+    for text in re.findall(r"<a\b[^>]*>([^<]*KB\d{6,8}[^<]*)</a>", page):
+        t = re.sub(r"\s+", " ", html.unescape(text)).strip()
+        m = _UH_ENTRY.match(t)
+        if not m:
+            continue
+        what = m["what"].strip()
+        if build_line:
+            bm = re.fullmatch(r"OS Builds? (.+)", what)
+            builds = [f"10.0.{a}.{b}" for a, b in re.findall(r"(\d+)\.(\d+)", bm.group(1)) if a == build_line] if bm else []
+            if not builds:
+                continue
+            version = min(builds, key=version_key)
+        elif what in ROLLUP_KINDS:
+            builds, version = [], f"KB{m['kb']}"
+        else:
+            continue
+        date = parse_date(m["date"], "%B %d, %Y")
+        old = out.get(m["kb"])
+        if old is None or date < old["date"]:
+            out[m["kb"]] = {"kb": m["kb"], "date": date, "version": version, "builds": builds, "kind": what, "entry": t[:200]}
+    return list(out.values())
+
+
+def history_order(releases: list[dict], by_build: bool) -> list[dict]:
+    """Releases in servicing order: by OS build where the page gives one, else by date (then KB)."""
+    if by_build:
+        return sorted(releases, key=lambda r: (version_key(r["version"]), r["date"], r["kb"]))
+    return sorted(releases, key=lambda r: (r["date"], int(r["kb"])))
+
+
+def history_pairs(fix_kbs: dict[str, list[str]], ordered: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Vulnerable and fixed releases per CVE on one Windows version (P5w).
+
+    `fix_kbs` maps each CVE to the KBs MSRC lists as its fix for the product; `ordered` is the version's
+    update history in servicing order. The fixed release is the earliest release whose KB is one of the
+    fixing KBs (several KBs, e.g. Monthly Rollup and Security-only: the first that the history lists);
+    the vulnerable release is the release just before it in the history. Returns (pairs, dropped) keyed by
+    CVE; a pair is {"fixed": i, "vulnerable": i - 1, "kb": KB} as indices into `ordered`.
+    """
+    pos = {r["kb"]: i for i, r in enumerate(ordered)}
+    pairs, dropped = {}, {}
+    for cve, kbs in fix_kbs.items():
+        hits = sorted(pos[k] for k in set(kbs) if k in pos)
+        if not kbs:
+            dropped[cve] = {"reason": "no_msrc_fix_kb", "fix_kbs": []}
+        elif not hits:
+            dropped[cve] = {"reason": "fix_kb_not_in_update_history", "fix_kbs": sorted(set(kbs))}
+        elif hits[0] == 0:
+            dropped[cve] = {"reason": "no_earlier_release_in_update_history", "fix_kbs": sorted(set(kbs)),
+                            "fixed": ordered[0]["version"]}  # fmt: skip
+        else:
+            pairs[cve] = {"fixed": hits[0], "vulnerable": hits[0] - 1, "kb": ordered[hits[0]]["kb"]}
+    return pairs, dropped
+
+
 # ---------------------------------------------------------------- eligible view (P5 decision, 16 Nov 2026)
 
 

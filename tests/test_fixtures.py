@@ -772,3 +772,78 @@ def test_crushftp_wiki_fix_statements_stay_in_their_section():
     for e, page in ((pc["evidence"][-2], wiki11), (pc["evidence"][-1], wiki10)):
         got += [(d.cve, d.version) for p in e["patterns"] for d in fx.ev_page_regex(page, p, pc["version_regex"], "n")]
     assert sorted(got) == [("CVE-2024-4040", "10.7.1"), ("CVE-2024-4040", "11.1.0"), ("CVE-2025-31161", "10.8.4"), ("CVE-2025-31161", "11.3.1")]
+
+
+# ---------------------------------------------------------------- P5w: Windows builds from Microsoft update history
+
+
+UH_2019 = """<nav><a href="/a">November 14, 2023—KB5032196 (OS Build 17763.5122)</a>
+<a href="/b">October 10, 2023&#x2014;KB5031361 (OS Build 17763.4974)</a>
+<a href="/c">October 26, 2023—KB5031358 (OS Build 17763.5011) Preview</a>
+<a href="/d">September 14, 2026, 2026—KB5129239 (OS Build 17763.9001) Out-of-band</a>
+<a href="/e">July 30, 2018 - KB4346877 (OS Build 14393.2396)</a>
+<a href="/f">September 13, 2016 — KB3189866 (OS Builds 17763.187 and 17763.189)</a>
+<a href="/g">October 12, 2023—KB5031361 (OS Build 17763.4974)</a></nav>"""
+UH_2012R2 = """<nav><a>June 9, 2026&#x2014;KB5094041 (Monthly Rollup)</a><a>May 19, 2026—KB5090001 (Preview of Monthly Rollup)</a>
+<a>May 12, 2026—KB5087471 (Monthly Rollup)</a><a>May 12, 2026—KB5087000 (Security-only update)</a><a>KB4570006</a></nav>"""
+
+
+def test_update_history_parses_builds_of_one_line_and_rollups():
+    got = {(r["kb"], r["version"], r["date"]) for r in fx.parse_update_history(UH_2019, "17763")}
+    assert got == {("5032196", "10.0.17763.5122", "2023-11-14"), ("5031361", "10.0.17763.4974", "2023-10-10"),  # earliest date kept
+                   ("5031358", "10.0.17763.5011", "2023-10-26"), ("5129239", "10.0.17763.9001", "2026-09-14"),
+                   ("3189866", "10.0.17763.187", "2016-09-13")}  # other build lines skipped; two builds: the lower
+    assert [r["builds"] for r in fx.parse_update_history(UH_2019, "17763") if r["kb"] == "3189866"] == [["10.0.17763.187", "10.0.17763.189"]]
+    roll = fx.history_order(fx.parse_update_history(UH_2012R2, None), by_build=False)
+    assert [(r["version"], r["date"]) for r in roll] == [("KB5087471", "2026-05-12"), ("KB5090001", "2026-05-19"), ("KB5094041", "2026-06-09")]
+
+
+def test_history_pairs_take_the_first_fixing_release_and_the_one_before():
+    ordered = fx.history_order(fx.parse_update_history(UH_2019, "17763"), by_build=True)
+    assert [r["version"] for r in ordered][:3] == ["10.0.17763.187", "10.0.17763.4974", "10.0.17763.5011"]
+    pairs, dropped = fx.history_pairs({"CVE-2023-1": ["5032196", "9999999"], "CVE-2023-2": ["5032196", "5031361"],
+                                       "CVE-2023-3": ["1234567"], "CVE-2023-4": [], "CVE-2016-5": ["3189866"]}, ordered)
+    v = lambda i: ordered[i]["version"]  # noqa: E731
+    assert (v(pairs["CVE-2023-1"]["vulnerable"]), v(pairs["CVE-2023-1"]["fixed"])) == ("10.0.17763.5011", "10.0.17763.5122")
+    assert (v(pairs["CVE-2023-2"]["vulnerable"]), v(pairs["CVE-2023-2"]["fixed"])) == ("10.0.17763.187", "10.0.17763.4974")
+    assert {c: d["reason"] for c, d in dropped.items()} == {"CVE-2023-3": "fix_kb_not_in_update_history", "CVE-2023-4": "no_msrc_fix_kb",
+                                                           "CVE-2016-5": "no_earlier_release_in_update_history"}
+
+
+def win_row(cve, name, kbs, cohort_year="2023", fixed_build=None):
+    return {"cve_id": cve, "nvd": None, "configurations": [], "units": [unit("windows_os", stage="local_candidate", os_="windows", family="os",
+                                                                             cohort="core" if cohort_year < "2024" else "temporal")],
+            "msrc": {"docs": ["2023-Nov"], "initial_release": "2023-11-14T08:00:00", "products": {
+                "1": {"name": name, "fixes": [{"kb": k, "fixed_build": fixed_build, "subtype": "Security Update"} for k in kbs]}}}}
+
+
+def test_build_windows_uses_the_update_history_for_configured_versions(tmp_path):
+    bf = load_script("build_fixtures")
+    rows = [win_row("CVE-2023-1", "Windows Server 2019", ["5032196"], fixed_build="10.0.17763.5122"),
+            win_row("CVE-2023-2", "Windows Server 2019", ["5031361"], fixed_build="10.0.17763.9999"),  # MSRC build disagrees: logged
+            win_row("CVE-2023-3", "Windows Server 2019", ["1234567"])]
+    snap = tmp_path / "fixtures_p5w" / "2026-11-17"
+    write_raw(snap, {"windows_update_history/h2019.html": UH_2019})
+    msrc = tmp_path / "msrc"
+    write_raw(msrc, {"cvrf_2023-Nov.json": "{}"})
+    config = {"windows_products": {"default": {"names": ["Windows Server 2019"]}}, "msrc_fetch_logs": {str(msrc): "fetch_log.jsonl"},
+              "windows_update_history": {"Windows Server 2019": {"id": "h2019.html", "url": "u", "build_line": "17763"}}}
+    out = bf.build_windows(fx.candidate_units(rows), rows, config, bf.Raw([snap]))["Windows Server 2019"]
+    assert out["rule"] == "P5w update history" and out["n_releases"] == 5
+    got = [(f["version"], f["kb"], f["release_date"], [i["cve"] for i in f["vulnerable_for"]], [i["cve"] for i in f["fixed_for"]], f["affected_by"])
+           for f in out["fixtures"]]
+    assert got == [("10.0.17763.187", "KB3189866", "2016-09-13", ["CVE-2023-2"], [], ["CVE-2023-1", "CVE-2023-2"]),
+                   ("10.0.17763.4974", "KB5031361", "2023-10-10", [], ["CVE-2023-2"], ["CVE-2023-1"]),
+                   ("10.0.17763.5011", "KB5031358", "2023-10-26", ["CVE-2023-1"], [], ["CVE-2023-1"]),
+                   ("10.0.17763.5122", "KB5032196", "2023-11-14", [], ["CVE-2023-1"], [])]
+    ev = out["fixtures"][3]["fixed_for"][0]
+    assert ev["after"] == "10.0.17763.5011" and ev["cohort"] == "core" and ev["evidence"]["mapped_kb"] == "KB5032196"
+    assert ev["evidence"]["msrc_sources"][0]["sha256"] == hashlib.sha256(b"{}").hexdigest()
+    assert out["fixtures"][0]["release_source"][0]["raw"].endswith("windows_update_history/h2019.html")
+    assert [m["cve"] for m in out["msrc_fixed_build_mismatch"]] == ["CVE-2023-2"]
+    assert [(d["cve"], d["reason"]) for d in out["dropped"]] == [("CVE-2023-3", "fix_kb_not_in_update_history")]
+    assert out["affected_unknown_no_fixed_build"] == ["CVE-2023-3"]
+    rows_table = bf.windows_history_rows({"windows": {"Windows Server 2019": out}})
+    assert rows_table == [{"product": "Windows Server 2019", "cohort": "core", "n_releases": 5, "cves": 3, "cves_with_vulnerable_fixture": 2,
+                           "cves_with_fixed_fixture": 2, "vulnerable_fixtures": 2, "fixed_fixtures": 2,
+                           "dropped_by_reason": {"fix_kb_not_in_update_history": 1}, "msrc_fixed_build_mismatch": 1}]
