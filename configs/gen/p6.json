@@ -48,5 +48,6 @@
        "names": ["cpe:2.3:a:microsoft:sql_server:{1}:-:*:*:*:*:x64:*", "cpe:2.3:a:microsoft:sql_server_{1}:{build}:-:*:*:*:*:x64:*"]}]}
   },
   "admin_principals": ["root", "SYSTEM"],
-  "smoke": {"namespace": "p6-smoke", "sizes": [12, 20, 30], "seeds_per_cell": 10}
+  "smoke": {"namespace": "p6-smoke", "sizes": [12, 20, 30], "seeds_per_cell": 5,
+            "os_mixes": [0.5, 0.25, 0.75], "search_max_expansions": 20000}
 }
