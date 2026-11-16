@@ -2,44 +2,22 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-# Raw data stays local; the derived CVE table (D11) is tracked.
+# data/ stays local. The data/derived tables already tracked stay tracked; new files there are ignored (OQ-M2-4, 16 Nov 2026).
 data/*
-!data/derived/
 runs/
 .DS_Store
-# Run outputs stay local; only the directory skeleton is tracked.
+# Nothing under results/ is committed (OQ-M2-2, OQ-M2-4, 16 Nov 2026), old-study folders included: files already
+# tracked (frozen study, the .gitkeep files) stay tracked, new files are ignored. Exception: the test-access log.
 results/*
-!results/raw/
-results/raw/*
-!results/raw/.gitkeep
-# Measurement runs (raw.json, report.md, provenance.json) are tracked.
-!results/landscape/
-!results/feasibility/
-# Training runs (with checkpoints) and validation evaluations are tracked (D21).
-!results/training/
-!results/evaluation/
-# D23 §2 statistics regenerated from evaluation raw records (D24 §6).
-!results/analysis/
-!results/cve_semantics/
-!results/lit_search/
-# D28 run folders and manifests (results/d28_data/ and the rest) stay local and untracked (OQ-M2-2, 16 Nov 2026).
-# d28-effect run folders hold CVE evidence text (pool.json, ~28 MB each): local only, never in d28-rebuild history (M2).
-results/d28_effect/
-# WL checkpoints are ~70 MB (1.9M-colour vocabulary); local only, SHA-256 in D21 amendment 2.
-results/training/**/wl-*/**/model.pt
-# Every read of a test split (D17 §4, D19 §1) is tracked.
+# Every read of a test split (D17 §4, D19 §1) is tracked (BUILD_RULES rule 7).
 !results/test_access_log.jsonl
 docs/ai_usage_log.md
 third_party/
 logs/
-# Documentation is local-only (task P-1, 2026-11-15). Run outputs under results/ stay tracked.
+# Documentation is local-only (task P-1, 2026-11-15).
 docs/
 CLAUDE.md
 *.md
 !/README.md
 !LICENSE*
 !NOTICE*
-# Re-include run reports inside results/<dir>/, but not .md files directly in results/ or in results/raw/
-# (those stay ignored, as before P-1).
-!/results/*/**/*.md
-/results/raw/**/*.md
