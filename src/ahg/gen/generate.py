@@ -47,6 +47,7 @@ class Context:
     principals: dict
     input_hashes: dict
     _inv: dict = field(default_factory=dict)
+    match_cache: dict = field(default_factory=dict)  # evaluator results; valid only for this context's inputs
 
     @classmethod
     def load(cls, config: Path = CONFIG, root: Path = pool.ROOT) -> "Context":
@@ -92,7 +93,8 @@ def generate(ctx: Context, archetype: str, seed: str, n: int, cohort: str = "cor
                                   cfg["reuse_alpha"])
     families_of = {0: []} | {h: c.families for h, c in configs.items()}
     firewall = topology.draw_firewall(lay, families_of, rng, cfg["topology"]["firewall_allow_probability"])
-    matches = build.match_records(configs, ctx.run_units(cohort, excluded), ctx.master)
+    matches = build.match_records(configs, ctx.run_units(cohort, excluded), ctx.master, ctx.catalogue["windows"],
+                                  tuple(cfg["rollup_lines"]), ctx.match_cache)
     sensitive = sorted(h for s in lay.subnets if s.zone == "sensitive" for h in s.hosts)
     goal_host = sensitive[0] if len(sensitive) == 1 else random.Random(f"goal:{archetype}:{seed}").choice(sensitive)
     built = build.build_task(lay, configs, firewall, matches, ctx.principals, set(cfg["admin_principals"]), goal_host)

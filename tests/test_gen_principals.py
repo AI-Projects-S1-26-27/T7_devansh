@@ -106,3 +106,19 @@ def test_every_principal_sources_config_is_well_formed():
         for p in cfg["pages"]:
             assert re.fullmatch(r"https?://[^\s]+", p["url"]) and "/" not in p["name"]
             assert p["for"] and all(re.fullmatch(r"[^|]+\|[a-z]+", k) for k in p["for"])
+
+
+def test_rollup_cumulative_citation_is_verbatim_in_its_hashed_page():
+    """OQ-P6-16: Microsoft's own update-history page states that the newest update includes the previous ones."""
+    import hashlib
+
+    import pytest
+
+    cite = json.loads((ROOT / "configs" / "gen" / "p6.json").read_text())["rollup_cumulative"]
+    assert cite["url"].startswith("https://support.microsoft.com/") and re.fullmatch(r"[0-9a-f]{64}", cite["sha256"])
+    raw_path = ROOT / cite["raw"]
+    if not raw_path.exists():
+        pytest.skip("P5w raw page not in this checkout")
+    raw = raw_path.read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == cite["sha256"]
+    assert cite["quote"] in page_text(raw)

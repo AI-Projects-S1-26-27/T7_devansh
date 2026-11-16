@@ -112,7 +112,7 @@ def test_an_msrc_affected_record_is_an_applicability_record_of_its_own():
     assert both([], [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.3165"])) == ["msrc"]
     ev = cpe.component_matches([], [WIN19], [WIN19], ms("Windows Server 2019", "10.0.17763.3046", ["10.0.17763.3165"]))
     assert ev == [{"configuration": "msrc", "product": "Windows Server 2019", "build": "10.0.17763.3046",
-                   "fixed_build": "10.0.17763.3165", "kbs": []}]
+                   "fixed_by": "10.0.17763.3165", "kbs": []}]
 
 
 def test_specific_criteria_value_needs_equal_host_value():
@@ -231,3 +231,89 @@ def test_second_evaluator_imports_nothing_from_ahg():
     mods = [n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
     mods += [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names]
     assert not any(x.startswith("ahg") or x.startswith(".") for x in mods), mods
+
+
+# ---------------------------------------------------------------- P6b (17 Nov 2026): KBs mapped through the catalogue
+
+def rel(version, date, kb, fixed=(), standalone=(), unknown=(), kbs=()):
+    """One P5w catalogue release row."""
+    ff = [{"cve": c, "evidence": {"mapped_kb": kb}} for c in fixed]
+    ff += [{"cve": c, "evidence": {"standalone_kb": k}} for c, k in standalone]
+    return {"version": version, "release_date": date, "kb": kb, "fixed_for": ff, "standalone_kbs": list(kbs),
+            "affected_unknown_standalone": list(unknown)}
+
+
+def cat_ms(name, host_version, releases, order="build", kbs=(), fix_kb="5000001", fixed_build=None):
+    """MSRC context whose record has a KB but (by default) no fixed build: only the catalogue places it."""
+    c = ms(name, host_version, [fixed_build], kbs=kbs, fix_kb=fix_kb)
+    return c | {"cve": "CVE-2020-1", "releases": releases, "order": order}
+
+
+R19 = [rel("10.0.17763.100", "2020-01-14", "KB5000000"), rel("10.0.17763.200", "2020-02-11", "KB5000001", fixed=["CVE-2020-1"]),
+       rel("10.0.17763.300", "2020-03-10", "KB5000002")]
+
+
+def test_kb_only_record_is_placed_through_the_catalogue_release():
+    """OQ-P6-14 (changed): an MSRC KB with no fixed build maps to the release shipping it."""
+    c = [cfg(node(m("cpe:2.3:o:microsoft:windows_server_2019:-:*:*:*:*:*:*:*")))]
+    assert both(c, [WIN19], [WIN19], cat_ms("Windows Server 2019", "10.0.17763.100", R19)) == [0, "msrc"]
+    assert both(c, [WIN19], [WIN19], cat_ms("Windows Server 2019", "10.0.17763.200", R19)) == []
+    assert both([], [WIN19], [WIN19], cat_ms("Windows Server 2019", "10.0.17763.300", R19)) == []
+
+
+def test_unmapped_kb_without_fixed_build_does_not_apply():
+    other = [rel("10.0.17763.100", "2020-01-14", "KB5000000")]
+    assert both([], [WIN19], [WIN19], cat_ms("Windows Server 2019", "10.0.17763.100", other)) == []
+    # an MSRC fixed build still places it when the catalogue has no mapping
+    assert both([], [WIN19], [WIN19], cat_ms("Windows Server 2019", "10.0.17763.100", other,
+                                             fixed_build="10.0.17763.150")) == ["msrc"]
+
+
+R12 = [rel("KB3000000", "2017-01-10", "KB3000000"), rel("KB3000001", "2017-02-14", "KB3000001", fixed=["CVE-2020-1"]),
+       rel("KB3000002", "2017-03-14", "KB3000002")]
+
+
+def test_rollups_are_ordered_by_release_date():
+    """OQ-P6-16: 2012 R2 rollups are cumulative; the fixing rollup or any later one is unaffected."""
+    c = [cfg(node(m("cpe:2.3:o:microsoft:windows_server_2012:r2:*:*:*:*:*:*:*")))]
+    name = "Windows Server 2012 R2"
+    assert both(c, [WIN12R2], [WIN12R2], cat_ms(name, "KB3000000", R12, "date")) == [0, "msrc"]
+    assert both(c, [WIN12R2], [WIN12R2], cat_ms(name, "KB3000001", R12, "date")) == []
+    assert both(c, [WIN12R2], [WIN12R2], cat_ms(name, "KB3000002", R12, "date")) == []
+
+
+def test_standalone_kb_fix_needs_the_kb_even_on_later_releases():
+    rows = [rel("10.0.17763.100", "2020-01-14", "KB5000000"),
+            rel("10.0.17763.100+KB4519337", "2020-01-20", "KB5000000", standalone=[("CVE-2020-1", "KB4519337")],
+                kbs=["KB4519337"]),
+            rel("10.0.17763.300", "2020-03-10", "KB5000002")]
+    name = "Windows Server 2019"
+    assert both([], [WIN19], [WIN19], cat_ms(name, "10.0.17763.300", rows, fix_kb="4519337")) == ["msrc"]
+    assert both([], [WIN19], [WIN19], cat_ms(name, "10.0.17763.100+KB4519337", rows, fix_kb="4519337",
+                                             kbs=["KB4519337"])) == []
+
+
+def test_release_with_unknown_standalone_status_is_not_placed():
+    rows = [rel("KB3000000", "2017-01-10", "KB3000000", unknown=["CVE-2020-1"])] + R12[1:]
+    assert both([], [WIN12R2], [WIN12R2], cat_ms("Windows Server 2012 R2", "KB3000000", rows, "date")) == []
+
+
+def test_evaluators_agree_on_fuzzed_release_lines():
+    rng = random.Random(17)
+    for _ in range(600):
+        n = rng.randint(1, 5)
+        dates = sorted(f"2020-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}" for _ in range(n))
+        rows = []
+        for i in range(n):
+            v = f"10.0.17763.{100 * (i + 1)}" if rng.random() < 0.7 else f"KB{3000000 + i}"
+            st = [("CVE-2020-1", "KB4519337")] if rng.random() < 0.15 else []
+            rows.append(rel(v, dates[i], f"KB{3000000 + i}", fixed=["CVE-2020-1"] if rng.random() < 0.3 and not st else [],
+                            standalone=st, unknown=["CVE-2020-1"] if rng.random() < 0.1 else [],
+                            kbs=["KB4519337"] if st else []))
+        host = rng.choice([r["version"] for r in rows] + ["10.0.17763.150"])
+        ctx = cat_ms("Windows Server 2019", host, rows, rng.choice(["date", "build"]),
+                     kbs=rng.sample(["KB4519337", "KB5000001"], rng.randint(0, 1)),
+                     fix_kb=rng.choice(["5000001", "4519337", None]),
+                     fixed_build=rng.choice([None, "10.0.17763.250"]))
+        configs = [cfg(node(m("cpe:2.3:o:microsoft:windows_server_2019:-:*:*:*:*:*:*:*")))] if rng.random() < 0.5 else []
+        both(configs, [WIN19], [WIN19], ctx)

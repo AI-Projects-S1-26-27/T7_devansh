@@ -142,8 +142,11 @@ def test_match_set_equals_an_independent_recheck():
                     if x["release_line"]:  # Microsoft component: the raw MSRC records of this unit
                         ids = [i for y in row["units"] if (y["product"], y["family"]) == (u.product, u.family)
                                for i in y.get("msrc_products", [])]
+                        line = x["release_line"]
                         msrc = {"products": (row.get("msrc") or {}).get("products") or {}, "unit_ids": ids,
-                                "name": x["release_line"], "build": x["version"], "kbs": x["kbs"]}
+                                "name": line, "build": x["version"], "kbs": x["kbs"], "cve": u.cve_id,
+                                "releases": (c.catalogue["windows"].get(line) or {}).get("fixtures"),
+                                "order": "date" if line in CFG["rollup_lines"] else "build"}
                     if cpe_check.applies(row["configurations"], names, x["cpe_names"], msrc):
                         want.add((h["id"], ci, u.cve_id))
         assert want == {(m["host"], m["component"], m["cve"]) for m in d["metadata"]["matches"]}
@@ -262,18 +265,51 @@ def test_p_statuses():
 
 
 def test_unverified_release_tasks_are_flagged_and_only_at_p1():
+    """The flag equals "some host component is unverified"; unverified fixtures are never drawn at p < 1.
+    (The 49500af catalogue holds none: P5v verified them. The flag is checked on a catalogue copy that does.)"""
+    import copy
+
     c = ctx()
     for p in (0.75, 0.5, 0.25):
         inv = c.inventory("core", p, frozenset())
-        for prods in inv.products.values():
-            assert not any(q.name in ("oracle:mysql", "solarwinds:serv-u") for q in prods)
-    found = False
-    for s in range(60):
-        d = doc("tree", f"u{s}", 12, linux=1.0)
+        assert not any(f.unverified for prods in inv.products.values() for q in prods for f in q.fixtures
+                       if inv.status.get((q.name, f.version)) == "unaffected")
+    cat = copy.deepcopy(c.catalogue)
+    for f in cat["linux"]["apache:http_server"]["fixtures"]:
+        f["unverified_release"] = True  # every httpd fixture becomes unverified
+    c2 = gen.Context(c.cfg, c.units, c.funnel, c.master, cat, c.principals, c.input_hashes)
+    seen = {True: 0, False: 0}
+    for s in range(40):
+        d = gen.generate(c2, "tree", f"u{s}", 12, os_mix={"linux": 1.0, "windows": 0.0})
         uses = any(x["unverified_release"] for h in d["metadata"]["hosts"] for x in h["components"])
         assert d["flags"]["unverified_release"] == uses
-        found |= uses
-    assert found
+        seen[uses] += 1
+        d5 = gen.generate(c2, "tree", f"u{s}", 12, p=0.5, os_mix={"linux": 1.0, "windows": 0.0})
+        assert not d5["flags"]["unverified_release"]
+    assert seen[True] and seen[False]
+
+
+def test_fixtures_with_unknown_status_are_never_drawn_in_a_cohort_whose_pool_has_the_cve():
+    """Devansh, 17 Nov 2026: affected_unknown_standalone fixtures are removed from draws; counted in the report."""
+    c = ctx()
+    for cohort in ("core", "temporal"):
+        inv = c.inventory(cohort, 1.0, frozenset())
+        pool_cves = {u.cve_id for u in c.run_units(cohort, frozenset())}
+        removed = 0
+        for prods in list(inv.products.values()) + [inv.windows_versions]:
+            for q in prods:
+                for f in q.fixtures:
+                    if set(f.unknown) & pool_cves:
+                        removed += 1
+                        assert inv.status[(q.name, f.version)] == "unknown"
+        assert removed == sum(inv.report["unknown_fixtures"].values()) or removed <= sum(
+            inv.report["unknown_fixtures"].values())
+        for s in range(6):
+            d = doc("chain", f"unk{s}", 12, cohort)
+            for h in d["metadata"]["hosts"]:
+                for x in h["components"]:
+                    assert inv.status.get((x["product"], x["version"])) != "unknown"
+    assert any(c.inventory(co, 1.0, frozenset()).report["unknown_fixtures"] for co in ("core", "temporal"))
 
 
 # ---------------------------------------------------------------- actions, merge, cost
@@ -505,7 +541,7 @@ def test_msrc_only_matches_are_stored_and_traced():
         for m in d["metadata"]["matches"]:
             if [e["configuration"] for e in m["evidence"]] == ["msrc"]:
                 found += 1
-                assert m["evidence"][0]["fixed_build"] and m["evidence"][0]["product"]
+                assert m["evidence"][0]["fixed_by"] and m["evidence"][0]["product"]
                 # a match need not have an action (no foothold on the host, or no reaching source);
                 # every action's matches are checked in test_every_action_traces_to_match_records
     assert found
@@ -524,6 +560,13 @@ def test_a_fixture_kb_list_reaches_both_evaluators():
                                                                 ("KB5040000",)), "vulnerable")
     assert [e["configuration"] for e in build.evaluate(unit, row, list(name), plain)] == ["msrc"]
     assert build.evaluate(unit, row, list(name), patched) == []
+    # the catalogue route: a KB-only record placed by the release that ships it (OQ-P6-14, 17 Nov 2026)
+    row["msrc"]["products"]["9"]["fixes"] = [{"fixed_build": None, "kb": "5040001"}]
+    windows = {"SQL X": {"fixtures": [{"version": "15.0.1", "release_date": "2024-01-09", "kb": "KB1", "fixed_for": []},
+                                      {"version": "15.0.3", "release_date": "2024-02-13", "kb": "KB5040001",
+                                       "fixed_for": [{"cve": "CVE-2099-1", "evidence": {}}]}]}}
+    assert [e["configuration"] for e in build.evaluate(unit, row, list(name), plain, windows)] == ["msrc"]
+    assert build.evaluate(unit, row, list(name), plain, {}) == []  # KB in none of the sources: not applied
 
 
 def test_cve_specific_principal_overrides_the_product_entry():

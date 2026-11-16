@@ -18,8 +18,10 @@ a digit-led host version; a component is vulnerable if a true configuration has 
 `vulnerable: true` cpeMatch satisfied by one of the component's names and, for a Microsoft criteria with no
 bounds, the MSRC build check passes. MSRC (P6b): among the unit's MSRC product IDs, the records with status
 type 3 named as the host's MSRC product; the check passes if one has a fixed build and the host build is
-below the lowest, unless one of the record's fixing KBs is among the host's standalone KBs; such a record
-is also an applicability record of its own ("msrc").
+before the CVE's fixing point (the catalogue release that ships the fix: release dates on rollup lines,
+builds otherwise, a standalone KB that must be installed; else the lowest fixed build), unless one of the
+record's fixing KBs is among the host's standalone KBs; such a record is also an applicability record of
+its own ("msrc").
 Version order: numbers numerically; the words dev < alpha < beta < m/milestone < pre/preview < rc sort
 below the bare release; any other word sorts above it; a run of trailing zero numbers is ignored
 (5.10 == 5.10.0).
@@ -163,26 +165,52 @@ def _positive_vulnerable(cfg: dict) -> list[dict]:
 
 
 def msrc_check(msrc: dict | None) -> bool:
-    """True if the host build is below the lowest fixed build of an affected MSRC record for its product."""
+    """True if the host is on an affected MSRC record of its product and before the CVE's fixing point
+    (same rule as ahg.gen.cpe.msrc_affected, written separately)."""
     if msrc is None or not msrc.get("name"):
         return False
-    installed = set()
-    for k in msrc.get("kbs") or []:
-        k = str(k).strip().upper()
-        installed.add(k[2:] if k.startswith("KB") else k)
+    records = [msrc["products"][pid] for pid in msrc["unit_ids"] if pid in msrc["products"]]
+    mine = [r for r in records if r["name"] == msrc["name"] and r.get("status_type") == 3]
+    if not mine:
+        return False
+
+    def norm(kb):
+        k = str(kb).strip().upper()
+        return k[2:] if k.startswith("KB") else k
+
+    installed = {norm(k) for k in msrc.get("kbs") or []}
+    if any(fix.get("kb") and norm(fix["kb"]) in installed for r in mine for fix in r.get("fixes") or []):
+        return False
+    cve, rows = msrc.get("cve"), msrc.get("releases") or []
+    host_row = None
+    fix_row, fix_entry = None, None
+    for row in rows:
+        if host_row is None and row["version"] == msrc["build"]:
+            host_row = row
+        if fix_row is None:
+            for entry in row.get("fixed_for") or []:
+                if entry["cve"] == cve:
+                    fix_row, fix_entry = row, entry
+                    break
+    if host_row is not None and cve in (host_row.get("affected_unknown_standalone") or []):
+        return False
+    if fix_row is not None:
+        if "standalone_kb" in (fix_entry.get("evidence") or {}):
+            return True  # only the standalone KB fixes it, and it is not installed
+        if host_row is None:
+            return False
+        if msrc.get("order") == "date":
+            return host_row["release_date"] < fix_row["release_date"]
+        return compare_versions(host_row["version"].partition("+")[0], fix_row["version"].partition("+")[0]) < 0
     lowest = None
-    for pid in msrc["unit_ids"]:
-        rec = msrc["products"].get(pid)
-        if rec is None or rec["name"] != msrc["name"] or rec.get("status_type") != 3:
-            continue
-        for fix in rec.get("fixes") or []:
-            kb = str(fix.get("kb") or "").strip().upper()
-            if kb and (kb[2:] if kb.startswith("KB") else kb) in installed:
-                return False  # the fixing standalone KB is installed
+    for r in mine:
+        for fix in r.get("fixes") or []:
             b = fix.get("fixed_build")
             if b and (lowest is None or compare_versions(b, lowest) < 0):
                 lowest = b
-    return lowest is not None and compare_versions(msrc["build"], lowest) < 0
+    if lowest is None or not msrc["build"][:1].isdigit():
+        return False
+    return compare_versions(msrc["build"].partition("+")[0], lowest) < 0
 
 
 def _microsoft_unbounded(match: dict) -> bool:

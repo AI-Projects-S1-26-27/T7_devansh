@@ -48,9 +48,6 @@ def label_product(host: HostConfig, comp: Component) -> str:
     return "windows_os" if comp.family == "os" and host.os == "windows" else comp.product
 
 
-_CACHE: dict[tuple, list[dict]] = {}
-
-
 def _criteria_products(configs: list[dict]) -> set[tuple[str, ...]] | None:
     """(part, vendor, product) of every criteria in a CVE's configurations; None if one is a wildcard."""
     out = set()
@@ -66,42 +63,52 @@ def _criteria_products(configs: list[dict]) -> set[tuple[str, ...]] | None:
     return out
 
 
-def msrc_context(master_row: dict, unit: Unit, comp: Component) -> dict | None:
-    """The MSRC inputs of one (CVE unit, component) pair, raw, for both evaluators; None off Microsoft data."""
+def msrc_context(master_row: dict, unit: Unit, comp: Component, windows: dict, rollup_lines: list[str]) -> dict | None:
+    """The MSRC inputs of one (CVE unit, component) pair, raw, for both evaluators; None off Microsoft data.
+
+    windows: the catalogue's Microsoft release lines (their rows map a fixing KB to the release shipping it).
+    """
     if not comp.fixture.release_line:
         return None
     ids = [i for x in master_row["units"] if (x["product"], x["family"]) == (unit.product, unit.family)
            for i in x.get("msrc_products", [])]
     products = (master_row.get("msrc") or {}).get("products") or {}
-    return {"products": products, "unit_ids": ids, "name": comp.fixture.release_line, "build": comp.fixture.version,
-            "kbs": list(comp.fixture.kbs)}
+    line = comp.fixture.release_line
+    return {"products": products, "unit_ids": ids, "name": line, "build": comp.fixture.version,
+            "kbs": list(comp.fixture.kbs), "cve": unit.cve_id, "releases": (windows.get(line) or {}).get("fixtures"),
+            "order": "date" if line in rollup_lines else "build"}
 
 
-def evaluate(unit: Unit, master_row: dict, host: list[str], comp: Component) -> list[dict]:
+def evaluate(unit: Unit, master_row: dict, host: list[str], comp: Component, windows: dict | None = None,
+             rollup_lines: tuple[str, ...] = (), cache: dict | None = None) -> list[dict]:
     """Both evaluators on one (host, component, CVE unit); raises EvaluatorDisagreement if they differ.
 
     Host names whose (part, vendor, product) no criteria of the CVE names cannot satisfy any cpeMatch, so
-    both evaluators are given only the others (unless a criteria wildcards one of those fields). Results are
-    cached on that reduced input plus the MSRC inputs, which is all either evaluator reads.
+    both evaluators are given only the others (unless a criteria wildcards one of those fields). With a cache
+    (owned by a generate.Context, so it never outlives the master and catalogue it was computed from) results
+    are kept per reduced input plus the component's MSRC identity.
     """
     configs = master_row["configurations"]
     names = list(comp.fixture.cpe_names)
-    ms = msrc_context(master_row, unit, comp)
+    ms = msrc_context(master_row, unit, comp, windows or {}, list(rollup_lines))
     keys = _criteria_products(configs)
     rel = tuple(host) if keys is None else tuple(n for n in host if tuple(n.split(":")[2:5]) in keys)
     key = (unit.cve_id, unit.product, unit.family, rel, tuple(names), comp.fixture.release_line, comp.fixture.version,
            comp.fixture.kbs)
-    if key not in _CACHE:
-        ev = cpe_eval.component_matches(configs, list(rel), names, ms)
-        ev2 = cpe_check.applies(configs, list(rel), names, ms)
-        if [e["configuration"] for e in ev] != ev2:
-            raise EvaluatorDisagreement(f"{unit.cve_id} on {names}: primary {[e['configuration'] for e in ev]} "
-                                        f"vs second {ev2}")
-        _CACHE[key] = ev
-    return _CACHE[key]
+    if cache is not None and key in cache:
+        return cache[key]
+    ev = cpe_eval.component_matches(configs, list(rel), names, ms)
+    ev2 = cpe_check.applies(configs, list(rel), names, ms)
+    if [e["configuration"] for e in ev] != ev2:
+        raise EvaluatorDisagreement(f"{unit.cve_id} on {names}: primary {[e['configuration'] for e in ev]} "
+                                    f"vs second {ev2}")
+    if cache is not None:
+        cache[key] = ev
+    return ev
 
 
-def match_records(hosts: dict[int, HostConfig], units: list[Unit], master: dict[str, dict]) -> list[dict]:
+def match_records(hosts: dict[int, HostConfig], units: list[Unit], master: dict[str, dict], windows: dict | None = None,
+                  rollup_lines: tuple[str, ...] = (), cache: dict | None = None) -> list[dict]:
     """Every (host, component, CVE) match, checked by both evaluators. Sorted by host, component, CVE."""
     by: dict[tuple[str, str], list[Unit]] = defaultdict(list)
     for u in units:
@@ -112,7 +119,7 @@ def match_records(hosts: dict[int, HostConfig], units: list[Unit], master: dict[
         names = cfg.cpe_names()
         for ci, comp in enumerate(cfg.components):
             for u in by.get((label_product(cfg, comp), comp.family), []):
-                ev = evaluate(u, master[u.cve_id], names, comp)
+                ev = evaluate(u, master[u.cve_id], names, comp, windows, rollup_lines, cache)
                 if ev:
                     out.append({"host": h, "component": ci, "family": comp.family, "product": comp.product,
                                 "version": comp.fixture.version, "cve": u.cve_id, "kind": u.kind, "ac": u.ac,

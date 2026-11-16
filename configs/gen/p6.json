@@ -5,9 +5,10 @@
   "labels": "p3-labels-v2.1",
   "master": {"path": "data/d28/master/2026-11-15T124455Z-cf2dc62/cves.jsonl.gz",
              "sha256": "d7c7c2c849c8779e7b776d1653c602f6cedb3f55009f8ea641d90b2997dd082c"},
-  "catalogue": {"path": "data/d28/fixtures/2026-11-16T091054Z-b863e27/catalogue_eligible.json.gz",
-                "sha256": "150961a60ba4071732780d39e7b44d1371776bc867063c2025e3376caecc9c12",
-                "run": "results/d28_fixtures/catalogue/2026-11-16T091121Z-b863e27"},
+  "catalogue": {"path": "data/d28/fixtures/2026-11-16T190753Z-49500af/catalogue_eligible.json.gz",
+                "sha256": "1867791d0d2346116ec6fb9b6cbcde421c1e32b62d734d33a435e913d9e34295",
+                "run": "results/d28_fixtures/catalogue/2026-11-16T190822Z-49500af",
+                "built_at": "d28-fixtures 49500af, the final P5w catalogue (P6b step 6, Devansh 17 Nov 2026), clean run in ../ahg-fixtures"},
   "principals": "configs/gen/principals.json",
   "topology": {
     "tree": {"zone_divisor": 40, "user_subnet_max": 5},
@@ -29,6 +30,13 @@
     "Windows Server 2019": "cpe:2.3:o:microsoft:windows_server_2019:{build}:-:*:*:*:*:x64:*",
     "Windows Server 2022": "cpe:2.3:o:microsoft:windows_server_2022:{build}:-:*:*:*:*:x64:*"
   },
+  "rollup_lines": ["Windows Server 2012 R2"],
+  "rollup_cumulative": {"decision": "P6b, 17 Nov 2026 (OQ-P6-16): 2012 R2 releases are monthly rollups ordered by release date; a host is unaffected if its rollup is the fixing rollup or later",
+    "url": "https://support.microsoft.com/en-us/topic/windows-8-1-and-windows-server-2012-r2-update-history-47d81dd2-6804-b6ae-4112-20089467c7a6",
+    "raw": "data/raw/fixtures_p5w/2026-11-16/windows_update_history/windows_8.1_server_2012_r2_update_history.html",
+    "sha256": "2659c44440862cc579d2f03951d6e3ae800a61b5f75de031f8c282dd146546f1",
+    "retrieved_utc": "2026-11-16T18:38:21+00:00",
+    "quote": "Installing the most recent update means you get all of the previous updates, as well, including important security fixes."},
   "windows_builtin": {"smb": "Windows SMB server", "rdp": "Remote Desktop Services", "dns": "Windows DNS Server",
                       "http": "IIS", "ftp": "IIS", "ssh": "OpenSSH for Windows"},
   "windows_products": {

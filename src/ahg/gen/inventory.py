@@ -20,7 +20,9 @@ fixture's build; else `unaffected`. Co-conditions are ignored here, so an unaffe
 a vulnerable one is vulnerable on its own (the final match on a real host still evaluates every
 co-condition). A Windows OS build's status counts the units of the OS and of every built-in service,
 because they all ride on that build. `unverified_release` fixtures are vulnerable-only and used at p = 1
-only; an unaffected fixture is any other catalogue fixture with no cohort match (OQ-P6-3).
+only; an unaffected fixture is any other catalogue fixture with no cohort match (OQ-P6-3). A fixture whose
+status P5w left unknown for a CVE of the cohort's pool (`affected_unknown_standalone`) gets status `unknown`
+and is never drawn (Devansh, 17 Nov 2026); the report counts them per product.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ class Fixture:
     release_line: str = ""  # MSRC product name for Windows builds; "" for Linux
     builtins: tuple[str, ...] = ()  # Windows OS builds: the built-in products MSRC lists for this version
     kbs: tuple[str, ...] = ()  # Microsoft builds: standalone KBs installed on top of the cumulative build
+    unknown: tuple[str, ...] = ()  # CVEs whose status on this release P5w left unknown (affected_unknown_standalone)
 
 
 @dataclass
@@ -61,6 +64,9 @@ class Product:
 # Catalogue field holding a Windows fixture's standalone KBs (P6b addendum). The b863e27 catalogue has none;
 # the field name must be checked against the P5w catalogue when it is pinned (OQ-P6b-3).
 KB_FIELD = "standalone_kbs"
+# Catalogue field listing the CVEs whose status on a release is unknown (P5w). Rule (Devansh, 17 Nov 2026): such
+# a fixture is never drawn in a cohort whose pool holds one of those CVEs.
+UNKNOWN_FIELD = "affected_unknown_standalone"
 
 
 def load_catalogue(cfg: dict, root: Path = ROOT) -> dict:
@@ -106,8 +112,8 @@ def products(cfg: dict, catalogue: dict) -> tuple[list[Product], list[dict]]:
     for version, template in cfg["windows_versions"].items():
         row = win[version]
         builtins = tuple(u for u in row["units"] if u != "windows_os")
-        fx = [Fixture(version, f["version"], (template.replace("{build}", f["version"]),), False, version, builtins,
-                      tuple(f.get(KB_FIELD) or ())) for f in row["fixtures"]]
+        fx = [Fixture(version, f["version"], (template.replace("{build}", f["version"].split("+", 1)[0]),), False, version, builtins,
+                      tuple(f.get(KB_FIELD) or ()), tuple(f.get(UNKNOWN_FIELD) or ())) for f in row["fixtures"]]
         out.append(Product("windows", "os", version, fx))
     for prod, spec in cfg["windows_products"].items():
         fx = []
@@ -119,14 +125,16 @@ def products(cfg: dict, catalogue: dict) -> tuple[list[Product], list[dict]]:
                 if names is None:
                     notes.append({"product": prod, "release_line": msrc_name, "dropped": "no CPE name pattern"})
                     break
-                fx.append(Fixture(prod, f["version"], names, False, msrc_name, (), tuple(f.get(KB_FIELD) or ())))
+                fx.append(Fixture(prod, f["version"], names, False, msrc_name, (), tuple(f.get(KB_FIELD) or ()),
+                                  tuple(f.get(UNKNOWN_FIELD) or ())))
         out.append(Product("windows", spec["family"], prod, fx))
     for fam, prod in cfg["windows_builtin"].items():
         out.append(Product("windows", fam, prod, [], builtin=True))
     return out, notes
 
 
-def potential_cves(units: list[Unit], vuln: dict[str, list[dict]], master: dict[str, dict], fx: Fixture) -> list[str]:
+def potential_cves(units: list[Unit], vuln: dict[str, list[dict]], master: dict[str, dict], fx: Fixture,
+                   windows: dict | None = None, rollup_lines: tuple[str, ...] = ()) -> list[str]:
     """CVE IDs of `units` that can make fixture `fx` vulnerable (status rule): a non-negated vulnerable cpeMatch
     marks one of its CPE names (with the MSRC build check where it applies), or an MSRC affected record
     applies to its build.
@@ -140,7 +148,8 @@ def potential_cves(units: list[Unit], vuln: dict[str, list[dict]], master: dict[
         if fx.release_line:
             row = master[u.cve_id]
             ms = {"products": (row.get("msrc") or {}).get("products") or {}, "name": fx.release_line, "build": fx.version,
-                  "kbs": list(fx.kbs),
+                  "kbs": list(fx.kbs), "cve": u.cve_id, "releases": ((windows or {}).get(fx.release_line) or {}).get("fixtures"),
+                  "order": "date" if fx.release_line in rollup_lines else "build",
                   "unit_ids": [i for x in row["units"] if (x["product"], x["family"]) == (u.product, u.family)
                                for i in x.get("msrc_products", [])]}
         fb = cpe_eval.msrc_affected(ms)
@@ -148,6 +157,26 @@ def potential_cves(units: list[Unit], vuln: dict[str, list[dict]], master: dict[
                                  for m in vuln[u.cve_id]):
             hits.append(u.cve_id)
     return sorted(set(hits))
+
+
+def unplaceable(units: list[Unit], master: dict[str, dict], windows: dict) -> dict[str, list[str]]:
+    """Per Microsoft release line: cohort CVEs with an affected MSRC record for it whose fixing KB maps to no
+    catalogue release and which have no MSRC fixed build either (OQ-P6-14: these do not apply, and are counted)."""
+    out: dict[str, set[str]] = defaultdict(set)
+    for u in units:
+        if u.os != "windows":
+            continue
+        row = master[u.cve_id]
+        products = (row.get("msrc") or {}).get("products") or {}
+        ids = [i for x in row["units"] if (x["product"], x["family"]) == (u.product, u.family) for i in x.get("msrc_products", [])]
+        for line in sorted({products[i]["name"] for i in ids if i in products
+                            and products[i].get("status_type") == cpe_eval.MSRC_AFFECTED}):
+            if line not in windows:
+                continue
+            if cpe_eval.fixing_release(windows[line].get("fixtures"), u.cve_id) is None \
+                    and cpe_eval.msrc_fixed_build(products, ids, line) is None:
+                out[line].add(u.cve_id)
+    return {k: sorted(v, key=lambda c: tuple(int(x) for x in c.split("-")[1:])) for k, v in sorted(out.items())}
 
 
 @dataclass
@@ -182,10 +211,17 @@ def build_inventory(cfg: dict, catalogue: dict, units: list[Unit], master: dict[
     avail: dict[tuple[str, str], list[Product]] = defaultdict(list)
     versions, kernel = [], None
 
+    pool_cves = {u.cve_id for u in units}
+    report["unknown_fixtures"] = {}
+
     def classify(prod: Product, relevant: list[Unit]) -> dict:
-        n = {"vulnerable": 0, "vulnerable_verified": 0, "unaffected": 0}
+        n = {"vulnerable": 0, "vulnerable_verified": 0, "unaffected": 0, "unknown": 0}
         for f in prod.fixtures:
-            hit = potential_cves(relevant, vuln, master, f)
+            if set(f.unknown) & pool_cves:  # never drawn in this cohort (rule of 17 Nov 2026)
+                status[(prod.name, f.version)] = "unknown"
+                n["unknown"] += 1
+                continue
+            hit = potential_cves(relevant, vuln, master, f, catalogue["windows"], tuple(cfg["rollup_lines"]))
             st = "vulnerable" if hit else "unaffected"
             if st == "unaffected" and f.unverified:
                 st = "unusable"  # unverified releases are vulnerable-only (Round 4)
@@ -217,6 +253,8 @@ def build_inventory(cfg: dict, catalogue: dict, units: list[Unit], master: dict[
         else:
             n = classify(prod, relevant)
             row.update(n)
+            if n["unknown"]:
+                report["unknown_fixtures"][prod.name] = n["unknown"]
             if not relevant:
                 ok, row["reason"] = False, "no_cohort_unit"
             elif p == 1.0:
@@ -244,12 +282,13 @@ def build_inventory(cfg: dict, catalogue: dict, units: list[Unit], master: dict[
             if prod.builtin:
                 rel = by_prod.get((prod.name, prod.family), [])
                 fx = [f for v in versions if prod.name in v.fixtures[0].builtins for f in v.fixtures]
-                if not any(potential_cves(rel, vuln, master, f) for f in fx):
+                if not any(potential_cves(rel, vuln, master, f, catalogue["windows"], tuple(cfg["rollup_lines"])) for f in fx):
                     next(r for r in report["products"] if r["product"] == prod.name and r["family"] == prod.family
                          ).update(available=False, reason="no_matching_windows_build")
                     continue
             keep.append(prod)
         avail[key] = sorted(keep, key=lambda q: q.name)
+    report["unplaceable_kbs"] = unplaceable(units, master, catalogue["windows"])
     report["windows_versions"] = [v.name for v in versions]
     report["kernel"] = kernel is not None
     return Inventory(cohort, p, {k: v for k, v in sorted(avail.items()) if v}, sorted(versions, key=lambda v: v.name),

@@ -27,9 +27,11 @@ MSRC (Microsoft products, P6b): the MSRC affected-product records of a CVE are t
 MSRC product IDs with status type 3 (Known Affected). The host's component names one MSRC product (the
 Windows Server version, or the Exchange / SQL Server release line) and carries a build. The build check
 passes if that product has an affected record with at least one fixed build and the host build is earlier
-than the lowest of them (the lowest-FixedBuild rule of OQ-P5-7), unless the host lists one of the record's
-fixing KBs among the standalone KBs installed on top of its cumulative build (P6b addendum, 17 Nov 2026).
-Without a fixed build the check fails: a KB number alone does not place a build (OQ-P6-14). An affected record whose build check passes is itself
+than the fixing point, unless the host lists one of the record's fixing KBs among the standalone KBs installed
+on top of its cumulative build (P6b addendum, 17 Nov 2026). The fixing point is the catalogue release that
+ships the fixing KB (P5w mapping; rollup lines such as Server 2012 R2 are ordered by release date), else the
+lowest MSRC fixed build; with neither the KB cannot be placed and the CVE does not apply (OQ-P6-14, changed
+17 Nov 2026; see msrc_affected). An affected record whose build check passes is itself
 an applicability record ("msrc" evidence), stored and traced like an NVD match.
 
 Version order is `ahg.fixtures.version_key`, the order the P5 catalogue was built with. The second
@@ -118,20 +120,67 @@ def msrc_fix_kbs(msrc_products: dict, unit_ids: list[str], name: str) -> set[str
             for f in p.get("fixes", []) if f.get("kb")}
 
 
-def msrc_affected(msrc: dict | None) -> str | None:
-    """The fixed build the host build is earlier than, or None if the MSRC build check fails.
+def _base_build(version: str) -> str:
+    """A release's cumulative build without the standalone KBs P5w appends ("10.0.17763.1757+KB4519337")."""
+    return version.split("+", 1)[0]
 
-    msrc: {"products": CVE's MSRC products, "unit_ids": the unit's MSRC product IDs, "name": the host's MSRC
-    product name, "build": the host build, "kbs": standalone KBs installed on top of that build (optional)},
-    or None for a component with no MSRC product. A host is unaffected if its build is at or above the
-    fixed build, or if one of the CVE's fixing KBs is in its list.
+
+def fixing_release(releases: list[dict] | None, cve: str) -> dict | None:
+    """The catalogue release of the host's release line that fixes `cve` (its `fixed_for` lists the CVE).
+
+    This is how an MSRC record's KB maps to a build or a rollup: P5w resolved every fixing KB of an eligible
+    CVE through its sources (update-history pages, KB articles) to the release that ships it.
+    """
+    for row in releases or ():
+        if any(i["cve"] == cve for i in row.get("fixed_for", ())):
+            return row
+    return None
+
+
+def msrc_affected(msrc: dict | None) -> str | None:
+    """What fixes the CVE on the host's release line, if the host is still affected; None otherwise.
+
+    msrc: {"products": the CVE's MSRC products, "unit_ids": the unit's MSRC product IDs, "name": the host's
+    MSRC product (release line), "build": the host fixture's version, "kbs": standalone KBs installed on top
+    of it, "cve": the CVE, "releases": the catalogue rows of that release line (P5w) or None, "order":
+    "date" for lines of cumulative monthly rollups identified by KB (Server 2012 R2) else "build"}; None for
+    a component with no MSRC product.
+
+    The host must be on an affected record (status 3) of its product. It is unaffected if one of the CVE's
+    fixing KBs is among its standalone KBs, or if it is at or past the fixing point:
+    - catalogue mapping (P6b decision 17 Nov 2026, OQ-P6-14): the release that fixes the CVE; a standalone-KB
+      fix is fixed only by installing that KB; a rollup line compares release dates (monthly rollups are
+      cumulative, configs/gen/p6.json `rollup_cumulative`), other lines compare builds;
+    - otherwise the lowest MSRC fixed build, if the host has a build;
+    - with neither, the KB cannot be placed: the CVE does not apply (counted by the inventory).
+    A host release whose status P5w left unknown for the CVE (`affected_unknown_standalone`) is not placed.
     """
     if not msrc or not msrc.get("name"):
         return None
+    recs = [msrc["products"][pid] for pid in msrc["unit_ids"] if pid in msrc["products"]]
+    if not any(p["name"] == msrc["name"] and p.get("status_type") == MSRC_AFFECTED for p in recs):
+        return None
     if {kb_id(k) for k in msrc.get("kbs") or ()} & msrc_fix_kbs(msrc["products"], msrc["unit_ids"], msrc["name"]):
         return None
+    releases = msrc.get("releases")
+    host = next((r for r in releases or () if r["version"] == msrc["build"]), None)
+    if host is not None and msrc.get("cve") in host.get("affected_unknown_standalone", ()):
+        return None
+    fix = fixing_release(releases, msrc.get("cve"))
+    if fix is not None:
+        standalone = [i for i in fix["fixed_for"] if i["cve"] == msrc["cve"] and "standalone_kb" in i.get("evidence", {})]
+        if standalone:  # fixed only by the standalone KB, which the host does not have (checked above)
+            return standalone[0]["evidence"]["standalone_kb"]
+        if host is None:
+            return None
+        if msrc.get("order") == "date":
+            return (fix.get("kb") or fix["version"]) if host["release_date"] < fix["release_date"] else None
+        hb, fb = _base_build(host["version"]), _base_build(fix["version"])
+        return fb if _vkey(hb) < _vkey(fb) else None
     fb = msrc_fixed_build(msrc["products"], msrc["unit_ids"], msrc["name"])
-    return fb if fb is not None and _vkey(msrc["build"]) < _vkey(fb) else None
+    if fb is None or not msrc["build"][:1].isdigit():
+        return None
+    return fb if _vkey(_base_build(msrc["build"])) < _vkey(fb) else None
 
 
 def _node_true(node: dict, host: list[str]) -> bool:
@@ -190,6 +239,6 @@ def component_matches(configurations: list[dict], host: list[str], component: li
         if hits:
             out.append({"configuration": i, "criteria": hits})
     if fb is not None:
-        out.append({"configuration": "msrc", "product": msrc["name"], "build": msrc["build"], "fixed_build": fb,
+        out.append({"configuration": "msrc", "product": msrc["name"], "build": msrc["build"], "fixed_by": fb,
                     "kbs": sorted(msrc.get("kbs") or ())})
     return out
