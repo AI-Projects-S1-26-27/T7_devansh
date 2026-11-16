@@ -30,8 +30,40 @@ OUT = ROOT / "results" / "d28_gen"
 
 def plan(doc: dict, regime: str, budget: int) -> dict:
     r = astar(gen.to_task(doc, regime), lmcut, max_expansions=budget)
+    last = None if not r.plan else doc["task"]["actions"][r.plan[-1]]["name"].split()[0]  # kind of the goal-giving step
     return {"cost": None if r.plan is None else r.cost, "length": None if r.plan is None else len(r.plan),
-            "expanded": r.expanded, "budget_hit": r.budget_hit}
+            "expanded": r.expanded, "budget_hit": r.budget_hit, "last_kind": last}
+
+
+def funnel(doc: dict, held: set[int]) -> dict:
+    """Why a task is (un)solvable, as nested counts for one task (summed over tasks in the report):
+    internal hosts; with a remote match; with a remote action (a reaching source exists: not firewalled off);
+    with a foothold fact reached from the internet; sensitive goal host: foothold reached; ... local escalation.
+    Also the directed subnet links, and those that allow no family of their far side."""
+    t, md = doc["task"], doc["metadata"]
+    facts = t["facts"]
+    host_of = lambda i: int(facts[i].split("(h")[1].split(",")[0].rstrip(")"))
+    internal = [h["id"] for h in doc["network"]["hosts"] if h["id"] != 0]
+    remote_m = {m["host"] for m in md["matches"] if m["kind"] == "remote"}
+    acted = {host_of(a["add"][0]) for a in t["actions"] if a["name"].startswith("remote ")}
+    footed = {host_of(i) for i in held if facts[i].startswith("foothold") and host_of(i) != 0}
+    g = md["goal_host"]
+    local_g = {m["host"] for m in md["matches"] if m["kind"] == "local"}
+    far = {h["id"]: set(h["families"]) for h in doc["network"]["hosts"]}
+    sub_fams = {}
+    for h in doc["network"]["hosts"]:
+        sub_fams.setdefault(h["subnet"], set()).update(h["families"])
+    links = [f for f in doc["network"]["firewall"] if sub_fams.get(f["to"])]
+    return {"hosts": len(internal), "hosts_with_remote_match": len(remote_m & set(internal)),
+            "hosts_with_remote_action": len(acted & set(internal)), "hosts_with_foothold_reached": len(footed),
+            "links_with_services": len(links), "links_blocked_entirely": sum(not f["allow"] for f in links),
+            "goal_has_remote_match": g in remote_m, "goal_has_remote_action": g in acted, "goal_foothold_reached": g in footed,
+            "goal_has_local_match": g in local_g, "goal_foothold_and_local_match": g in footed and g in local_g,
+            "footholds_reached": len(footed),
+            "footholds_with_local_match": len(footed & local_g)}
+
+
+CTX = None  # the generator context of the running smoke (set in main), for principal lookups
 
 
 def candidate(ctx, arch, seed, n, cohort, linux, p, budget) -> dict:
@@ -54,6 +86,12 @@ def candidate(ctx, arch, seed, n, cohort, linux, p, budget) -> dict:
     row |= {"goal_os": gh["os"], "goal_families": [x["family"] for x in gh["components"][1:]],
             "goal_remote_matches": sum(m["host"] == g and m["kind"] == "remote" for m in doc["metadata"]["matches"]),
             "goal_local_matches": sum(m["host"] == g and m["kind"] == "local" for m in doc["metadata"]["matches"])}
+    from ahg.gen import build as gbuild
+
+    held = gbuild.reachable_facts(len(doc["task"]["facts"]), doc["task"]["actions"], doc["task"]["init"])
+    row["funnel"] = funnel(doc, held)
+    row["principals_cited"] = sum(gbuild.principal_of(CTX.principals, m["unit_product"], m["family"], m["cve"]) != gbuild.UNKNOWN
+                                  for m in doc["metadata"]["matches"] if m["kind"] == "remote")
     if doc["solvable"]:
         row["plan_ac"], row["plan_uniform"] = plan(doc, "ac", budget), plan(doc, "uniform", budget)
     row["seconds"] = round(time.perf_counter() - t0, 3)
@@ -140,7 +178,25 @@ def summarise(rows: list[dict]) -> dict:
             c["goal_has_local_match"] += r["goal_local_matches"] > 0
             c["goal_has_both"] += r["goal_remote_matches"] > 0 and r["goal_local_matches"] > 0
             c[f"goal_os_{r['goal_os']}"] += 1
+    fun = defaultdict(Counter)
+    for r in ok:
+        for k, v in r["funnel"].items():
+            fun[f"{r['cohort']}|p={r['p']}"][k] += int(v)
+            fun[f"{r['cohort']}|p={r['p']}"]["tasks"] += k == "hosts"
+            if r["p"] == 1.0 and r["os_linux"] == 0.5:
+                fun[f"{r['cohort']}|primary(p=1,50:50)"][k] += int(v)
+                fun[f"{r['cohort']}|primary(p=1,50:50)"]["tasks"] += k == "hosts"
+    full = defaultdict(lambda: [0, 0])
+    for r in ok:
+        k = f"{r['archetype']}|{r['cohort']}|linux={r['os_linux']}|p={r['p']}"
+        full[k][0] += r["solvable"]
+        full[k][1] += 1
+    goals = Counter(r["plan_ac"]["last_kind"] for r in ok if r["solvable"])
     return {
+        "solvability_full": {k: {"solvable": v[0], "tasks": v[1]} for k, v in sorted(full.items())},
+        "funnel": {k: dict(v) for k, v in sorted(fun.items())},
+        "goals_by_last_step": dict(goals),
+        "principals_cited_remote_matches": sum(r["principals_cited"] for r in ok),
         "solvability_by_cohort_p_os": {k: {"solvable": v[0], "tasks": v[1]} for k, v in sorted(cpo.items())},
         "goal_host": {k: dict(v) for k, v in sorted(goal.items())},
         "tasks": len(ok), "infeasible": len(rows) - len(ok), "by_archetype_size": by_size,
@@ -171,6 +227,11 @@ def report(raw: dict) -> str:
     L += ["| exclusion | units |", "|---|---|"] + [f"| {k} | {v} |" for k, v in raw["funnel"]["excluded"].items()]
     L += ["", "Pool units whose CVE has no NVD configuration (CPE-only matching never applies them):", "",
           "| cohort/os/kind/product | units |", "|---|---|"] + [f"| {k} | {v} |" for k, v in raw["unmatched_pool"].items()]
+    L += ["", "## Fixtures removed by the unknown-status rule, and Microsoft KBs the catalogue cannot place", ""]
+    for key, inv in raw["inventories"].items():
+        if key.endswith("p=1.0"):
+            L += [f"- {key}: unknown-status fixtures removed {sum(inv['unknown_fixtures'].values())} {inv['unknown_fixtures']}; "
+                  f"CVEs with no placeable KB: " + ", ".join(f"{k} {len(v)}" for k, v in inv["unplaceable_kbs"].items())]
     L += ["", "## Products and families per cell (cohort, p)", ""]
     for key, inv in raw["inventories"].items():
         avail = [f"{r['os']}/{r['family']}/{r['product']}" for r in inv["products"] if r["available"]]
@@ -193,6 +254,14 @@ def report(raw: dict) -> str:
     L += [f"| {k} | {v['solvable']}/{v['tasks']} |" for k, v in s["solvability_by_cohort_p_os"].items()]
     L += ["", "Goal host (admin target) per cohort: tasks where it has a remote match, a local match, both:", ""]
     L += [f"- {k}: {v}" for k, v in s["goal_host"].items()]
+    L += ["", "Solvability per archetype x cohort x Linux share x p:", "", "| cell | solvable/tasks |", "|---|---|"]
+    L += [f"| {k} | {v['solvable']}/{v['tasks']} |" for k, v in s["solvability_full"].items()]
+    L += ["", "Goal reached by (kind of the last step of the optimal ac plan, solvable tasks): "
+          f"{s['goals_by_last_step']} (remote = remote exploit giving admin, local = local escalation)",
+          f"Cited-principal remote matches: {s['principals_cited_remote_matches']}/{s['remote_matches']}", "",
+          "Funnel (summed over tasks): internal hosts -> with a remote match -> with a remote action (a reaching source "
+          "exists) -> foothold reached from the internet; goal host; links:", ""]
+    L += [f"- {k}: {v}" for k, v in s["funnel"].items()]
     L += ["", f"Unsolvable reasons: {s['unsolvable_reasons']}", "",
           "## Totals", "",
           f"- tasks {s['tasks']}, infeasible candidates {s['infeasible']}, hosts {s['hosts']} (Windows {s['windows_hosts']})",
@@ -215,7 +284,8 @@ def report(raw: dict) -> str:
 
 
 def main() -> None:
-    ctx = gen.Context.load()
+    global CTX
+    ctx = CTX = gen.Context.load()
     sm = ctx.cfg["smoke"]
     rows = []
     seeds = [f"{sm['namespace']}-{i}" for i in range(sm["seeds_per_cell"])]
