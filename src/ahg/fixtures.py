@@ -742,8 +742,30 @@ def windows_fixtures(row: dict, product_names: list[str], builds: dict[str, dict
 
 # ---------------------------------------------------------------- Windows update history (P5w, decided 16 Nov 2026)
 
-_UH_ENTRY = re.compile(r"^(?P<date>[A-Z][a-z]+ \d{1,2}, \d{4})(?:, \d{4})?\s*[—–-]\s*KB(?P<kb>\d{6,8})\s*\((?P<what>[^)]*)\)")
-ROLLUP_KINDS = ("Monthly Rollup", "Preview of Monthly Rollup")  # cumulative 8.1/2012 R2 releases; Security-only updates are not
+_DATE_TXT = r"[A-Z][a-z]+ \d{1,2}, \d{4}"
+_UH_ENTRY = re.compile(rf"^(?P<date>{_DATE_TXT})(?:, \d{{4}})?\s*[—–-]\s*KB(?P<kb>\d{{6,8}})\s*\((?P<what>[^)]*)\)(?P<tail>.*)$")
+_ROLLUP = re.compile(r"(?P<preview>Preview of )?(?:OS Build )?Monthly Rollup")  # 2017 entries read "(OS Build Monthly Rollup)"
+
+
+def cumulative_release(m: re.Match, build_line: str | None) -> dict | None:
+    """A dated update-history entry or KB-article title as a cumulative release of one Windows version, or
+    None if it is not one. With `build_line` the entry must name an OS build on that line (version
+    "10.0.<line>.<n>", the lower of two); without it (2012 R2), a Monthly Rollup identified by its KB.
+    `preview` marks optional non-security previews ("Preview of Monthly Rollup", a trailing "Preview")."""
+    what, tail = m["what"].strip(), (m.groupdict().get("tail") or "")
+    if build_line:
+        bm = re.fullmatch(r"OS Builds? (.+)", what)
+        builds = [f"10.0.{a}.{b}" for a, b in re.findall(r"(\d+)\.(\d+)", bm.group(1)) if a == build_line] if bm else []
+        if not builds:
+            return None
+        version, preview = min(builds, key=version_key), "Preview" in tail
+    else:
+        rm = _ROLLUP.fullmatch(what)
+        if not rm:
+            return None  # Security-only updates are not cumulative and are not releases
+        builds, version, preview = [], f"KB{m['kb']}", bool(rm["preview"])
+    return {"kb": m["kb"], "date": parse_date(m["date"], "%B %d, %Y"), "version": version, "builds": builds, "kind": what,
+            "preview": preview, "entry": m.group(0)[:200]}  # fmt: skip
 
 
 def parse_update_history(page: str, build_line: str | None) -> list[dict]:
@@ -751,52 +773,70 @@ def parse_update_history(page: str, build_line: str | None) -> list[dict]:
 
     The page's navigation lists every update as a link, "March 12, 2024—KB5035855 (OS Build 17763.5576)"
     on the Windows 10 / Server 2016+ pages, "June 9, 2026—KB5094041 (Monthly Rollup)" on the 8.1 / Server
-    2012 R2 page. With `build_line` ("17763"), each entry whose OS build is on that line is a release with
-    version "10.0.<line>.<n>" (MSRC's FixedBuild form); an entry naming two builds of the line keeps the
-    lower as its version. Without it (2012 R2, whose page gives no OS build), each cumulative monthly rollup
-    is a release identified by its KB ("KB5094041"). One release per KB, earliest listed date kept.
+    2012 R2 page; see `cumulative_release` for what counts. One release per KB, earliest listed date kept.
+    Previews are returned with `preview` set; the caller drops them (OQ-P5w-2 as changed 17 Nov 2026).
     """
     out: dict[str, dict] = {}
     for text in re.findall(r"<a\b[^>]*>([^<]*KB\d{6,8}[^<]*)</a>", page):
-        t = re.sub(r"\s+", " ", html.unescape(text)).strip()
-        m = _UH_ENTRY.match(t)
-        if not m:
-            continue
-        what = m["what"].strip()
-        if build_line:
-            bm = re.fullmatch(r"OS Builds? (.+)", what)
-            builds = [f"10.0.{a}.{b}" for a, b in re.findall(r"(\d+)\.(\d+)", bm.group(1)) if a == build_line] if bm else []
-            if not builds:
-                continue
-            version = min(builds, key=version_key)
-        elif what in ROLLUP_KINDS:
-            builds, version = [], f"KB{m['kb']}"
-        else:
-            continue
-        date = parse_date(m["date"], "%B %d, %Y")
-        old = out.get(m["kb"])
-        if old is None or date < old["date"]:
-            out[m["kb"]] = {"kb": m["kb"], "date": date, "version": version, "builds": builds, "kind": what, "entry": t[:200]}
+        m = _UH_ENTRY.match(re.sub(r"\s+", " ", html.unescape(text)).strip())
+        r = cumulative_release(m, build_line) if m else None
+        if r and (r["kb"] not in out or r["date"] < out[r["kb"]]["date"]):
+            out[r["kb"]] = r
     return list(out.values())
 
 
+def parse_release_info(page: str, build_line: str) -> dict:
+    """Microsoft's "Windows Server release information" page: per release row (servicing option, update type
+    such as "2018-10 B", availability date, build, KB). Returns {"types": {kb: letter}, "initial": release
+    or None} for the rows on `build_line`; letter A is the version's initial release (no KB), B the monthly
+    security update, C/D optional non-security previews, OOB out-of-band."""
+    types, initial = {}, None
+    for t in html_tables(page):
+        if not t or t[0][:2] != ["Servicing option", "Update type"]:
+            continue
+        for row in t[1:]:
+            if len(row) < 5 or not row[3].startswith(build_line + "."):
+                continue
+            letter = row[1].split()[-1]
+            if row[4]:
+                types[row[4].removeprefix("KB")] = letter
+            if letter == "A":
+                initial = {"kb": None, "date": row[2], "version": f"10.0.{row[3]}", "builds": [f"10.0.{row[3]}"], "kind": "initial release (A)",
+                           "preview": False, "entry": " | ".join(row)[:200]}  # fmt: skip
+    return {"types": types, "initial": initial}
+
+
+def parse_kb_article(page: str) -> dict | None:
+    """The title of an official Microsoft support (KB) article: {"kb", "title", "date"} (date None if the
+    title names none), plus `match` for a "Month D, YYYY—KBn (...)" cumulative-update title."""
+    m = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", page) or re.search(r"(?is)<title>(.*?)</title>", page)
+    if not m:
+        return None
+    title = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", m.group(1)))).strip().removesuffix(" | Microsoft Support")
+    kb = re.search(r"KB(\d{6,8})", title)
+    d = re.search(_DATE_TXT, title)
+    return {"kb": kb.group(1) if kb else None, "title": title[:200], "date": parse_date(d.group(0), "%B %d, %Y") if d else None,
+            "match": _UH_ENTRY.match(title)}  # fmt: skip
+
+
 def history_order(releases: list[dict], by_build: bool) -> list[dict]:
-    """Releases in servicing order: by OS build where the page gives one, else by date (then KB)."""
+    """Releases in servicing order: by OS build where there is one, else by date (then KB); an initial
+    release without KB sorts first among equal keys."""
     if by_build:
-        return sorted(releases, key=lambda r: (version_key(r["version"]), r["date"], r["kb"]))
-    return sorted(releases, key=lambda r: (r["date"], int(r["kb"])))
+        return sorted(releases, key=lambda r: (version_key(r["version"]), r["date"], int(r["kb"] or 0)))
+    return sorted(releases, key=lambda r: (r["date"], int(r["kb"] or 0)))
 
 
 def history_pairs(fix_kbs: dict[str, list[str]], ordered: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
     """Vulnerable and fixed releases per CVE on one Windows version (P5w).
 
     `fix_kbs` maps each CVE to the KBs MSRC lists as its fix for the product; `ordered` is the version's
-    update history in servicing order. The fixed release is the earliest release whose KB is one of the
-    fixing KBs (several KBs, e.g. Monthly Rollup and Security-only: the first that the history lists);
-    the vulnerable release is the release just before it in the history. Returns (pairs, dropped) keyed by
-    CVE; a pair is {"fixed": i, "vulnerable": i - 1, "kb": KB} as indices into `ordered`.
+    release list in servicing order. The fixed release is the earliest release whose KB is one of the
+    fixing KBs (several KBs, e.g. Monthly Rollup and Security-only: the first in the list); the vulnerable
+    release is the release just before it. Returns (pairs, dropped) keyed by CVE; a pair is
+    {"fixed": i, "vulnerable": i - 1, "kb": KB} as indices into `ordered`.
     """
-    pos = {r["kb"]: i for i, r in enumerate(ordered)}
+    pos = {r["kb"]: i for i, r in enumerate(ordered) if r["kb"]}
     pairs, dropped = {}, {}
     for cve, kbs in fix_kbs.items():
         hits = sorted(pos[k] for k in set(kbs) if k in pos)
@@ -810,6 +850,13 @@ def history_pairs(fix_kbs: dict[str, list[str]], ordered: list[dict]) -> tuple[d
         else:
             pairs[cve] = {"fixed": hits[0], "vulnerable": hits[0] - 1, "kb": ordered[hits[0]]["kb"]}
     return pairs, dropped
+
+
+def standalone_base(ordered: list[dict], kb_date: str) -> int | None:
+    """Index of the latest cumulative release dated before a standalone KB (its base build), or None."""
+    before = [i for i, r in enumerate(ordered) if r["date"] < kb_date]
+    return max(before, key=lambda i: (ordered[i]["date"], i)) if before else None
+
 
 
 # ---------------------------------------------------------------- eligible view (P5 decision, 16 Nov 2026)

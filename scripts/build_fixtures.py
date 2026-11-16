@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import html
 import json
 import re
 import statistics
@@ -102,6 +103,19 @@ def github_pages(get, name: str, url: str, max_pages: int) -> None:
     sys.exit(f"{url}: more than {max_pages} pages; raise github_pages_max")
 
 
+def windows_fix_kbs(cands: dict, cfg: dict, name: str) -> set[str]:
+    """Every KB MSRC lists as a fix on the MSRC product `name` for a candidate Windows CVE."""
+    out = set()
+    for unit_product, info in cands.items():
+        if info["os"] != "windows":
+            continue
+        for c in info["cves"].values():
+            prods = c["row"]["msrc"]["products"].values()
+            if name in fx.msrc_product_names(unit_product, [p["name"] for p in prods], cfg["windows_products"]):
+                out.update(f["kb"] for p in prods if p["name"] == name for f in p.get("fixes", []) if f.get("kb"))
+    return out
+
+
 def fetch(cfg: dict, date: str, base: list[Path], source: str) -> None:
     """Fetch every page the catalogue reads into data/raw/<source>/<date>/ (BUILD_RULES rule 5). Names
     already in a finished `base` snapshot are not fetched again: a supplement (source
@@ -169,8 +183,20 @@ def fetch(cfg: dict, date: str, base: list[Path], source: str) -> None:
                     cna_cves[cve] = product
         if "cna_tarball" in pc:
             get(pc["cna_tarball"]["id"], pc["cna_tarball"]["url"])
+    ri = cfg.get("windows_release_info")
+    if ri:
+        get(f"windows_update_history/{ri['id']}", ri["url"])  # P5w follow-up: release types and initial builds
     for name, hc in sorted(cfg.get("windows_update_history", {}).items()):
-        get(f"windows_update_history/{hc['id']}", hc["url"])  # P5w: one Microsoft update-history page per version
+        page = f"windows_update_history/{hc['id']}"
+        get(page, hc["url"])  # P5w: one Microsoft update-history page per version
+        if hc.get("rtm", {}).get("from") == "lifecycle":
+            get(f"windows_update_history/{hc['rtm']['id']}", hc["rtm"]["url"])
+        # Every fixing KB of a candidate CVE that the page does not list: its official support article
+        # (OQ-P5w-1 (b): dated release evidence; or the standalone KB's own article).
+        text = have.text(page) if have is not None and have.has(page) else decode_raw((f.out / page).read_bytes())
+        listed = {r["kb"] for r in fx.parse_update_history(text, hc.get("build_line"))}
+        for kb in sorted(windows_fix_kbs(cands, cfg, name) - listed, key=int):
+            get(f"windows_kb/KB{kb}.html", f"https://support.microsoft.com/help/{kb}")
     for cve in sorted(cna_cves, key=fx.cve_sort_key):
         get(f"cveawg/{cve}.json", CVEAWG + cve)
     m = write_manifest(f.out, {"task": "P5", "config": cfg, "candidate_products": sorted(cands),
@@ -562,53 +588,154 @@ def build_windows(cands: dict, rows: list[dict], cfg: dict, raw: Raw | None = No
                         "fixtures": fixtures, "dropped": e["dropped"], "affected_unknown_no_fixed_build": unknown}  # fmt: skip
     for name, hc in sorted(history_cfg.items()):
         if name in kbs_of:
-            result[name] = history_entry(name, hc, kbs_of[name], hosted.get(name, set()), refs, raw)
+            result[name] = history_entry(name, hc, kbs_of[name], hosted.get(name, set()), refs, raw, cfg)
     return result
 
 
-def history_entry(name: str, hc: dict, cves: dict[str, dict], hosted: set[str], refs: dict, raw: Raw | None) -> dict:
-    """One Windows version's catalogue entry from its update-history page (P5w)."""
+def lifecycle_initial(hc: dict, raw: Raw) -> dict:
+    """A version's initial release from its Microsoft lifecycle page (GA start date) where Microsoft's release
+    information gives no initial-release build (Server 2022, 2012 R2): version as configured (the build line
+    or "RTM"), date from the page."""
+    rtm = hc["rtm"]
+    name = f"windows_update_history/{rtm['id']}"
+    if not raw.has(name):
+        sys.exit(f"{name}: lifecycle page not in the raw snapshots")
+    text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", raw.text(name))))
+    m = re.search(rtm["date_pattern"], text)
+    if not m:
+        sys.exit(f"{name}: no GA start date matches {rtm['date_pattern']!r}")
+    return {"kb": None, "date": fx.parse_date(m["date"], rtm["date_format"]), "version": rtm["version"], "builds": [],
+            "kind": "initial release (lifecycle start date)", "preview": False, "entry": m.group(0)[:200], "source": raw.ref(name)}  # fmt: skip
+
+
+def history_entry(name: str, hc: dict, cves: dict[str, dict], hosted: set[str], refs: dict, raw: Raw | None, cfg: dict) -> dict:
+    """One Windows version's catalogue entry from its update history (P5w and its follow-up, 17 Nov 2026).
+
+    Releases: the update-history page's cumulative updates; the KB articles of fixing KBs missing from the
+    page that are cumulative updates of the version (OQ-P5w-1 (b)); the initial release (Microsoft release
+    information "A" row, else the lifecycle GA date). Optional non-security previews are not releases
+    (labelled "Preview", or update type C/D in the release information). A CVE whose fixing KB is a
+    standalone update (no cumulative release) gets the latest release dated before the KB as its vulnerable
+    fixture and that release plus the KB as its fixed fixture, cited from the KB article.
+    """
     page = f"windows_update_history/{hc['id']}"
     if raw is None or not raw.has(page):
         sys.exit(f"{name}: update-history page {page} is not in the raw snapshots")
-    ordered = fx.history_order(fx.parse_update_history(raw.text(page), hc.get("build_line")), bool(hc.get("build_line")))
-    if not ordered:
-        sys.exit(f"{name}: no release parsed from {page}")
-    src = raw.ref(page)
+    line = hc.get("build_line")
+    listed = fx.parse_update_history(raw.text(page), line)
+    for r in listed:
+        r["source"] = raw.ref(page)
+    ri = cfg.get("windows_release_info")
+    ri_name = f"windows_update_history/{ri['id']}" if ri else None
+    info = fx.parse_release_info(raw.text(ri_name), line) if line and ri_name and raw.has(ri_name) else {"types": {}, "initial": None}
+    articles: dict[str, dict] = {}
+    for kb in sorted({k for v in cves.values() for k in v["kbs"]} - {r["kb"] for r in listed}):
+        n = f"windows_kb/KB{kb}.html"
+        a = fx.parse_kb_article(raw.text(n)) if raw.has(n) else None
+        if a and a["kb"] == kb:
+            articles[kb] = {**a, "source": raw.ref(n)}
+    from_articles = []
+    for kb, a in sorted(articles.items()):
+        r = fx.cumulative_release(a["match"], line) if a["match"] else None
+        if r and r["kb"] == kb:
+            from_articles.append({**r, "source": a["source"], "from_kb_article": True})
+    is_preview = lambda r: r["preview"] or info["types"].get(r["kb"]) in ("C", "D")  # noqa: E731
+    rels = [r for r in listed + from_articles if not is_preview(r)]
+    previews = sorted(r["kb"] for r in listed + from_articles if is_preview(r))
+    initial = info["initial"]
+    if initial:
+        initial = {**initial, "source": raw.ref(ri_name)}
+    elif hc.get("rtm", {}).get("from") == "lifecycle":
+        initial = lifecycle_initial(hc, raw)
+    if initial and not any(r["version"] == initial["version"] for r in rels):  # 2016's initial build is on its page
+        rels.append(initial)
+    ordered = fx.history_order(rels, bool(line))
     pairs, dropped_by_cve = fx.history_pairs({c: sorted(v["kbs"]) for c, v in cves.items()}, ordered)
-    fixtures: dict[int, dict] = {}
 
-    def fixture(i: int) -> dict:
+    # Standalone-KB fixes (task item 4): base = latest release dated before the KB; fixed = base + KB.
+    standalone: dict[str, dict] = {}
+    for cve, d in list(dropped_by_cve.items()):
+        if d["reason"] != "fix_kb_not_in_update_history":
+            continue
+        options = []
+        for kb in d["fix_kbs"]:
+            a = articles.get(kb)
+            if a is None or (a["match"] and fx.cumulative_release(a["match"], line) is not None):
+                continue
+            date, how = a["date"], "kb_article_title"
+            if date is None:  # e.g. KB5012170's title names no date: the MSRC record that lists the KB is dated
+                date, how = (cves[cve]["row"]["msrc"].get("initial_release") or "")[:10] or None, "msrc_initial_release"
+            if date:
+                options.append((date, kb, how))
+        if not options:
+            continue
+        date, kb, how = min(options)
+        b = fx.standalone_base(ordered, date)
+        if b is None:
+            dropped_by_cve[cve] = {**d, "reason": "no_release_before_standalone_kb", "standalone_kb": f"KB{kb}"}
+            continue
+        standalone[cve] = {"base": b, "kb": kb, "date": date, "date_source": how, "article": articles[kb]["source"], "title": articles[kb]["title"]}
+        del dropped_by_cve[cve]
+
+    fixtures: dict[tuple, dict] = {}
+
+    def fixture(i: int, kb: str | None = None) -> dict:
         r = ordered[i]
-        return fixtures.setdefault(i, {"version": r["version"], "kb": f"KB{r['kb']}", "builds": r["builds"], "release_date": r["date"],
-                                       "release_entry": r["entry"], "release_source": [src], "vulnerable_for": [], "fixed_for": []})  # fmt: skip
+        if kb is None:
+            return fixtures.setdefault((i, 0, ""), {
+                "version": r["version"], "kb": f"KB{r['kb']}" if r["kb"] else None, "builds": r["builds"], "release_date": r["date"],
+                "release_entry": r["entry"], "release_source": [r["source"]], "from_kb_article": r.get("from_kb_article", False),
+                "initial_release": r["kb"] is None, "standalone_kbs": [], "vulnerable_for": [], "fixed_for": []})  # fmt: skip
+        s = next(v for v in standalone.values() if v["base"] == i and v["kb"] == kb)
+        return fixtures.setdefault((i, 1, kb), {
+            "version": f"{r['version']}+KB{kb}", "base": r["version"], "kb": f"KB{r['kb']}" if r["kb"] else None, "builds": r["builds"],
+            "release_date": s["date"], "release_date_source": s["date_source"], "release_entry": s["title"], "release_source": [s["article"]],
+            "standalone_kbs": [f"KB{kb}"], "vulnerable_for": [], "fixed_for": []})  # fmt: skip
+
+    def evidence(cve: str, mapped: str) -> dict:
+        info_ = cves[cve]
+        docs = sorted(info_["row"]["msrc"].get("docs") or [info_["row"]["msrc"].get("doc")])
+        return {"fix_kbs": sorted(info_["kbs"]), "mapped_kb": mapped, "msrc_docs": docs, "msrc_sources": [r for d in docs for r in refs.get(d, [])],
+                "msrc_fixed_builds": sorted(info_["fixed_builds"])}  # fmt: skip
 
     mismatch = []
     for cve in sorted(pairs, key=fx.cve_sort_key):
-        p, info = pairs[cve], cves[cve]
+        p, info_ = pairs[cve], cves[cve]
         fixed_r = ordered[p["fixed"]]
-        docs = sorted(info["row"]["msrc"].get("docs") or [info["row"]["msrc"].get("doc")])
-        evidence = {"fix_kbs": sorted(info["kbs"]), "mapped_kb": f"KB{p['kb']}", "msrc_docs": docs,
-                    "msrc_sources": [r for d in docs for r in refs.get(d, [])],
-                    "msrc_fixed_builds": sorted(info["fixed_builds"])}  # fmt: skip
         # MSRC's own FixedBuild (2021+ documents), where given, must name the mapped release's build.
-        if info["fixed_builds"] and fixed_r["builds"] and not set(info["fixed_builds"]) & set(fixed_r["builds"]):
+        if info_["fixed_builds"] and fixed_r["builds"] and not set(info_["fixed_builds"]) & set(fixed_r["builds"]):
             mismatch.append({"cve": cve, "mapped_kb": f"KB{p['kb']}", "history_builds": fixed_r["builds"],
-                             "msrc_fixed_builds": sorted(info["fixed_builds"])})  # fmt: skip
-        for unit, cohort in sorted(info["units"].items()):
+                             "msrc_fixed_builds": sorted(info_["fixed_builds"])})  # fmt: skip
+        for unit, cohort in sorted(info_["units"].items()):
             fixture(p["vulnerable"])["vulnerable_for"].append({"cve": cve, "unit": unit, "cohort": cohort})
-            fixture(p["fixed"])["fixed_for"].append({"cve": cve, "unit": unit, "cohort": cohort,
-                                                     "after": ordered[p["vulnerable"]]["version"], "evidence": evidence})  # fmt: skip
-    for i, f in fixtures.items():
-        # A release is affected by every hosted CVE whose fix comes later in the servicing order.
-        f["affected_by"] = sorted((c for c, p in pairs.items() if i < p["fixed"]), key=fx.cve_sort_key)
+            fixture(p["fixed"])["fixed_for"].append({"cve": cve, "unit": unit, "cohort": cohort, "after": ordered[p["vulnerable"]]["version"],
+                                                     "evidence": evidence(cve, f"KB{p['kb']}")})  # fmt: skip
+    for cve in sorted(standalone, key=fx.cve_sort_key):
+        s = standalone[cve]
+        for unit, cohort in sorted(cves[cve]["units"].items()):
+            fixture(s["base"])["vulnerable_for"].append({"cve": cve, "unit": unit, "cohort": cohort})
+            fixture(s["base"], s["kb"])["fixed_for"].append({"cve": cve, "unit": unit, "cohort": cohort, "after": ordered[s["base"]]["version"],
+                                                             "evidence": {**evidence(cve, f"KB{s['kb']}"), "standalone_kb": f"KB{s['kb']}",
+                                                                          "kb_article": s["article"], "kb_date": s["date"],
+                                                                          "kb_date_source": s["date_source"]}})  # fmt: skip
+    for (i, k, kb), f in fixtures.items():
+        # Affected: every CVE whose cumulative fix comes later in servicing order; a standalone-fixed CVE affects
+        # its base and every earlier release. Later cumulative releases are not documented either way for it
+        # (the KB is a separate update), so they list it under affected_unknown_standalone.
+        aff = {c for c, p in pairs.items() if i < p["fixed"]} | {c for c, s in standalone.items() if i <= s["base"]}
+        if k:
+            aff -= {c for c, s in standalone.items() if s["base"] == i and s["kb"] == kb}
+        f["affected_by"] = sorted(aff, key=fx.cve_sort_key)
+        f["affected_unknown_standalone"] = sorted((c for c, s in standalone.items() if i > s["base"]), key=fx.cve_sort_key)
     dropped = [{"cve": c, "product": name, "unit": u, "cohort": co, **d}
                for c, d in sorted(dropped_by_cve.items(), key=lambda kv: fx.cve_sort_key(kv[0])) for u, co in sorted(cves[c]["units"].items())]
     units = sorted({u for v in cves.values() for u in v["units"]})
     return {"product": name, "os": "windows", "units": units, "status": "ok" if fixtures else "dropped",
-            "rule": "P5w update history", "release_source": src, "n_releases": len(ordered),
-            "fixtures": [fixtures[i] for i in sorted(fixtures)], "dropped": dropped,
-            "msrc_fixed_build_mismatch": mismatch,
+            "rule": "P5w update history", "release_source": raw.ref(page), "n_releases": len(ordered),
+            "n_releases_from_kb_articles": sum(bool(r.get("from_kb_article")) for r in ordered),
+            "initial_release": {k: v for k, v in initial.items() if k != "preview"} if initial else None,
+            "previews_excluded": previews, "standalone_kb_cves": sorted(standalone, key=fx.cve_sort_key),
+            "fixtures": [fixtures[k] for k in sorted(fixtures)], "dropped": dropped, "msrc_fixed_build_mismatch": mismatch,
             "affected_unknown_no_fixed_build": sorted(set(dropped_by_cve) | (hosted - set(cves)), key=fx.cve_sort_key)}  # fmt: skip
 
 
@@ -715,18 +842,36 @@ def windows_history_rows(catalogue: dict) -> list[dict]:
                         "cves_with_vulnerable_fixture": len(vul), "cves_with_fixed_fixture": len(fix),
                         "vulnerable_fixtures": sum(any(i["cohort"] == co for i in f["vulnerable_for"]) for f in e["fixtures"]),
                         "fixed_fixtures": sum(any(i["cohort"] == co for i in f["fixed_for"]) for f in e["fixtures"]),
+                        "standalone_kb_cves": len({i["cve"] for f in e["fixtures"] for i in f["fixed_for"]
+                                                   if i["cohort"] == co and "standalone_kb" in i["evidence"]}),
+                        "releases_from_kb_articles": e.get("n_releases_from_kb_articles", 0), "previews_excluded": len(e.get("previews_excluded", [])),
+                        "initial_release": (e.get("initial_release") or {}).get("version"),
                         "dropped_by_reason": dict(Counter(r for _, r in drops)),
                         "msrc_fixed_build_mismatch": sum(1 for m in e["msrc_fixed_build_mismatch"] if m["cve"] in vul | fix)})  # fmt: skip
     return out
 
 
 def windows_history_table(rows: list[dict]) -> list[str]:
-    lines = ["| version | cohort | releases in history | CVEs | with vulnerable fixture | with fixed fixture | vulnerable fixtures | fixed fixtures | dropped CVEs by reason | MSRC FixedBuild mismatch |",
-             "|---|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
+    lines = ["| version | cohort | releases (from KB articles) | previews excluded | initial release | CVEs | with vulnerable fixture | with fixed fixture | "
+             "via standalone KB | vulnerable fixtures | fixed fixtures | dropped CVEs by reason | MSRC FixedBuild mismatch |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
     for r in rows:
         reasons = ", ".join(f"{k} {v}" for k, v in sorted(r["dropped_by_reason"].items())) or "-"
-        lines.append(f"| {r['product']} | {r['cohort']} | {r['n_releases']} | {r['cves']} | {r['cves_with_vulnerable_fixture']} | "
-                     f"{r['cves_with_fixed_fixture']} | {r['vulnerable_fixtures']} | {r['fixed_fixtures']} | {reasons} | {r['msrc_fixed_build_mismatch']} |")  # fmt: skip
+        lines.append(f"| {r['product']} | {r['cohort']} | {r['n_releases']} ({r['releases_from_kb_articles']}) | {r['previews_excluded']} | "
+                     f"{r['initial_release']} | {r['cves']} | {r['cves_with_vulnerable_fixture']} | {r['cves_with_fixed_fixture']} | "
+                     f"{r['standalone_kb_cves']} | {r['vulnerable_fixtures']} | {r['fixed_fixtures']} | {reasons} | {r['msrc_fixed_build_mismatch']} |")  # fmt: skip
+    return lines
+
+
+def standalone_lines(catalogue: dict) -> list[str]:
+    """Every CVE fixed by a standalone KB (task item 4): version, CVE, cohort, base build, KB and its date."""
+    lines = ["| version | CVE | cohort | vulnerable (base) | fixed | KB date | date from | KB article |", "|---|---|---|---|---|---|---|---|"]
+    for name, e in sorted(catalogue["windows"].items()):
+        for f in e["fixtures"] if e.get("rule") == "P5w update history" else []:
+            for i in f["fixed_for"]:
+                ev = i["evidence"]
+                if "standalone_kb" in ev:
+                    lines.append(f"| {name} | {i['cve']} | {i['cohort']} | {i['after']} | {f['version']} | {ev['kb_date']} | {ev['kb_date_source']} | {ev['kb_article']['url']} |")
     return lines
 
 
@@ -761,6 +906,7 @@ def report(summary: dict, catalogue: dict, meta: dict, el_summary: dict, el_cata
     lines += regained_table(regained)
     lines += ["", "## Windows versions from Microsoft update history (P5w)", "", "Superset:", ""] + windows_history_table(windows_history_rows(catalogue))
     lines += ["", "Eligible view:", ""] + windows_history_table(windows_history_rows(el_catalogue))
+    lines += ["", "CVEs fixed by a standalone KB (superset):", ""] + standalone_lines(catalogue)
     lines += ["", "## Eligible view (p3-labels-v2.1)", ""]
     lines += summary_table(el_summary)
     lines += ["", "## Superset (pre-P3 candidates)", ""] + summary_table(summary)
@@ -836,7 +982,7 @@ def main() -> None:
     a_f = sub.add_parser("fetch")
     a_f.add_argument("config", type=Path)
     a_f.add_argument("--date", default=datetime.now(timezone.utc).date().isoformat())
-    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement", "fixtures_p5v", "fixtures_p5v2", "fixtures_p5w"],
+    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement", "fixtures_p5v", "fixtures_p5v2", "fixtures_p5w", "fixtures_p5w2"],
                      help="data/raw/<source>/<date>/; any source but 'fixtures' is a supplement and needs --base")
     a_f.add_argument("--base", type=Path, nargs="*", default=[], help="finished snapshots this one supplements")
     a_b = sub.add_parser("build")
@@ -847,7 +993,7 @@ def main() -> None:
     if a.cmd == "fetch":
         date_ = datetime.strptime(a.date, "%Y-%m-%d").date().isoformat()  # rejects anything but YYYY-MM-DD
         if (a.source != "fixtures") != bool(a.base):
-            sys.exit("a supplement snapshot (fixtures_supplement, fixtures_p5v, fixtures_p5v2, fixtures_p5w) needs --base, and only a supplement takes one")
+            sys.exit("a supplement snapshot (fixtures_supplement, fixtures_p5v, fixtures_p5v2, fixtures_p5w, fixtures_p5w2) needs --base, and only a supplement takes one")
         fetch(cfg, date_, [b.resolve() for b in a.base], a.source)
     else:
         build(cfg, [d.resolve() for d in a.raw_dirs])
