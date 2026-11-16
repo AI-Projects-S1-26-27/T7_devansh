@@ -1,0 +1,13 @@
+{
+ "folder": "data/raw/sources/2026-11-08",
+ "_note": "Origin of every file in the folder that has no fetch_log.jsonl record. Each entry: glob -> origin. Written in P2 from file times, the scripts that write these paths, and the 2026-11-08 session records.",
+ "explanations": {
+  "NVD - Vulnerability Detail Pages.pdf": "Saved to the folder by Devansh from a browser on 2026-11-08 (NVD documentation printed to PDF), not fetched by a script, so there is no URL, HTTP status or retrieval-time record. Source URL not recorded [VERIFY with Devansh].",
+  "NVD - Vulnerability Status.pdf": "Saved to the folder by Devansh from a browser on 2026-11-08 (NVD documentation printed to PDF), not fetched by a script. Source URL not recorded [VERIFY with Devansh].",
+  "Vulnerability APIs.pdf": "Saved to the folder by Devansh from a browser on 2026-11-08 (NVD API documentation printed to PDF), not fetched by a script. Source URL not recorded [VERIFY with Devansh].",
+  "advisories/pilot_sample.json": "Not a fetched input: a derived list of sampled CVEs with their NVD advisory references, written by a session script on 2026-11-08 for the advisory-fetch pilot, and saved in the raw folder by mistake. Kept unchanged (raw folders are append-only).",
+  "lit/*": "Raw API responses written by scripts/lit_search.py (Semantic Scholar and arXiv). That script records its queries, counts and hits in its own runlog run (results/lit_search/2026-11-08T155936Z-e98a0fe), not in fetch_log.jsonl.",
+  "nvd_count_queries.jsonl": "Not a fetched file: the query log written by scripts/nvd_count_only.py (count-only queries whose response bodies are discarded). It is itself a per-query record."
+ },
+ "missing_refetch": {"products/postfix_overview.html": "data/raw/sources/2026-11-15", "products/postfix_index.html": "data/raw/sources/2026-11-15"}
+}

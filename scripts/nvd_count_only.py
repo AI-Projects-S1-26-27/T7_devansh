@@ -1,38 +1,52 @@
-"""nvd_count.py FILE.tsv (label<TAB>query-string): NVD CVE API 2.0 count-only queries.
+"""nvd_count_only.py FILE.tsv [--date YYYY-MM-DD]: NVD CVE API 2.0 count-only queries.
 
-resultsPerPage=1 (the API's page-size parameter; 0 is tried first). Only totalResults is kept: the response
-body is parsed in memory and discarded, never written. Each query is logged (label, query, time, HTTP,
-totalResults, records_in_body) to data/raw/sources/2026-11-08/nvd_count_queries.jsonl. 6.5 s between
-requests (the public rate the repo's fetch_nvd.py also uses)."""
-import json, subprocess, sys, time
-from datetime import datetime, timezone
+FILE.tsv has one query per line: label<TAB>query-string (the part after "cves/2.0?"); lines starting with
+"#" are skipped. Each query is sent with resultsPerPage=1 and only totalResults is kept: the response body
+is parsed in memory and discarded, never written. Each query is appended (label, URL, UTC time, HTTP status,
+totalResults, records in the discarded body, fetching script's git commit and dirty flag) to
+data/raw/sources/<date>/nvd_count_queries.jsonl, where <date> defaults to today (UTC). Requests are paced
+at 6.5 s (no API key: NVD allows 5 requests per 30 s).
+"""
+
+import argparse
+import json
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-LOG = Path("/Users/devanshsharma/projects/learned-heuristics-attack-graphs/data/raw/sources/2026-11-08/nvd_count_queries.jsonl")
+ROOT = Path(__file__).resolve().parents[1]
+from ahg.rawfetch import Fetcher, utc_now
+
 BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0?"
+PACE = 6.5
 
 
-def count(label, q):
+def count(f: Fetcher, log: Path, label: str, q: str) -> dict:
     url = BASE + q + "&resultsPerPage=1"
-    r = subprocess.run(["curl", "-sS", "--max-time", "60", "-w", "\n%{http_code}", url], capture_output=True, text=True)
-    body, _, code = r.stdout.rpartition("\n")
+    status, body, _ = f._get(url, {})
     total = nrec = None
-    try:
+    if status == 200:
         d = json.loads(body)
         total, nrec = d.get("totalResults"), len(d.get("vulnerabilities", []))
-    except Exception:
-        pass
-    rec = {"label": label, "query": url, "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-           "http": code, "totalResults": total, "records_in_body_discarded": nrec}
-    with LOG.open("a") as f:
-        f.write(json.dumps(rec) + "\n")
-    print(code, total, label, flush=True)
-    del body
+    rec = {"label": label, "query": url, "time_utc": utc_now(), "http": status, "totalResults": total,
+           "records_in_body_discarded": nrec, "script": "scripts/nvd_count_only.py", "git_commit": f.commit,
+           "git_dirty": f.dirty}  # fmt: skip
+    with log.open("a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    print(status, total, label, flush=True)
+    return rec
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("tsv", type=Path)
+    ap.add_argument("--date", default=datetime.now(timezone.utc).date().isoformat())
+    a = ap.parse_args()
+    date.fromisoformat(a.date)
+    f = Fetcher(ROOT / "data" / "raw" / "sources" / a.date, "scripts/nvd_count_only.py", PACE)
+    rows = [line.split("\t") for line in a.tsv.read_text().splitlines() if line.strip() and not line.startswith("#")]
+    for label, q in rows:
+        count(f, f.out / "nvd_count_queries.jsonl", label, q)
 
 
 if __name__ == "__main__":
-    rows = [l.split("\t") for l in Path(sys.argv[1]).read_text().splitlines() if l.strip() and not l.startswith("#")]
-    for i, (label, q) in enumerate(rows):
-        if i:
-            time.sleep(6.5)
-        count(label, q)
+    main()
