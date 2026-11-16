@@ -1,12 +1,14 @@
 {
   "task": "P5",
-  "decisions": "D28 Round 4 'Fixtures and assignment' (catalogue rule); P5 decisions 16 Nov 2026: pre-P3 candidate superset, per-range fixtures, vendor pages with CNA fallback (status 'unaffected' entries only), stable releases only, SHA-256 of evidence files, Windows vulnerable build = prior MSRC FixedBuild",
+  "decisions": "D28 Round 4 'Fixtures and assignment' (catalogue rule); P5 decisions 16 Nov 2026: pre-P3 candidate superset, per-range fixtures, vendor pages with CNA fallback (status 'unaffected' entries only), stable releases only, SHA-256 of evidence files, Windows vulnerable build = prior MSRC FixedBuild; eligible view from frozen effect labels p3-labels-v2.1 (P5 decision 16 Nov 2026)",
   "master_dataset": "../ahg-data/data/d28/master/2026-11-15T124455Z-cf2dc62/cves.jsonl.gz",
   "master_sha256": "d7c7c2c849c8779e7b776d1653c602f6cedb3f55009f8ea641d90b2997dd082c",
   "msrc_fetch_logs": {
     "../ahg-data/data/raw/sources/2026-11-08": "fetch_log.jsonl",
     "../ahg-data/data/raw/msrc/2026-11-15": "fetch_log.jsonl"
   },
+  "eligible_labels": "../ahg-effect/results/d28_effect/2026-11-16T062413Z-89dd346/frozen/p3-labels-v2.1.jsonl.gz",
+  "eligible_labels_sha256": "5e80198a25d6eb55740bb83685689825e3372756a06dc1cbb3b74aa1f5ca28d6",
   "raw_root": "data/raw/fixtures",
   "catalogue_root": "data/d28/fixtures",
   "results_root": "results/d28_fixtures",
@@ -214,7 +216,8 @@
       ],
       "evidence": [],
       "cna_tarball": {"id": "kernel_vulns.tar.gz", "url": "https://git.kernel.org/pub/scm/linux/security/vulns.git/snapshot/vulns-master.tar.gz",
-                      "member_regex": "[^/]+/cve/published/\\d{4}/(?P<cve>CVE-\\d{4}-\\d+)\\.json", "short_name": "Linux", "product_regex": "Linux"}
+                      "member_regex": "[^/]+/cve/published/\\d{4}/(?P<cve>CVE-\\d{4}-\\d+)\\.json", "org_id": "f4215fc3-5b6b-47ff-a258-f7189bd81038", "product_regex": "Linux",
+                      "org_id_note": "the orgId every published record in the kernel CNA's vulns repository carries (checked at build); the repository is the vendor's own"}
     }
   }
 }

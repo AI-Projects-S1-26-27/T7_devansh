@@ -1,13 +1,14 @@
 """Version-fixture catalogue (task P5; D28 Round 4 catalogue rule; see ahg.fixtures).
 
 Usage:
-  python scripts/build_fixtures.py fetch configs/fixtures/p5.json [--date YYYY-MM-DD]
-  python scripts/build_fixtures.py build configs/fixtures/p5.json data/raw/fixtures/<date>
+  python scripts/build_fixtures.py fetch configs/fixtures/p5.json [--label YYYY-MM-DD[-sN]] [--base SNAPSHOT ...]
+  python scripts/build_fixtures.py build configs/fixtures/p5.json data/raw/fixtures/<label> [more snapshots]
 
 fetch: every upstream page the catalogue reads (release listings, vendor advisories and release notes,
 vendor CNA records) into data/raw/fixtures/<date>/ through ahg.rawfetch: one request at a time, paced
 per host, each logged with URL, UTC time, HTTP status and SHA-256 (BUILD_RULES rule 5). The manifest is
-written last. Rerunning resumes: files already on disk are kept, never refetched.
+written last. Rerunning resumes: files already on disk are kept, never refetched. A supplement (--base)
+fetches only the names its finished base snapshots lack, e.g. pages of units added after the base.
 
 build: reads the master CVE dataset (SHA-256 checked) and the finished raw snapshot (manifest required),
 applies the catalogue rule, and writes the versioned catalogue to data/d28/fixtures/<stamp>-<commit>/
@@ -51,14 +52,24 @@ def load_config(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def load_master(cfg: dict) -> list[dict]:
-    """The master CVE rows; refuses a file whose SHA-256 differs from the configured one."""
-    p = (ROOT / cfg["master_dataset"]).resolve()
-    data = p.read_bytes()
+def load_pinned_jsonl(path: str, sha256: str) -> list[dict]:
+    """Rows of a gzipped JSON-lines input; refuses a file whose SHA-256 differs from the configured one."""
+    data = (ROOT / path).resolve().read_bytes()
     got = hashlib.sha256(data).hexdigest()
-    if got != cfg["master_sha256"]:
-        sys.exit(f"master dataset SHA-256 {got} != configured {cfg['master_sha256']}")
+    if got != sha256:
+        sys.exit(f"{path}: SHA-256 {got} != configured {sha256}")
     return [json.loads(line) for line in gzip.decompress(data).decode().splitlines() if line.strip()]
+
+
+def load_master(cfg: dict) -> list[dict]:
+    """The master CVE rows (SHA-256 checked)."""
+    return load_pinned_jsonl(cfg["master_dataset"], cfg["master_sha256"])
+
+
+def candidates(cfg: dict, rows: list[dict]) -> tuple[dict, set[tuple[str, str]]]:
+    """(candidate units per product, eligible units): the pre-P3 superset plus every eligible unit."""
+    eligible = fx.eligible_units(load_pinned_jsonl(cfg["eligible_labels"], cfg["eligible_labels_sha256"]))
+    return fx.candidate_units(rows, tuple(cfg["candidate_stages"]), eligible), eligible
 
 
 def patterns(src: dict) -> list[str]:
@@ -68,25 +79,31 @@ def patterns(src: dict) -> list[str]:
 # ---------------------------------------------------------------- fetch
 
 
-def github_pages(f: Fetcher, name: str, url: str, max_pages: int) -> None:
+def github_pages(get, name: str, url: str, max_pages: int) -> None:
     """GitHub releases, 100 per page, until a short page (the API pages with ?page=N)."""
     for n in range(1, max_pages + 1):
-        rec = f.fetch(f"{name}/page{n:02d}.json", f"{url}?per_page=100&page={n}", GITHUB_HEADERS)
-        if rec.get("http", 200) != 200 or len(json.loads((f.out / rec["name"]).read_bytes())) < 100:
+        rec = get(f"{name}/page{n:02d}.json", f"{url}?per_page=100&page={n}", GITHUB_HEADERS)
+        if rec.get("http", 200) != 200 or len(json.loads(Path(rec["path"]).read_bytes())) < 100:
             return
     sys.exit(f"{url}: more than {max_pages} pages; raise github_pages_max")
 
 
-def fetch(cfg: dict, date: str) -> None:
+def fetch(cfg: dict, label: str, base: list[Path]) -> None:
+    """Fetch every page the catalogue reads into <raw_root>/<label>/. Names already in a finished `base`
+    snapshot are not fetched again (a supplement holds only what the base lacks); build reads both."""
     rows = load_master(cfg)
-    cands = fx.candidate_units(rows, tuple(cfg["candidate_stages"]))
-    f = Fetcher(ROOT / cfg["raw_root"] / date, "scripts/build_fixtures.py", cfg["pace_seconds"])
+    cands, _ = candidates(cfg, rows)
+    have = Raw(base) if base else None
+    f = Fetcher(ROOT / cfg["raw_root"] / label, "scripts/build_fixtures.py", cfg["pace_seconds"])
     failed = []
 
     def get(name: str, url: str, headers: dict | None = None) -> dict:
+        if have is not None and have.has(name):
+            return {"name": name, "skipped": "in base snapshot", "path": str(have.path(name))}
         rec = f.fetch(name, url, headers)
         if rec.get("http", 200) != 200:
             failed.append(rec)
+        rec["path"] = str(f.out / name)
         print(f"{rec.get('http', 'kept')} {name}", flush=True)
         return rec
 
@@ -96,7 +113,7 @@ def fetch(cfg: dict, date: str) -> None:
         cves = sorted(cands.get(product, {}).get("cves", {}), key=fx.cve_sort_key)
         for src in pc["releases"]:
             if src["kind"] == "github_releases":
-                github_pages(f, f"{s}/{src['id']}", f"{GITHUB_API}/{src['repo']}/releases", cfg["github_pages_max"])
+                github_pages(get, f"{s}/{src['id']}", f"{GITHUB_API}/{src['repo']}/releases", cfg["github_pages_max"])
             else:
                 get(f"{s}/{src['id']}", src["url"])
         for src in pc["evidence"]:
@@ -109,7 +126,7 @@ def fetch(cfg: dict, date: str) -> None:
             elif kind == "index":
                 rec = get(f"{s}/{src['id']}/index.html", src["url"])
                 if rec.get("http", 200) == 200:
-                    page = (f.out / rec["name"]).read_text(errors="replace")
+                    page = Path(rec["path"]).read_text(errors="replace")
                     base = src["url"].rsplit("/", 1)[0] + "/"
                     for link in sorted(set(re.findall(r'href="(' + src["link_pattern"] + r')"', page))):
                         get(f"{s}/{src['id']}/{link}", base + link)
@@ -132,7 +149,8 @@ def fetch(cfg: dict, date: str) -> None:
             get(pc["cna_tarball"]["id"], pc["cna_tarball"]["url"])
     for cve in sorted(cna_cves, key=fx.cve_sort_key):
         get(f"cveawg/{cve}.json", CVEAWG + cve)
-    m = write_manifest(f.out, {"task": "P5", "config": cfg, "candidate_products": sorted(cands)})
+    m = write_manifest(f.out, {"task": "P5", "config": cfg, "candidate_products": sorted(cands),
+                               "base_snapshots": [rel(b) for b in base]})  # fmt: skip
     print(f"manifest: {len(m['files'])} files, {len(m['failed_fetches'])} failed fetches")
     for r in failed:
         print(f"FAILED {r.get('http')} {r['name']} {r['url']}")
@@ -142,23 +160,33 @@ def fetch(cfg: dict, date: str) -> None:
 
 
 class Raw:
-    """A finished raw snapshot: file bytes and their manifest records."""
+    """Finished raw snapshots (a base and its supplements): file bytes and their manifest records."""
 
-    def __init__(self, folder: Path):
-        self.dir = folder
-        manifest = json.loads((folder / "manifest.json").read_text())  # build refuses an unfinished snapshot
-        self.files = {r["name"]: r for r in manifest["files"]}
-        self.failed = manifest["failed_fetches"]
+    def __init__(self, folders: list[Path]):
+        self.dirs = folders
+        self.files: dict[str, dict] = {}
+        self.where: dict[str, Path] = {}
+        self.failed: list[dict] = []
+        for d in folders:
+            manifest = json.loads((d / "manifest.json").read_text())  # an unfinished snapshot is refused
+            for r in manifest["files"]:
+                if r["name"] in self.files:
+                    raise ValueError(f"{r['name']} is in two snapshots: {self.where[r['name']]} and {d}")
+                self.files[r["name"]], self.where[r["name"]] = r, d
+            self.failed += [{**r, "snapshot": d.name} for r in manifest["failed_fetches"]]
 
     def has(self, name: str) -> bool:
         return name in self.files
 
+    def path(self, name: str) -> Path:
+        return self.where[name] / name
+
     def text(self, name: str) -> str:
-        return (self.dir / name).read_bytes().decode("utf-8", errors="replace")
+        return self.path(name).read_bytes().decode("utf-8", errors="replace")
 
     def ref(self, name: str) -> dict:
         r = self.files[name]
-        return {"raw": name, "url": r["url"], "retrieved_utc": r["date_utc"], "sha256": r["sha256"]}
+        return {"raw": f"{self.where[name].name}/{name}", "url": r["url"], "retrieved_utc": r["date_utc"], "sha256": r["sha256"]}
 
     def under(self, prefix: str) -> list[str]:
         return sorted(n for n in self.files if n.startswith(prefix))
@@ -237,7 +265,7 @@ def product_docs(product: str, pc: dict, cves: list[str], raw: Raw, tar_records:
         for cve in cves:
             name = f"cveawg/{cve}.json"
             if raw.has(name):
-                got, refusal = fx.ev_cve_json5(json.loads(raw.text(name)), pc["cna"]["short_name"], pc["cna"]["product_regex"], name)
+                got, refusal = fx.ev_cve_json5(json.loads(raw.text(name)), {"short_name": pc["cna"]["short_name"]}, pc["cna"]["product_regex"], name)
                 used.append(name)
                 docs += got
                 if refusal:
@@ -247,7 +275,7 @@ def product_docs(product: str, pc: dict, cves: list[str], raw: Raw, tar_records:
         for cve in cves:
             if cve in tar_records:
                 member, record = tar_records[cve]
-                got, refusal = fx.ev_cve_json5(record, t["short_name"], t["product_regex"], f"{t['id']}#{member}")
+                got, refusal = fx.ev_cve_json5(record, {"org_id": t["org_id"]}, t["product_regex"], f"{t['id']}#{member}")
                 docs += got
                 if refusal:
                     notes.append(f"{cve}: {refusal}")
@@ -258,14 +286,21 @@ def product_docs(product: str, pc: dict, cves: list[str], raw: Raw, tar_records:
 
 
 def kernel_records(raw: Raw, t: dict) -> dict[str, tuple[str, dict]]:
-    """CVE JSON 5 records from the kernel CNA's vulns repository snapshot: {cve: (member, record)}."""
+    """CVE JSON 5 records from the kernel CNA's vulns repository snapshot: {cve: (member, record)}.
+
+    The repository is the kernel CNA's own publication repository, so every published record in it must
+    carry the configured orgId; a snapshot with any other orgId is refused rather than trusted.
+    """
     out = {}
     rx = re.compile(t["member_regex"])
-    with tarfile.open(raw.dir / t["id"], "r:gz") as tar:
+    with tarfile.open(raw.path(t["id"]), "r:gz") as tar:
         for m in tar:
             hit = rx.fullmatch(m.name)
             if hit and m.isfile():
                 out[hit["cve"]] = (m.name, json.load(tar.extractfile(m)))
+    orgs = Counter(r["containers"]["cna"]["providerMetadata"].get("orgId") for _, r in out.values())
+    if set(orgs) != {t["org_id"]}:
+        sys.exit(f"{t['id']}: orgIds {dict(orgs)} are not all the configured kernel CNA {t['org_id']}")
     return out
 
 
@@ -396,12 +431,8 @@ def summarize(entry: dict) -> dict:
     }  # fmt: skip
 
 
-def report(summary: dict, catalogue: dict, meta: dict) -> str:
-    lines = ["# P5 fixture catalogue", "", f"Catalogue: `{meta['catalogue_path']}` (SHA-256 `{meta['catalogue_sha256']}`)",
-             f"Raw snapshot: `{meta['raw_dir']}` (manifest SHA-256 `{meta['raw_manifest_sha256']}`)",
-             f"Master dataset SHA-256: `{meta['master_sha256']}`", "",
-             "Candidates: pre-P3 superset (P5 decision). Fixture counts are distinct releases/builds per product.", "",
-             "| OS | product | status | candidate CVEs | fixtures | vulnerable | fixed | CVEs w/ vuln fixture | CVEs w/ fixed fixture | affected-by min/median/max | dropped (CVE, range) by reason | unmatched fix docs |",
+def summary_table(summary: dict) -> list[str]:
+    lines = ["| OS | product | status | candidate CVEs | fixtures | vulnerable | fixed | CVEs w/ vuln fixture | CVEs w/ fixed fixture | affected-by min/median/max | dropped (CVE, range) by reason | unmatched fix docs |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
     for (os_, product), s in sorted(summary.items()):
         reasons = ", ".join(f"{k} {v}" for k, v in sorted(s["dropped_by_reason"].items())) or "-"
@@ -410,8 +441,11 @@ def report(summary: dict, catalogue: dict, meta: dict) -> str:
         lines.append(f"| {os_} | {product} | {status} | {s['candidate_cves'] if s['candidate_cves'] is not None else '-'} | {s['fixtures']} | "
                      f"{s['vulnerable_fixtures']} | {s['fixed_fixtures']} | {s['cves_with_vulnerable_fixture']} | "
                      f"{s['cves_with_fixed_fixture']} | {aff} | {reasons} | {s['unmatched_docs']} |")  # fmt: skip
-    lines += ["", "## Fixtures and the CVEs each is affected by", "",
-              "One line per fixture: version (release date): roles; affected-by count; CVE IDs (first 12)."]
+    return lines
+
+
+def fixture_lines(catalogue: dict) -> list[str]:
+    lines = []
     for key in ("linux", "windows"):
         for product, e in sorted(catalogue[key].items()):
             if not e["fixtures"]:
@@ -426,13 +460,30 @@ def report(summary: dict, catalogue: dict, meta: dict) -> str:
                 ids = f["affected_by"]
                 lines.append(f"- {f['version']} ({f['release_date']}): {', '.join(roles)}; affected by {len(ids)}: "
                              + ", ".join(ids[:12]) + (" ..." if len(ids) > 12 else ""))  # fmt: skip
+    return lines
+
+
+def report(summary: dict, catalogue: dict, meta: dict, el_summary: dict, el_catalogue: dict) -> str:
+    lines = ["# P5 fixture catalogue", "", f"Catalogue: `{meta['catalogue_path']}` (SHA-256 `{meta['catalogue_sha256']}`)",
+             f"Eligible view: `{meta['eligible_path']}` (SHA-256 `{meta['eligible_sha256']}`), labels SHA-256 `{meta['eligible_labels_sha256']}`, "
+             f"{meta['eligible_units']} eligible (CVE, product) units",
+             f"Raw snapshots: {', '.join(f'`{d}` (manifest SHA-256 `{h}`)' for d, h in zip(meta['raw_dirs'], meta['raw_manifest_sha256']))}",
+             f"Master dataset SHA-256: `{meta['master_sha256']}`", "",
+             "Candidates: pre-P3 superset plus every eligible unit (P5 decisions). Fixture counts are distinct releases/builds per product.", "",
+             "## Eligible view (p3-labels-v2.1)", ""]  # fmt: skip
+    lines += summary_table(el_summary)
+    lines += ["", "## Superset (pre-P3 candidates)", ""] + summary_table(summary)
+    lines += ["", "## Eligible view: fixtures and the eligible CVEs each is affected by", "",
+              "One line per fixture: version (release date): roles; affected-by count; CVE IDs (first 12)."]
+    lines += fixture_lines(el_catalogue)
+    lines += ["", "## Superset: fixtures and the CVEs each is affected by", ""] + fixture_lines(catalogue)
     return "\n".join(lines) + "\n"
 
 
-def build(cfg: dict, raw_dir: Path) -> None:
+def build(cfg: dict, raw_dirs: list[Path]) -> None:
     rows = load_master(cfg)
-    cands = fx.candidate_units(rows, tuple(cfg["candidate_stages"]))
-    raw = Raw(raw_dir)
+    cands, eligible = candidates(cfg, rows)
+    raw = Raw(raw_dirs)
     linux: dict[str, dict] = {}
     for product, info in sorted(cands.items()):
         if info["os"] != "linux":
@@ -461,12 +512,23 @@ def build(cfg: dict, raw_dir: Path) -> None:
     catalogue["provenance"] = prov
     blob = gzip.compress(json.dumps(catalogue, sort_keys=True, separators=(",", ":")).encode(), mtime=0)
     (out / "catalogue.json.gz").write_bytes(blob)
+    el_cat = {"schema": "ahg.fixtures/1", "task": "P5", "view": "eligible (p3-labels-v2.1)",
+              "eligible_labels_sha256": cfg["eligible_labels_sha256"], **fx.eligible_view(catalogue, eligible)}  # fmt: skip
+    el_blob = gzip.compress(json.dumps(el_cat, sort_keys=True, separators=(",", ":")).encode(), mtime=0)
+    (out / "catalogue_eligible.json.gz").write_bytes(el_blob)
+    el_summary = {("linux", p): summarize(e) for p, e in el_cat["linux"].items()} | \
+        {("windows", p): summarize(e) for p, e in el_cat["windows"].items()}
     meta = {"catalogue_path": rel(out / "catalogue.json.gz"), "catalogue_sha256": hashlib.sha256(blob).hexdigest(),
-            "raw_dir": rel(raw_dir), "raw_manifest_sha256": hashlib.sha256((raw_dir / "manifest.json").read_bytes()).hexdigest(),
+            "eligible_path": rel(out / "catalogue_eligible.json.gz"), "eligible_sha256": hashlib.sha256(el_blob).hexdigest(),
+            "eligible_labels_sha256": cfg["eligible_labels_sha256"], "eligible_units": len(eligible),
+            "raw_dirs": [rel(d) for d in raw_dirs],
+            "raw_manifest_sha256": [hashlib.sha256((d / "manifest.json").read_bytes()).hexdigest() for d in raw_dirs],
             "master_sha256": cfg["master_sha256"]}  # fmt: skip
     (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
-    run_raw = {"meta": meta, "summary": [{"os": k[0], "product": k[1], **v} for k, v in sorted(summary.items())]}
-    run = runlog.write_run("catalogue", run_raw, report(summary, catalogue, meta), [], cfg, root=ROOT / cfg["results_root"])
+    run_raw = {"meta": meta, "summary": [{"os": k[0], "product": k[1], **v} for k, v in sorted(summary.items())],
+               "eligible_summary": [{"os": k[0], "product": k[1], **v} for k, v in sorted(el_summary.items())]}  # fmt: skip
+    run = runlog.write_run("catalogue", run_raw, report(summary, catalogue, meta, el_summary, el_cat), [], cfg,
+                           root=ROOT / cfg["results_root"])  # fmt: skip
     print(f"catalogue: {meta['catalogue_path']}\nrun: {rel(run)}")
 
 
@@ -475,16 +537,20 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     a_f = sub.add_parser("fetch")
     a_f.add_argument("config", type=Path)
-    a_f.add_argument("--date", default=datetime.now(timezone.utc).date().isoformat())
+    a_f.add_argument("--label", default=datetime.now(timezone.utc).date().isoformat(),
+                     help="snapshot folder name under raw_root (default: today's UTC date)")
+    a_f.add_argument("--base", type=Path, nargs="*", default=[], help="finished snapshots this one supplements")
     a_b = sub.add_parser("build")
     a_b.add_argument("config", type=Path)
-    a_b.add_argument("raw_dir", type=Path)
+    a_b.add_argument("raw_dirs", type=Path, nargs="+")
     a = ap.parse_args()
     cfg = load_config(a.config)
     if a.cmd == "fetch":
-        fetch(cfg, a.date)
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:-s\d+)?", a.label):
+            sys.exit("--label: YYYY-MM-DD, or YYYY-MM-DD-sN for a supplement")
+        fetch(cfg, a.label, [b.resolve() for b in a.base])
     else:
-        build(cfg, a.raw_dir.resolve())
+        build(cfg, [d.resolve() for d in a.raw_dirs])
 
 
 if __name__ == "__main__":

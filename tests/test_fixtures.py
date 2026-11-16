@@ -227,11 +227,16 @@ def test_cve_json5_reads_unaffected_entries_from_the_vendor_cna_only():
         {"version": "abc123", "lessThan": "def456", "status": "unaffected", "versionType": "git"},
         {"version": "5.10.0", "lessThan": "5.10.200", "status": "affected", "versionType": "semver"},  # a bound, never a fix
     ]
-    docs, refusal = fx.ev_cve_json5(json5("Linux", versions), "Linux", "Linux", "raw")
+    docs, refusal = fx.ev_cve_json5(json5("Linux", versions), {"short_name": "Linux"}, "Linux", "raw")
     assert refusal is None and [d.version for d in docs] == ["0", "6.6.4", "6.7"]
-    docs, refusal = fx.ev_cve_json5(json5("mitre", versions), "Linux", "Linux", "raw")
+    docs, refusal = fx.ev_cve_json5(json5("mitre", versions), {"short_name": "Linux"}, "Linux", "raw")
     assert docs == [] and "not the vendor CNA" in refusal
-    assert fx.ev_cve_json5(json5("Linux", versions, product="Other"), "Linux", "Linux", "raw")[0] == []
+    assert fx.ev_cve_json5(json5("Linux", versions, product="Other"), {"short_name": "Linux"}, "Linux", "raw")[0] == []
+    # Repository copies of kernel records carry only the CNA's orgId.
+    rec = json5("Linux", versions)
+    rec["containers"]["cna"]["providerMetadata"] = {"orgId": "f4215fc3"}
+    assert len(fx.ev_cve_json5(rec, {"org_id": "f4215fc3"}, "Linux", "raw")[0]) == 3
+    assert fx.ev_cve_json5(rec, {"org_id": "other"}, "Linux", "raw")[0] == []
 
 
 # ---------------------------------------------------------------- catalogue rule
@@ -254,18 +259,30 @@ def test_release_index_match_and_inside():
     assert [idx.releases[i].name for i in idx.inside(fx.Range("c", exact="9.6", update="p2"))] == ["9.6p2"]
 
 
-def test_catalogue_per_range_fixtures_from_documented_fixes():
+def test_catalogue_per_interval_fixtures_from_documented_fixes():
     idx = fx.ReleaseIndex(rels("8.5.95", "8.5.96", "9.0.81", "9.0.82", "9.0.83", "10.1.15", "10.1.16"))
     cve = "CVE-2023-46589"
     ranges = {cve: [fx.Range("a", start_incl="8.5.0", end_incl="8.5.95"), fx.Range("b", start_incl="9.0.0", end_excl="9.0.83"),
                     fx.Range("c", start_incl="10.1.0", end_incl="10.1.15")]}
     docs = [doc(cve, "8.5.96"), doc(cve, "9.0.83"), doc(cve, "10.1.16"), doc(cve, "11.0.0-M11")]
     cat = fx.catalogue_product(ranges, idx, docs)
-    pairs = sorted((f["fixed_for"][0]["after"], v) for v, f in cat.fixtures.items() if f["fixed_for"])
-    assert pairs == [("10.1.15", "10.1.16"), ("8.5.95", "8.5.96"), ("9.0.82", "9.0.83")]
+    pairs = sorted((f["fixed_for"][0]["interval"], f["fixed_for"][0]["after"], v) for v, f in cat.fixtures.items() if f["fixed_for"])
+    assert pairs == [("10.1.15..10.1.15", "10.1.15", "10.1.16"), ("8.5.95..8.5.95", "8.5.95", "8.5.96"),
+                     ("9.0.81..9.0.82", "9.0.82", "9.0.83")]
     assert sorted(v for v, f in cat.fixtures.items() if f["vulnerable_for"]) == ["10.1.15", "8.5.95", "9.0.82"]
     assert cat.dropped == []
     assert [u["version"] for u in cat.unmatched_docs] == ["11.0.0-M11"]  # milestone: not a stable release
+
+
+def test_enumerated_versions_collapse_into_maximal_runs():
+    """NVD lists some CVEs version by version; each run of consecutive covered releases is one interval."""
+    idx = fx.ReleaseIndex(rels("9.6.1", "9.6.2", "9.6.3", "10.0", "10.1", "10.2"))
+    cve = "CVE-2017-1"
+    ranges = {cve: [fx.Range(f"m{v}", exact=v) for v in ("9.6.1", "9.6.2", "10.0", "10.1")]}
+    cat = fx.catalogue_product(ranges, idx, [doc(cve, "9.6.3"), doc(cve, "10.2")])
+    assert sorted(v for v, f in cat.fixtures.items() if f["vulnerable_for"]) == ["10.1", "9.6.2"]
+    assert sorted((f["fixed_for"][0]["interval"], v) for v, f in cat.fixtures.items() if f["fixed_for"]) == [
+        ("10.0..10.1", "10.2"), ("9.6.1..9.6.2", "9.6.3")]
 
 
 def test_catalogue_never_assumes_a_fix_and_logs_why():
@@ -280,20 +297,24 @@ def test_catalogue_never_assumes_a_fix_and_logs_why():
     assert cat.fixtures["2.4.57"]["fixed_for"][0]["cve"] == b
     reasons = {(d["cve"], d["reason"]) for d in cat.dropped}
     assert (a, "no_documented_fix_after_vulnerable_fixture") in reasons
-    assert (c, "no_stable_release_in_range") in reasons  # 2.0.1 is not a release
-    conflict = [d for d in cat.dropped if d["cve"] == c and d["range"] == "(*, 2.4.57)"][0]
+    assert (c, "no_stable_release_in_cpe_match") in reasons  # 2.0.1 is not a release: logged, never a fixture
+    conflict = [d for d in cat.dropped if d["cve"] == c and d["interval"] == "2.4.55..2.4.56"][0]
     assert conflict["conflicting_docs"] == ["2.4.56"]
 
 
-def test_fix_on_a_later_affected_branch_is_not_this_ranges_fix():
-    idx = fx.ReleaseIndex(rels("4.19.325", "5.4.249", "5.4.250"))
+def test_fix_on_a_later_affected_branch_is_not_this_intervals_fix():
+    idx = fx.ReleaseIndex(rels("4.19.325", "5.0", "5.4.249", "5.4.250"))
     cve = "CVE-2024-9"
     ranges = {cve: [fx.Range("a", start_incl="4.19", end_excl="4.20"), fx.Range("b", start_incl="5.4", end_excl="5.4.250")]}
     cat = fx.catalogue_product(ranges, idx, [doc(cve, "5.4.250")])
-    assert cat.fixtures["5.4.250"]["fixed_for"] == [{"cve": cve, "range": "[5.4, 5.4.250)", "after": "5.4.249", "evidence": [
+    assert cat.fixtures["5.4.250"]["fixed_for"] == [{"cve": cve, "interval": "5.4.249..5.4.249", "after": "5.4.249", "evidence": [
         {"raw": "advisory", "kind": "sections", "excerpt": "x"}]}]
-    dropped = [d for d in cat.dropped if d["range"] == "[4.19, 4.20)"]
+    dropped = [d for d in cat.dropped if d["interval"] == "4.19.325..4.19.325"]
     assert dropped[0]["reason"] == "no_documented_fix_after_vulnerable_fixture"  # 5.4.249 (affected) lies between
+
+
+def test_runs():
+    assert fx.runs([1, 2, 3, 7, 8, 10]) == [(1, 3), (7, 8), (10, 10)] and fx.runs([]) == []
 
 
 def test_affected_by_lists_every_matching_cve():
@@ -334,6 +355,37 @@ def test_windows_prior_msrc_build():
         "Microsoft Exchange Server 2019 Cumulative Update 13"]
 
 
+# ---------------------------------------------------------------- eligible view
+
+
+def label(cve, product, label_set, lab, role="server", ac="explicit"):
+    return {"cve_id": cve, "product": product, "label_set": label_set, "label": lab, "role": role, "ac_status": ac}
+
+
+def test_eligible_units_follow_the_effect_rule():
+    rows = [label("CVE-1", "a", "remote", "RCE_CONFIRMED"), label("CVE-2", "a", "remote", "RCE_CONFIRMED", role="client"),
+            label("CVE-3", "a", "remote", "NON_RCE"), label("CVE-4", "k", "local", "ADMIN_CONFIRMED", role="client"),
+            label("CVE-5", "k", "local", "ADMIN_CONFIRMED", ac="conflict"), label("CVE-6", "k", "local", "NON_ADMIN")]
+    assert fx.eligible_units(rows) == {("CVE-1", "a"), ("CVE-4", "k")}
+
+
+def test_eligible_view_keeps_only_eligible_roles():
+    f1 = {"version": "1.0", "vulnerable_for": [{"cve": "CVE-1"}, {"cve": "CVE-2"}], "fixed_for": [], "affected_by": ["CVE-1", "CVE-2"]}
+    f2 = {"version": "1.1", "vulnerable_for": [], "fixed_for": [{"cve": "CVE-2"}], "affected_by": []}
+    win = {"version": "10.0.1", "vulnerable_for": [{"cve": "CVE-7", "unit": "windows_os"}, {"cve": "CVE-8", "unit": "IIS"}],
+           "fixed_for": [], "affected_by": ["CVE-7", "CVE-8"]}
+    cat = {"linux": {"a": {"status": "ok", "candidate_cves": {"CVE-1": {}, "CVE-2": {}}, "fixtures": [f1, f2],
+                           "dropped": [{"cve": "CVE-2", "reason": "x"}], "unmatched_docs": []},
+                     "b": {"status": "ok", "fixtures": [], "dropped": []}},
+           "windows": {"WS2019": {"units": ["windows_os", "IIS"], "fixtures": [win], "dropped": [], "affected_unknown_no_fixed_build": []}}}
+    view = fx.eligible_view(cat, {("CVE-1", "a"), ("CVE-7", "windows_os")})
+    assert list(view["linux"]) == ["a"]
+    assert view["linux"]["a"]["fixtures"] == [{**f1, "vulnerable_for": [{"cve": "CVE-1"}], "affected_by": ["CVE-1"]}]
+    assert view["linux"]["a"]["dropped"] == [] and list(view["linux"]["a"]["candidate_cves"]) == ["CVE-1"]
+    assert view["windows"]["WS2019"]["fixtures"][0]["vulnerable_for"] == [{"cve": "CVE-7", "unit": "windows_os"}]
+    assert view["windows"]["WS2019"]["fixtures"][0]["affected_by"] == ["CVE-7"]
+
+
 # ---------------------------------------------------------------- driver script, end to end on synthetic inputs
 
 
@@ -366,6 +418,8 @@ def test_build_end_to_end(tmp_path):
     ]
     master = tmp_path / "cves.jsonl.gz"
     master.write_bytes(gzip.compress("".join(json.dumps(r) + "\n" for r in rows).encode()))
+    labels = tmp_path / "labels.jsonl.gz"
+    labels.write_bytes(gzip.compress((json.dumps(label("CVE-2024-2", "windows_os", "local", "ADMIN_CONFIRMED")) + "\n").encode()))
     msrc = tmp_path / "msrc"
     write_raw(msrc, {"cvrf_2024-Jan.json": "{}"})
     raw = tmp_path / "raw"
@@ -373,6 +427,7 @@ def test_build_end_to_end(tmp_path):
     write_raw(raw, {"apache__tomcat/l.html": listing, "apache__tomcat/s.html": TOMCAT_PAGE})
     config = {
         "decisions": "test", "master_dataset": str(master), "master_sha256": hashlib.sha256(master.read_bytes()).hexdigest(),
+        "eligible_labels": str(labels), "eligible_labels_sha256": hashlib.sha256(labels.read_bytes()).hexdigest(),
         "msrc_fetch_logs": {str(msrc): "fetch_log.jsonl"}, "catalogue_root": str(tmp_path / "cat"),
         "results_root": str(tmp_path / "results"), "candidate_stages": ["remote_candidate", "local_candidate"],
         "cpe_part": {"default": "a"}, "windows_products": {"default": {"names": ["Windows Server 2019"]}},
@@ -383,7 +438,7 @@ def test_build_end_to_end(tmp_path):
             "evidence": [{"id": "s.html", "kind": "sections", "url": "u", "header": r"^Fixed in Apache Tomcat (?P<v>\d+\.\d+\.\d+(?:-M\d+)?)",
                           "cve_at_line_start": True}]}},
     }  # fmt: skip
-    bf.build(config, raw)
+    bf.build(config, [raw])
     out = next((tmp_path / "cat").iterdir())
     cat = json.loads(gzip.decompress((out / "catalogue.json.gz").read_bytes()))
     tom = cat["linux"]["apache:tomcat"]
@@ -392,7 +447,7 @@ def test_build_end_to_end(tmp_path):
     assert tom["fixtures"][0]["affected_by"] == ["CVE-2023-46589"] and tom["fixtures"][1]["affected_by"] == []
     ev = tom["fixtures"][1]["fixed_for"][0]["evidence"][0]
     assert ev["url"] == "https://example.org/apache__tomcat/s.html" and len(ev["sha256"]) == 64 and ev["retrieved_utc"]
-    assert tom["fixtures"][0]["release_source"]["raw"] == "apache__tomcat/l.html"
+    assert tom["fixtures"][0]["release_source"]["raw"] == "raw/apache__tomcat/l.html"  # snapshot folder / file
     assert cat["linux"]["oracle:mysql"]["status"] == "dropped"
     win = cat["windows"]["Windows Server 2019"]
     assert [(f["version"], f["affected_by"]) for f in win["fixtures"]] == [
@@ -400,6 +455,27 @@ def test_build_end_to_end(tmp_path):
     assert win["fixtures"][1]["release_source"][0]["sha256"] == hashlib.sha256(b"{}").hexdigest()
     run = next((tmp_path / "results" / "catalogue").iterdir())
     assert "apache:tomcat" in (run / "report.md").read_text()
+    el = json.loads(gzip.decompress((out / "catalogue_eligible.json.gz").read_bytes()))
+    assert el["linux"] == {}  # the Tomcat CVE has no eligible label
+    assert [f["version"] for f in el["windows"]["Windows Server 2019"]["fixtures"]] == ["10.0.17763.5000", "10.0.17763.5329"]
+
+
+def test_raw_reads_a_base_and_its_supplement_and_refuses_duplicates(tmp_path):
+    bf = load_script("build_fixtures")
+    write_raw(tmp_path / "2026-11-16", {"a/x.html": "x"})
+    write_raw(tmp_path / "2026-11-16-s1", {"a/y.html": "y"})
+    raw = bf.Raw([tmp_path / "2026-11-16", tmp_path / "2026-11-16-s1"])
+    assert raw.text("a/y.html") == "y" and raw.ref("a/x.html")["raw"] == "2026-11-16/a/x.html"
+    write_raw(tmp_path / "2026-11-16-s2", {"a/x.html": "other"})
+    with pytest.raises(ValueError):
+        bf.Raw([tmp_path / "2026-11-16", tmp_path / "2026-11-16-s2"])
+
+
+def test_candidate_units_include_eligible_units_outside_candidate_stages():
+    rows = [{"cve_id": "CVE-2026-81642", "units": [unit("nlnetlabs:unbound", stage="role_not_server", family="dns")]}]
+    assert fx.candidate_units(rows) == {}
+    got = fx.candidate_units(rows, include={("CVE-2026-81642", "nlnetlabs:unbound")})
+    assert list(got["nlnetlabs:unbound"]["cves"]) == ["CVE-2026-81642"]
 
 
 def test_build_refuses_a_changed_master(tmp_path):

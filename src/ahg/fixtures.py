@@ -1,8 +1,10 @@
 """Version-fixture catalogue (D28 Round 4 "Fixtures and assignment", catalogue rule; task P5).
 
 For each candidate (product, CVE):
-1. The affected intervals come from the CVE's full NVD CPE applicability criteria: every vulnerable,
-   non-negated match of the product, one interval per match (P5 decision 16 Nov 2026: "per range").
+1. The affected intervals come from the CVE's full NVD CPE applicability criteria: the vulnerable,
+   non-negated matches of the product cover a set of upstream releases, and each maximal run of
+   consecutive covered releases is one interval (P5 decisions 16 Nov 2026: "per range", then "maximal
+   affected runs" for versions NVD enumerates one by one).
 2. The vulnerable fixture of an interval is the latest stable upstream release inside it (P5 decision:
    stable releases only; rc/beta/milestone builds are never fixtures).
 3. The fixed fixture of an interval is the first release after that vulnerable fixture which the vendor
@@ -145,17 +147,21 @@ def cve_ranges(configurations: list[dict], product: str, part: str) -> tuple[lis
     return list(out.values()), notes
 
 
-def candidate_units(rows, stages: tuple[str, ...] = ("remote_candidate", "local_candidate")) -> dict[str, dict]:
-    """Pre-P3 candidate units per product: units at a candidate stage, in a cohort, with an explicit v3.x AC.
+def candidate_units(rows, stages: tuple[str, ...] = ("remote_candidate", "local_candidate"),
+                    include: set[tuple[str, str]] | frozenset = frozenset()) -> dict[str, dict]:
+    """Candidate units per product: units at a pre-P3 candidate stage, in a cohort, with an explicit v3.x
+    AC, plus every (CVE, product) unit in `include`.
 
-    P5 decision (16 Nov 2026): the generator list after effect classification does not exist yet, so the
-    catalogue covers this superset; every entry keeps its CVE, so the post-P3 catalogue is a filter of it.
+    P5 decisions (16 Nov 2026): the catalogue covers the pre-P3 superset and every entry keeps its CVE, so
+    the eligible catalogue is a filter of it. `include` adds the eligible units whose master stage is not a
+    candidate stage (P3 re-decided their role), so the eligible view misses none.
     Returns {product: {"os", "families", "cves": {cve: {"cohort", "stage", "family", "row": row}}}}.
     """
     out: dict[str, dict] = {}
     for r in rows:
         for u in r["units"]:
-            if u["stage"] not in stages or not u["cohort"] or u.get("ac_status") != "explicit":
+            forced = (r["cve_id"], u["product"]) in include
+            if not forced and (u["stage"] not in stages or not u["cohort"] or u.get("ac_status") != "explicit"):
                 continue
             p = out.setdefault(u["product"], {"os": u["os"], "families": set(), "cves": {}})
             p["families"].add(u["family"])
@@ -387,18 +393,22 @@ def ev_ghsa_repo(page: str, version_regex: str, raw_name: str) -> list[FixDoc]:
     return out
 
 
-def ev_cve_json5(record: dict, short_name: str, product_regex: str, raw_name: str) -> tuple[list[FixDoc], str | None]:
+def ev_cve_json5(record: dict, vendor: dict, product_regex: str, raw_name: str) -> tuple[list[FixDoc], str | None]:
     """Version entries with status "unaffected" in a CVE JSON 5 record whose CNA is the vendor.
 
-    Returns (docs, refusal). The record counts only if its CNA container's provider shortName equals the
-    configured vendor CNA; a "lessThan"/"lessThanOrEqual" bound on an affected entry is never read as a
-    fix (P5 decision). Only affected[] entries whose product fits `product_regex` are read.
+    Returns (docs, refusal). The record counts only if its CNA container's provider matches the configured
+    vendor CNA: `vendor` names a "short_name" (records from the CVE Services API) or an "org_id" (the
+    kernel CNA's own repository copies carry only the orgId). A "lessThan"/"lessThanOrEqual" bound on an
+    affected entry is never read as a fix (P5 decision). Only affected[] entries whose product fits
+    `product_regex` are read.
     """
     cna = record.get("containers", {}).get("cna", {})
-    got = cna.get("providerMetadata", {}).get("shortName")
+    meta = cna.get("providerMetadata", {})
     cve = record.get("cveMetadata", {}).get("cveId")
-    if got != short_name:
-        return [], f"CNA {got!r} is not the vendor CNA {short_name!r}"
+    field_ = "short_name" if "short_name" in vendor else "org_id"
+    got = meta.get("shortName" if field_ == "short_name" else "orgId")
+    if got != vendor[field_]:
+        return [], f"CNA {field_} {got!r} is not the vendor CNA {vendor[field_]!r}"
     out = []
     for aff in cna.get("affected", []):
         if not re.fullmatch(product_regex, aff.get("product") or ""):
@@ -478,15 +488,30 @@ def _fixture(cat: ProductCatalogue, rel: Release) -> dict:
     })  # fmt: skip
 
 
-def catalogue_product(cves: dict[str, list[Range]], index: ReleaseIndex, docs: list[FixDoc]) -> ProductCatalogue:
-    """Apply the catalogue rule per (CVE, range) for one product.
+def runs(indices: list[int]) -> list[tuple[int, int]]:
+    """Maximal runs of consecutive integers in a sorted list: [1, 2, 3, 7, 8] -> [(1, 3), (7, 8)]."""
+    out: list[tuple[int, int]] = []
+    for i in indices:
+        if out and i == out[-1][1] + 1:
+            out[-1] = (out[-1][0], i)
+        else:
+            out.append((i, i))
+    return out
 
-    Vulnerable fixture V: the latest stable release inside the range. Fixed fixture F: the first release
-    after V that is in none of the CVE's affected ranges and that the vendor documents as fixed for this
-    CVE, provided no release between V and F is affected, so F continues V's line of releases rather than
-    following a later affected branch ("that range's documented fix", P5 decision). A documented release
-    that NVD lists as affected is a vendor/NVD conflict: logged, never used. Everything not found is
-    dropped with a reason.
+
+def catalogue_product(cves: dict[str, list[Range]], index: ReleaseIndex, docs: list[FixDoc]) -> ProductCatalogue:
+    """Apply the catalogue rule per (CVE, affected interval) for one product.
+
+    Affected intervals (P5 decision 16 Nov 2026, "maximal affected runs"): the maximal runs of consecutive
+    stable releases, in version order, that the CVE's CPE matches cover. Branch ranges stay separate,
+    because unaffected releases lie between them; versions that NVD enumerates one by one collapse into
+    their run. A CPE match that covers no stable release is dropped and logged.
+
+    Vulnerable fixture V: the last release of the run. Fixed fixture F: the first release after V that is
+    in none of the CVE's affected ranges and that the vendor documents as fixed for this CVE, provided no
+    affected release lies between V and F, so F continues V's line of releases rather than following a
+    later affected run ("that range's documented fix", P5 decision). A documented release that NVD lists
+    as affected is a vendor/NVD conflict: logged, never used.
     """
     cat = ProductCatalogue()
     rels = index.releases
@@ -496,10 +521,13 @@ def catalogue_product(cves: dict[str, list[Range]], index: ReleaseIndex, docs: l
     for cve in sorted(cves, key=cve_sort_key):
         ranges = cves[cve]
         if not ranges:
-            cat.dropped.append({"cve": cve, "range": None, "reason": "no_vulnerable_cpe_range"})
+            cat.dropped.append({"cve": cve, "interval": None, "reason": "no_vulnerable_cpe_range"})
             continue
-        inside = {id(rg): index.inside(rg) for rg in ranges}
-        affected = sorted({i for hits in inside.values() for i in hits})
+        hits = [index.inside(rg) for rg in ranges]
+        for rg, h in zip(ranges, hits):
+            if not h:
+                cat.dropped.append({"cve": cve, "interval": None, "cpe_match": rg.label(), "reason": "no_stable_release_in_cpe_match"})
+        affected = sorted({i for h in hits for i in h})
         affected_set = set(affected)
         fixed: dict[int, list[FixDoc]] = {}
         for d in by_cve.get(cve, []):
@@ -511,26 +539,22 @@ def catalogue_product(cves: dict[str, list[Range]], index: ReleaseIndex, docs: l
                 fixed.setdefault(index.pos[rel.name], []).append(d)
         conflicts = sorted(rels[j].name for j in fixed if j in affected_set)
         clean_fixed = sorted(j for j in fixed if j not in affected_set)
-        for rg in ranges:
-            hits = inside[id(rg)]
-            if not hits:
-                cat.dropped.append({"cve": cve, "range": rg.label(), "reason": "no_stable_release_in_range"})
-                continue
-            vi = hits[-1]
-            v = rels[vi]
-            _fixture(cat, v)["vulnerable_for"].append({"cve": cve, "range": rg.label()})
-            k = bisect_right(clean_fixed, vi)
+        for a, b in runs(affected):
+            interval = f"{rels[a].name}..{rels[b].name}"
+            v = rels[b]
+            _fixture(cat, v)["vulnerable_for"].append({"cve": cve, "interval": interval})
+            k = bisect_right(clean_fixed, b)
             fj = clean_fixed[k] if k < len(clean_fixed) else None
             # No affected release strictly between V and F (affected is sorted: count by bisection).
-            if fj is not None and bisect_left(affected, fj) - bisect_right(affected, vi) > 0:
+            if fj is not None and bisect_left(affected, fj) - bisect_right(affected, b) > 0:
                 fj = None
             if fj is None:
-                cat.dropped.append({"cve": cve, "range": rg.label(), "vulnerable": v.name,
+                cat.dropped.append({"cve": cve, "interval": interval, "vulnerable": v.name,
                                     "reason": "no_documented_fix_after_vulnerable_fixture",
                                     **({"conflicting_docs": conflicts} if conflicts else {})})  # fmt: skip
                 continue
             ev = [{"raw": d.raw_name, "kind": d.kind, "excerpt": d.excerpt} for d in fixed[fj]]
-            _fixture(cat, rels[fj])["fixed_for"].append({"cve": cve, "range": rg.label(), "after": v.name, "evidence": ev})
+            _fixture(cat, rels[fj])["fixed_for"].append({"cve": cve, "interval": interval, "after": v.name, "evidence": ev})
     return cat
 
 
@@ -613,3 +637,66 @@ def windows_fixtures(row: dict, product_names: list[str], builds: dict[str, dict
             continue
         pairs.append({"product": p["name"], "fixed": f, "vulnerable": max(prior, key=version_key)})
     return pairs, dropped
+
+
+# ---------------------------------------------------------------- eligible view (P5 decision, 16 Nov 2026)
+
+
+def eligible_units(label_rows) -> set[tuple[str, str]]:
+    """(CVE, product) units eligible after effect classification (frozen P3 labels, e.g. p3-labels-v2.1).
+
+    Same rule as ahg.effect.eligible on branch d28-effect (D28 E5 and OQ-P4-1), restated here because that
+    module is not on this track: AC explicit; remote units RCE_CONFIRMED with a server role; local units
+    ADMIN_CONFIRMED with no role filter.
+    """
+    out = set()
+    for r in label_rows:
+        if r["ac_status"] != "explicit":
+            continue
+        ok = (r["label"] == "RCE_CONFIRMED" and r["role"] == "server") if r["label_set"] == "remote" \
+            else r["label"] == "ADMIN_CONFIRMED"
+        if ok:
+            out.add((r["cve_id"], r["product"]))
+    return out
+
+
+def _keep(items: list[dict], ok) -> list[dict]:
+    return [i for i in items if ok(i)]
+
+
+def eligible_view(catalogue: dict, eligible: set[tuple[str, str]]) -> dict:
+    """The catalogue restricted to eligible (CVE, product) units: roles, affected-by lists and drops of other
+    CVEs are removed; a fixture with no remaining role is removed; a product with no eligible CVE is left out.
+
+    Linux entries are keyed by the unit's product. Windows entries are keyed by MSRC product and each role
+    names its unit; affected-by lists keep a CVE if it is eligible for any unit hosted on that product.
+    """
+    out: dict = {"linux": {}, "windows": {}}
+    for product, e in catalogue["linux"].items():
+        cves = {c for c, p in eligible if p == product}
+        if not cves:
+            continue
+        fixtures = []
+        for f in e["fixtures"]:
+            vf = _keep(f["vulnerable_for"], lambda i: i["cve"] in cves)
+            ff = _keep(f["fixed_for"], lambda i: i["cve"] in cves)
+            if vf or ff:
+                fixtures.append({**f, "vulnerable_for": vf, "fixed_for": ff, "affected_by": [c for c in f["affected_by"] if c in cves]})
+        out["linux"][product] = {**e, "candidate_cves": {c: v for c, v in (e.get("candidate_cves") or {}).items() if c in cves},
+                                 "fixtures": fixtures, "status": e["status"] if fixtures else "dropped",
+                                 "dropped": _keep(e["dropped"], lambda i: i["cve"] in cves),
+                                 "unmatched_docs": _keep(e.get("unmatched_docs", []), lambda i: i["cve"] in cves)}  # fmt: skip
+    for name, e in catalogue["windows"].items():
+        units = set(e["units"])
+        cves = {c for c, p in eligible if p in units}
+        ok = lambda i: (i["cve"], i["unit"]) in eligible  # noqa: E731
+        fixtures = []
+        for f in e["fixtures"]:
+            vf, ff = _keep(f["vulnerable_for"], ok), _keep(f["fixed_for"], ok)
+            if vf or ff:
+                fixtures.append({**f, "vulnerable_for": vf, "fixed_for": ff, "affected_by": [c for c in f["affected_by"] if c in cves]})
+        dropped = _keep(e["dropped"], ok)
+        if fixtures or dropped:
+            out["windows"][name] = {**e, "fixtures": fixtures, "dropped": dropped, "status": "ok" if fixtures else "dropped",
+                                    "affected_unknown_no_fixed_build": [c for c in e["affected_unknown_no_fixed_build"] if c in cves]}  # fmt: skip
+    return out
