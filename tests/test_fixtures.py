@@ -936,8 +936,42 @@ def test_build_windows_follow_up_rules(tmp_path):
     s = by["10.0.17763.4974+KB5012170"]
     ev = s["fixed_for"][0]["evidence"]
     assert (s["release_date"], ev["kb_date_source"], s["standalone_kbs"], s["base"]) == ("2023-11-14", "msrc_latest_initial_release_listing_kb", ["KB5012170"], "10.0.17763.4974")
-    assert by["10.0.17763.1757+KB4519337"]["release_date"] == "2023-10-08" and ev["kb_article"]["raw"].endswith("windows_kb/KB5012170.html")
+    assert by["10.0.17763.1757+KB4519337"]["release_date"] == "2023-10-08" and ev["kb_article"]["raw"].endswith("windows_kb/KB5012170.html") and ev["kb_date_ref"]["raw"].endswith("windows_kb/KB5012170.html")
     assert s["affected_by"] == [] and s["affected_unknown_standalone"] == ["CVE-2023-3", "CVE-2023-5"]
     assert by["10.0.17763.1757+KB4519337"]["affected_by"] == ["CVE-2020-6", "CVE-2023-2", "CVE-2023-4", "CVE-2023-5"]
     assert by["10.0.17763.1757"]["affected_by"] == ["CVE-2020-6", "CVE-2023-2", "CVE-2023-3", "CVE-2023-4", "CVE-2023-5"]
     assert by["10.0.17763.4974"]["affected_unknown_standalone"] == ["CVE-2023-3", "CVE-2023-5"]  # later than its base: not documented either way
+
+
+CATALOG = """<table><tr><th></th><th>Title</th><th>Products</th><th>Classification</th><th>Last Updated</th><th>Version</th><th>Size</th></tr>
+<tr><td></td><td>2022-08 Security Update for Windows 10 (KB5012170)</td><td>p</td><td>Security Updates</td><td>4/11/2023</td><td>n/a</td><td>1 KB</td></tr>
+<tr><td></td><td>2022-08 Security Update for Windows Server 2019 (KB5012170)</td><td>p</td><td>Security Updates</td><td>8/9/2022</td><td>n/a</td><td>1 KB</td></tr>
+<tr><td></td><td>2022-08 Security Update for Windows 11 (KB9999999)</td><td>p</td><td>Security Updates</td><td>1/1/2020</td><td>n/a</td><td>1 KB</td></tr></table>"""
+
+
+def test_kb_date_from_body_label_and_catalog():
+    assert fx.parse_kb_body_date("<p>Release date: June 14, 2022</p>") == "2022-06-14"
+    assert fx.parse_kb_body_date("<p>install the SSU released March 14, 2023</p>") is None
+    assert fx.parse_catalog_date(CATALOG, "5012170") == {"date": "2022-08-09", "rows": 2, "month": "2022-08"}  # earliest of the KB's own rows
+    assert fx.parse_catalog_date(CATALOG.replace("8/9/2022", "9/9/2022"), "5012170") is None  # not in the title's month: not a release date
+    assert fx.parse_catalog_date(CATALOG, "1234567") is None
+
+
+def test_standalone_kb_date_prefers_catalog_over_msrc(tmp_path):
+    bf = load_script("build_fixtures")
+    uh = "<a>November 14, 2023—KB5032196 (OS Build 17763.5122)</a><a>July 12, 2022—KB5015880 (OS Build 17763.3165)</a><a>September 13, 2022—KB5017315 (OS Build 17763.3406)</a>"
+    rows = [win_row("CVE-2022-1", "Windows Server 2019", ["5012170"]), win_row("CVE-2022-2", "Windows Server 2019", ["5099999"])]
+    snap = tmp_path / "fixtures_p5w4" / "2026-11-17"
+    write_raw(snap, {"windows_update_history/h.html": uh, "windows_kb/KB5012170.html": kb_page("KB5012170: Security update for Secure Boot DBX"),
+                     "windows_kb/catalog_KB5012170.html": CATALOG, "windows_kb/KB5099999.html": kb_page("KB5099999: Some update")})
+    msrc = tmp_path / "msrc"
+    write_raw(msrc, {"cvrf_2023-Nov.json": "{}"})
+    config = {"windows_products": {"default": {"names": ["Windows Server 2019"]}}, "msrc_fetch_logs": {str(msrc): "fetch_log.jsonl"},
+              "windows_update_history": {"Windows Server 2019": {"id": "h.html", "url": "u", "build_line": "17763"}}}
+    out = bf.build_windows(fx.candidate_units(rows), rows, config, bf.Raw([snap]))["Windows Server 2019"]
+    by = {f["version"]: f for f in out["fixtures"]}
+    a = by["10.0.17763.3165+KB5012170"]  # catalog 2022-08-09: base is the July build, not the September one the MSRC date (2023-11-14) would give
+    ev = a["fixed_for"][0]["evidence"]
+    assert (a["release_date"], ev["kb_date_source"]) == ("2022-08-09", "update_catalog") and ev["kb_date_ref"]["raw"].endswith("catalog_KB5012170.html")
+    b = by["10.0.17763.3406+KB5099999"]  # no official date anywhere: MSRC fallback, flagged by its source name
+    assert b["fixed_for"][0]["evidence"]["kb_date_source"] == "msrc_latest_initial_release_listing_kb"

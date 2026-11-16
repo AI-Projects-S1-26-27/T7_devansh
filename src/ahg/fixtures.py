@@ -819,6 +819,31 @@ def parse_kb_article(page: str) -> dict | None:
             "match": _UH_ENTRY.match(title)}  # fmt: skip
 
 
+def parse_kb_body_date(page: str) -> str | None:
+    """A release date the article body states under a label ("Release date: June 14, 2022", "Published ..."),
+    else None; dates in prose (e.g. "SSU released March 14, 2023") belong to other updates and are ignored."""
+    text = re.sub(r"\s+", " ", html.unescape(re.sub(r"(?is)<(script|style)\b.*?</\1>|<[^>]+>", " ", page)))
+    m = re.search(rf"(?:Release date|Released on|Publication date|Published)\s*:?\s*({_DATE_TXT})", text)
+    return parse_date(m.group(1), "%B %d, %Y") if m else None
+
+
+def parse_catalog_date(page: str, kb: str) -> dict | None:
+    """Release date of a KB from a Microsoft Update Catalog search page: the earliest "Last Updated" among the
+    rows whose title names the KB, accepted only if it falls in the title's "YYYY-MM" month (rows revised later
+    carry a later date, so the earliest is the release; a month mismatch means the date is not the release).
+    Returns {"date", "rows", "month"} or None."""
+    rows = []
+    for tr in re.findall(r"(?is)<tr\b.*?</tr>", page):
+        cells = [re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", c))).strip() for c in re.findall(r"(?is)<td\b[^>]*>(.*?)</td>", tr)]
+        if len(cells) >= 5 and f"KB{kb}" in cells[1] and re.match(r"\d{4}-\d{2}\b", cells[1]) and re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", cells[4]):
+            rows.append((cells[1][:7], datetime.strptime(cells[4], "%m/%d/%Y").date().isoformat()))
+    if not rows:
+        return None
+    date = min(d for _, d in rows)
+    month = min(m for m, d in rows if d == date)
+    return {"date": date, "rows": len(rows), "month": month} if date[:7] == month else None
+
+
 def history_order(releases: list[dict], by_build: bool) -> list[dict]:
     """Releases in servicing order: by OS build where there is one, else by date (then KB); an initial
     release without KB sorts first among equal keys."""

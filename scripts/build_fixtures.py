@@ -196,7 +196,12 @@ def fetch(cfg: dict, date: str, base: list[Path], source: str) -> None:
         text = have.text(page) if have is not None and have.has(page) else decode_raw((f.out / page).read_bytes())
         listed = {r["kb"] for r in fx.parse_update_history(text, hc.get("build_line"))}
         for kb in sorted(windows_fix_kbs(cands, cfg, name) - listed, key=int):
-            get(f"windows_kb/KB{kb}.html", f"https://support.microsoft.com/help/{kb}")
+            rec = get(f"windows_kb/KB{kb}.html", f"https://support.microsoft.com/help/{kb}")
+            art = Path(rec["path"]) if rec.get("path") and Path(rec["path"]).exists() else None
+            ak = fx.parse_kb_article(decode_raw(art.read_bytes())) if art else None
+            if ak and ak["match"] is None and ak["date"] is None and not fx.parse_kb_body_date(decode_raw(art.read_bytes())):
+                # A standalone KB whose article gives no release date: the Microsoft Update Catalog's rows.
+                get(f"windows_kb/catalog_KB{kb}.html", f"https://www.catalog.update.microsoft.com/Search.aspx?q=KB{kb}")
     for cve in sorted(cna_cves, key=fx.cve_sort_key):
         get(f"cveawg/{cve}.json", CVEAWG + cve)
     m = write_manifest(f.out, {"task": "P5", "config": cfg, "candidate_products": sorted(cands),
@@ -635,7 +640,7 @@ def history_entry(name: str, hc: dict, cves: dict[str, dict], hosted: set[str], 
         # The article was fetched as support.microsoft.com/help/<kb>; some titles name no KB ("MS16-045: ...
         # Hyper-V: April 12, 2016"), which is then the requested one. A title naming another KB is refused.
         if a and a["kb"] in (kb, None):
-            articles[kb] = {**a, "kb": kb, "source": raw.ref(n)}
+            articles[kb] = {**a, "kb": kb, "source": raw.ref(n), "body_date": fx.parse_kb_body_date(raw.text(n))}
     from_articles = []
     for kb, a in sorted(articles.items()):
         r = fx.cumulative_release(a["match"], line) if a["match"] else None
@@ -664,7 +669,13 @@ def history_entry(name: str, hc: dict, cves: dict[str, dict], hosted: set[str], 
             a = articles.get(kb)
             if a is None or (a["match"] and fx.cumulative_release(a["match"], line) is not None):
                 continue
-            date, how = a["date"], "kb_article_title"
+            date, how, src = a["date"], "kb_article_title", a["source"]
+            if date is None and a["body_date"]:
+                date, how = a["body_date"], "kb_article_body"
+            if date is None and raw.has(f"windows_kb/catalog_KB{kb}.html"):
+                c = fx.parse_catalog_date(raw.text(f"windows_kb/catalog_KB{kb}.html"), kb)
+                if c:
+                    date, how, src = c["date"], "update_catalog", raw.ref(f"windows_kb/catalog_KB{kb}.html")
             if date is None:
                 # e.g. KB5012170's title names no date. One date per KB: the latest MSRC initial release among the
                 # CVEs that list it (the KB cannot predate any CVE it fixes; CVE-2020-0689's 2020 record was later
@@ -672,15 +683,15 @@ def history_entry(name: str, hc: dict, cves: dict[str, dict], hosted: set[str], 
                 listing = [(cves[c]["row"]["msrc"].get("initial_release") or "")[:10] for c in cves if kb in cves[c]["kbs"]]
                 date, how = max((d for d in listing if d), default=None), "msrc_latest_initial_release_listing_kb"
             if date:
-                options.append((date, kb, how))
+                options.append((date, kb, how, src))
         if not options:
             continue
-        date, kb, how = min(options)
+        date, kb, how, src = min(options, key=lambda o: o[:3])
         b = fx.standalone_base(ordered, date)
         if b is None:
             dropped_by_cve[cve] = {**d, "reason": "no_release_before_standalone_kb", "standalone_kb": f"KB{kb}"}
             continue
-        standalone[cve] = {"base": b, "kb": kb, "date": date, "date_source": how, "article": articles[kb]["source"], "title": articles[kb]["title"]}
+        standalone[cve] = {"base": b, "kb": kb, "date": date, "date_source": how, "date_ref": src, "article": articles[kb]["source"], "title": articles[kb]["title"]}
         del dropped_by_cve[cve]
 
     fixtures: dict[tuple, dict] = {}
@@ -723,7 +734,7 @@ def history_entry(name: str, hc: dict, cves: dict[str, dict], hosted: set[str], 
             fixture(s["base"], s["kb"])["fixed_for"].append({"cve": cve, "unit": unit, "cohort": cohort, "after": ordered[s["base"]]["version"],
                                                              "evidence": {**evidence(cve, f"KB{s['kb']}"), "standalone_kb": f"KB{s['kb']}",
                                                                           "kb_article": s["article"], "kb_date": s["date"],
-                                                                          "kb_date_source": s["date_source"]}})  # fmt: skip
+                                                                          "kb_date_source": s["date_source"], "kb_date_ref": s["date_ref"]}})  # fmt: skip
     for (i, k, kb), f in fixtures.items():
         # Affected: every CVE whose cumulative fix comes later in servicing order; a standalone-fixed CVE affects
         # its base and every earlier release. Later cumulative releases are not documented either way for it
@@ -877,7 +888,7 @@ def standalone_lines(catalogue: dict) -> list[str]:
             for i in f["fixed_for"]:
                 ev = i["evidence"]
                 if "standalone_kb" in ev:
-                    lines.append(f"| {name} | {i['cve']} | {i['cohort']} | {i['after']} | {f['version']} | {ev['kb_date']} | {ev['kb_date_source']} | {ev['kb_article']['url']} |")
+                    lines.append(f"| {name} | {i['cve']} | {i['cohort']} | {i['after']} | {f['version']} | {ev['kb_date']} | {ev['kb_date_source']} | {ev['kb_date_ref']['url']} |")
     return lines
 
 
