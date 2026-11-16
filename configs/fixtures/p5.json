@@ -1,0 +1,227 @@
+{
+  "task": "P5",
+  "decisions": "D28 Round 4 'Fixtures and assignment' (catalogue rule); P5 decisions 16 Nov 2026: pre-P3 candidate superset, per-range fixtures, vendor pages with CNA fallback (status 'unaffected' entries only), stable releases only, SHA-256 of evidence files, Windows vulnerable build = prior MSRC FixedBuild; eligible view from frozen effect labels p3-labels-v2.1 (P5 decision 16 Nov 2026)",
+  "master_dataset": "../ahg-data/data/d28/master/2026-11-15T124455Z-cf2dc62/cves.jsonl.gz",
+  "master_sha256": "d7c7c2c849c8779e7b776d1653c602f6cedb3f55009f8ea641d90b2997dd082c",
+  "msrc_fetch_logs": {
+    "../ahg-data/data/raw/sources/2026-11-08": "fetch_log.jsonl",
+    "../ahg-data/data/raw/msrc/2026-11-15": "fetch_log.jsonl"
+  },
+  "eligible_labels": "../ahg-effect/results/d28_effect/2026-11-16T062413Z-89dd346/frozen/p3-labels-v2.1.jsonl.gz",
+  "eligible_labels_sha256": "5e80198a25d6eb55740bb83685689825e3372756a06dc1cbb3b74aa1f5ca28d6",
+  "catalogue_root": "data/d28/fixtures",
+  "results_root": "results/d28_fixtures",
+  "pace_seconds": 2.0,
+  "github_pages_max": 10,
+  "candidate_stages": ["remote_candidate", "local_candidate"],
+  "cpe_part": {"default": "a", "linux:linux_kernel": "o"},
+  "windows_products": {
+    "default": {"names": ["Windows Server 2012 R2", "Windows Server 2016", "Windows Server 2019", "Windows Server 2022"]},
+    "Exchange": {"prefix": "Microsoft Exchange Server"},
+    "SQL Server": {"prefix": "Microsoft SQL Server"}
+  },
+  "unverified_release": {
+    "decision": "Devansh 16 Nov 2026 (BUILD_RULES rule 13): for products with no fixtures, vulnerable fixtures from exact version strings listed in NVD CPE matches, flagged unverified_release: no release date, no upstream validation, vulnerable fixtures only, never a fixed fixture; usable in the primary (p = 1) benchmark, not in p<1 cohorts; only strings NVD itself lists",
+    "products": ["oracle:mysql", "mysql:mysql", "solarwinds:serv-u", "crushftp:crushftp", "postfix:postfix", "cerberusftp:ftp_server"],
+    "nvd_raw_dir": "../ahg-data/data/raw/nvd/2026-10-21"
+  },
+  "not_covered": {
+    "oracle:mysql": "no upstream release list with release dates reachable: dev.mysql.com release notes answered 403 to the generic client, cdn.mysql.com/archives/mysql-8.0/ answered 404 (probe 16 Nov 2026); GitHub tags carry no dates",
+    "mysql:mysql": "same upstream as oracle:mysql (no reachable dated release list)",
+    "solarwinds:serv-u": "no upstream release list reachable: the Serv-U release-notes page answered 404 (probe 16 Nov 2026)",
+    "crushftp:crushftp": "the vendor build page lists versions without release dates (probe 16 Nov 2026)",
+    "postfix:postfix": "the official release directory (ftp.porcupine.org/mirrors/postfix-release/official/) answered 403 (probe 16 Nov 2026)"
+  },
+  "products": {
+    "isc:bind": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+(?:-[PS]\\d+)*",
+      "cpe_split": "(?P<version>\\d+\\.\\d+\\.\\d+)(?:-(?P<update>P\\d+))?",
+      "releases": [{"id": "bind9_listing.html", "kind": "listing", "url": "https://ftp.isc.org/isc/bind9/", "pattern": "(?P<name>9\\.\\d+\\.\\d+(?:-P\\d+)?)/"}],
+      "evidence": [
+        {"id": "isc_matrix.html", "kind": "table", "url": "https://kb.isc.org/docs/aa-00913", "column": "\\d+\\.\\d+"},
+        {"id": "kb", "kind": "per_cve", "url_template": "https://kb.isc.org/docs/{cve_lower}", "pattern": "Solution:(?P<v>.{0,600}?)Acknowledg", "flatten": true}
+      ],
+      "cna": {"sources": ["security-officer@isc.org"], "short_name": "isc", "product_regex": "BIND 9"}
+    },
+    "nlnetlabs:unbound": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [{"id": "unbound_listing.html", "kind": "listing", "url": "https://nlnetlabs.nl/downloads/unbound/", "pattern": "unbound-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.gz"}],
+      "evidence": [
+        {"id": "unbound_advisories.html", "kind": "page_regex", "url": "https://nlnetlabs.nl/projects/unbound/security-advisories/",
+         "patterns": ["CVE:\\n(?P<cves>(?:CVE-\\d{4}-\\d+[^\\n]*\\n)+)(?:(?!CVE:\\n)[^\\n]*\\n){0,80}?[^\\n]*?Unbound (?:version )?(?P<v>\\d+\\.\\d+\\.\\d+) (?:includes|contains) (?:a |the )?fix"]}
+      ],
+      "cna": {"sources": ["sep@nlnetlabs.nl"], "short_name": "NLnet Labs", "product_regex": "Unbound"}
+    },
+    "powerdns:authoritative": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [{"id": "pdns_listing.html", "kind": "listing", "url": "https://downloads.powerdns.com/releases/", "pattern": "pdns-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.bz2"}],
+      "evidence": [
+        {"id": "auth_advisories", "kind": "index", "url": "https://docs.powerdns.com/authoritative/security-advisories/index.html", "link_pattern": "powerdns-advisory-[\\w.-]+\\.html",
+         "patterns": ["CVE: (?P<cves>[^\\n]*)\\n(?:[^\\n]*\\n){0,6}?Not affected: (?P<v>(?:PowerDNS )?Authoritative[^\\n]*)"]}
+      ],
+      "cna": {"sources": ["security@open-xchange.com"], "short_name": "OX", "product_regex": "(?:PowerDNS )?Authoritative(?: Server)?"}
+    },
+    "powerdns:recursor": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [{"id": "pdns_listing.html", "kind": "listing", "url": "https://downloads.powerdns.com/releases/", "pattern": "pdns-recursor-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.bz2"}],
+      "evidence": [
+        {"id": "recursor_advisories", "kind": "index", "url": "https://docs.powerdns.com/recursor/security-advisories/index.html", "link_pattern": "powerdns-advisory-[\\w.-]+\\.html",
+         "patterns": ["CVE: (?P<cves>[^\\n]*)\\n(?:[^\\n]*\\n){0,6}?Not affected: (?P<v>(?:PowerDNS )?Recursor[^\\n]*)"]}
+      ],
+      "cna": {"sources": ["security@open-xchange.com"], "short_name": "OX", "product_regex": "(?:PowerDNS )?Recursor"}
+    },
+    "thekelleys:dnsmasq": {
+      "version_regex": "\\d+\\.\\d+",
+      "releases": [
+        {"id": "dnsmasq_listing.html", "kind": "listing", "url": "https://thekelleys.org.uk/dnsmasq/", "pattern": "dnsmasq-(?P<name>\\d+\\.\\d+)\\.tar\\.gz"},
+        {"id": "dnsmasq_archive_listing.html", "kind": "listing", "url": "https://thekelleys.org.uk/dnsmasq/archive/", "pattern": "dnsmasq-(?P<name>\\d+\\.\\d+)\\.tar\\.gz"}
+      ],
+      "evidence": [{"id": "dnsmasq_CHANGELOG.txt", "kind": "sections", "url": "https://thekelleys.org.uk/dnsmasq/CHANGELOG", "header": "^version (?P<v>\\d+\\.\\d+)$"}]
+    },
+    "cerberusftp:ftp_server": {
+      "version_regex": "\\d+(?:\\.\\d+)+",
+      "releases": [{"id": "cerberus_releasenotes.html", "kind": "text", "url": "https://www.cerberusftp.com/releasenotes/", "pattern": "^Version (?P<name>\\d+(?:\\.\\d+)+) Official Release — (?P<date>\\d{1,2} [A-Z][a-z]+ \\d{4})", "date_format": "%d %B %Y"}],
+      "evidence": [{"id": "cerberus_releasenotes.html", "kind": "sections", "url": "https://www.cerberusftp.com/releasenotes/", "header": "^Version (?P<v>\\d+(?:\\.\\d+)+) Official Release"}]
+    },
+    "wftpserver:wing_ftp_server": {
+      "version_regex": "\\d+(?:\\.\\d+)+",
+      "releases": [{"id": "wing_history.html", "kind": "text", "url": "https://www.wftpserver.com/serverhistory.htm", "pattern": "^Wing FTP Server v(?P<name>\\d+(?:\\.\\d+)+) Released: (?P<date>\\d{1,2}/[A-Z][a-z]{2}/\\d{4})", "date_format": "%d/%b/%Y"}],
+      "evidence": [{"id": "wing_history.html", "kind": "sections", "url": "https://www.wftpserver.com/serverhistory.htm", "header": "^Wing FTP Server v(?P<v>\\d+(?:\\.\\d+)+) Released"}]
+    },
+    "xlightftpd:xlight_ftp_server": {
+      "version_regex": "\\d+(?:\\.\\d+)+",
+      "releases": [{"id": "xlight_whatsnew.html", "kind": "text", "url": "https://www.xlightftpd.com/whatsnew.htm", "pattern": "^(?P<name>\\d+\\.\\d+(?:\\.\\d+)*)\\((?P<date>\\d{4}-\\d{1,2}-\\d{1,2})\\)", "date_format": "ymd_loose"}],
+      "evidence": [{"id": "xlight_whatsnew.html", "kind": "sections", "url": "https://www.xlightftpd.com/whatsnew.htm", "header": "^(?P<v>\\d+\\.\\d+(?:\\.\\d+)*)\\(\\d{4}-\\d{1,2}-\\d{1,2}\\)"}]
+    },
+    "proftpd:proftpd": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+(?:rc\\d+|[a-z]\\b)?",
+      "cpe_split": "(?P<version>\\d+\\.\\d+\\.\\d+)(?P<update>[a-z]?)",
+      "releases": [{"id": "proftpd_NEWS.txt", "kind": "text", "url": "https://raw.githubusercontent.com/proftpd/proftpd/master/NEWS", "pattern": "^(?P<name>\\d+\\.\\d+\\.\\d+[a-z]?) - Released (?P<date>\\d{1,2}-[A-Z][a-z]{2}-\\d{4})", "date_format": "%d-%b-%Y"}],
+      "evidence": [{"id": "proftpd_NEWS.txt", "kind": "sections", "url": "https://raw.githubusercontent.com/proftpd/proftpd/master/NEWS", "header": "^(?P<v>\\d+\\.\\d+\\.\\d+[a-z]?(?:rc\\d+)?)(?: - Released\\b|$)"}]
+    },
+    "pureftpd:pure-ftpd": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [
+        {"id": "pureftpd_listing.html", "kind": "listing", "url": "https://download.pureftpd.org/pub/pure-ftpd/releases/", "pattern": "pure-ftpd-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.(?:gz|bz2)"},
+        {"id": "pureftpd_obsolete_listing.html", "kind": "listing", "url": "https://download.pureftpd.org/pub/pure-ftpd/releases/obsolete/", "pattern": "pure-ftpd-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.(?:gz|bz2)"}
+      ],
+      "evidence": [{"id": "pureftpd_ChangeLog.txt", "kind": "sections", "url": "https://raw.githubusercontent.com/jedisct1/pure-ftpd/master/ChangeLog", "header": "^\\* Version (?P<v>\\d+\\.\\d+\\.\\d+):"}]
+    },
+    "apache:http_server": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [{"id": "httpd_listing.html", "kind": "listing", "url": "https://archive.apache.org/dist/httpd/", "pattern": "httpd-(?P<name>2\\.\\d+\\.\\d+)\\.tar\\.(?:gz|bz2)"}],
+      "evidence": [
+        {"id": "httpd_vulnerabilities_24.html", "kind": "sections", "url": "https://httpd.apache.org/security/vulnerabilities_24.html", "header": "^Fixed in Apache HTTP Server (?P<v>\\d+\\.\\d+\\.\\d+)\\b", "cve_at_line_start": true},
+        {"id": "httpd_vulnerabilities_22.html", "kind": "sections", "url": "https://httpd.apache.org/security/vulnerabilities_22.html", "header": "^Fixed in Apache HTTP Server (?P<v>\\d+\\.\\d+\\.\\d+)\\b", "cve_at_line_start": true}
+      ],
+      "cna": {"sources": ["security@apache.org"], "short_name": "apache", "product_regex": "Apache HTTP Server"}
+    },
+    "apache:tomcat": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?",
+      "releases": [
+        {"id": "tomcat6_listing.html", "kind": "listing", "url": "https://archive.apache.org/dist/tomcat/tomcat-6/", "pattern": "v(?P<name>\\d+\\.\\d+\\.\\d+)/"},
+        {"id": "tomcat7_listing.html", "kind": "listing", "url": "https://archive.apache.org/dist/tomcat/tomcat-7/", "pattern": "v(?P<name>\\d+\\.\\d+\\.\\d+)/"},
+        {"id": "tomcat8_listing.html", "kind": "listing", "url": "https://archive.apache.org/dist/tomcat/tomcat-8/", "pattern": "v(?P<name>\\d+\\.\\d+\\.\\d+)/"},
+        {"id": "tomcat9_listing.html", "kind": "listing", "url": "https://archive.apache.org/dist/tomcat/tomcat-9/", "pattern": "v(?P<name>\\d+\\.\\d+\\.\\d+)/"},
+        {"id": "tomcat10_listing.html", "kind": "listing", "url": "https://archive.apache.org/dist/tomcat/tomcat-10/", "pattern": "v(?P<name>\\d+\\.\\d+\\.\\d+)/"},
+        {"id": "tomcat11_listing.html", "kind": "listing", "url": "https://archive.apache.org/dist/tomcat/tomcat-11/", "pattern": "v(?P<name>\\d+\\.\\d+\\.\\d+)/"}
+      ],
+      "evidence": [
+        {"id": "tomcat_security_6.html", "kind": "sections", "url": "https://tomcat.apache.org/security-6.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_7.html", "kind": "sections", "url": "https://tomcat.apache.org/security-7.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_8.html", "kind": "sections", "url": "https://tomcat.apache.org/security-8.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_9.html", "kind": "sections", "url": "https://tomcat.apache.org/security-9.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_10.html", "kind": "sections", "url": "https://tomcat.apache.org/security-10.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_11.html", "kind": "sections", "url": "https://tomcat.apache.org/security-11.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true}
+      ],
+      "cna": {"sources": ["security@apache.org"], "short_name": "apache", "product_regex": "Apache Tomcat"}
+    },
+    "f5:nginx": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [{"id": "nginx_listing.html", "kind": "listing", "url": "https://nginx.org/download/", "pattern": "nginx-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.gz"}],
+      "evidence": [{"id": "nginx_security_advisories.html", "kind": "page_regex", "url": "https://nginx.org/en/security_advisories.html", "patterns": ["(?P<cves>(?:CVE-\\d{4}-\\d+\\n)+)Not vulnerable: (?P<v>[^\\n]*)"]}]
+    },
+    "dovecot:dovecot": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?",
+      "releases": [
+        {"id": "dovecot22_listing.html", "kind": "listing", "url": "https://dovecot.org/releases/2.2/", "pattern": "dovecot-(?P<name>\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?)\\.tar\\.gz"},
+        {"id": "dovecot23_listing.html", "kind": "listing", "url": "https://dovecot.org/releases/2.3/", "pattern": "dovecot-(?P<name>\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?)\\.tar\\.gz"},
+        {"id": "dovecot24_listing.html", "kind": "listing", "url": "https://dovecot.org/releases/2.4/", "pattern": "dovecot-(?P<name>\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?)\\.tar\\.gz"}
+      ],
+      "evidence": [{"id": "dovecot_NEWS.txt", "kind": "sections", "url": "https://raw.githubusercontent.com/dovecot/core/main/NEWS", "header": "^v(?P<v>\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?) \\d{4}-\\d{2}-\\d{2}"}],
+      "cna": {"sources": ["security@open-xchange.com"], "short_name": "OX", "product_regex": "(?:OX )?Dovecot(?: CE| Community Edition)?"}
+    },
+    "exim:exim": {
+      "version_regex": "4\\.\\d+(?:\\.\\d+)?",
+      "releases": [
+        {"id": "exim4_listing.html", "kind": "listing", "url": "https://ftp.exim.org/pub/exim/exim4/", "pattern": "exim-(?P<name>4\\.\\d+(?:\\.\\d+)?)\\.tar\\.(?:gz|bz2|xz)"},
+        {"id": "exim4_old_listing.html", "kind": "listing", "url": "https://ftp.exim.org/pub/exim/exim4/old/", "pattern": "exim-(?P<name>4\\.\\d+(?:\\.\\d+)?)\\.tar\\.(?:gz|bz2|xz)"}
+      ],
+      "evidence": [{"id": "exim_ChangeLog.txt", "kind": "sections", "url": "https://raw.githubusercontent.com/Exim/exim/master/doc/doc-txt/ChangeLog", "header": "^Exim version (?P<v>4\\.\\d+(?:\\.\\d+)?)$"}]
+    },
+    "freerdp:freerdp": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [{"id": "freerdp_releases", "kind": "github_releases", "repo": "FreeRDP/FreeRDP", "pattern": "(?P<name>\\d+\\.\\d+\\.\\d+)"}],
+      "evidence": [{"id": "freerdp_advisories", "kind": "ghsa_repo", "repo": "FreeRDP/FreeRDP"}]
+    },
+    "neutrinolabs:xrdp": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?",
+      "releases": [{"id": "xrdp_releases", "kind": "github_releases", "repo": "neutrinolabs/xrdp", "pattern": "v(?P<name>\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?)"}],
+      "evidence": [{"id": "xrdp_advisories", "kind": "ghsa_repo", "repo": "neutrinolabs/xrdp"}]
+    },
+    "samba:samba": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [{"id": "samba_stable_listing.html", "kind": "listing", "url": "https://download.samba.org/pub/samba/stable/", "pattern": "samba-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.gz"}],
+      "evidence": [{"id": "samba_cve", "kind": "per_cve", "url_template": "https://www.samba.org/samba/security/{cve}.html", "pattern": "Samba (?:versions? )?(?P<v>\\d+\\.\\d+\\.\\d+(?:(?:,| and|,? and) \\d+\\.\\d+\\.\\d+)*) (?:has|have) been issued as (?:a )?security releases?", "flatten": true}]
+    },
+    "mariadb:mariadb": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [{"id": "mariadb_archive_listing.html", "kind": "listing", "url": "https://archive.mariadb.org/", "pattern": "mariadb-(?P<name>\\d+\\.\\d+\\.\\d+)/"}],
+      "evidence": [],
+      "evidence_note": "no vendor fix page reachable: mariadb.com/kb/en/security/ redirects to a docs page that answered 404, mariadb.org/about/security/ redirects to an unrelated page (probe 16 Nov 2026); the Oracle CNA records for these CVEs are not the vendor's"
+    },
+    "postgresql:postgresql": {
+      "version_regex": "\\d+\\.\\d+(?:\\.\\d+)?",
+      "releases": [{"id": "postgresql_source_listing.html", "kind": "listing", "url": "https://ftp.postgresql.org/pub/source/", "pattern": "v(?P<name>\\d+\\.\\d+(?:\\.\\d+)?)/"}],
+      "evidence": [{"id": "postgresql_security.html", "kind": "table", "url": "https://www.postgresql.org/support/security/", "column": "Fixed"}]
+    },
+    "dropbear_ssh_project:dropbear_ssh": {
+      "version_regex": "\\d{4}\\.\\d+",
+      "releases": [{"id": "dropbear_listing.html", "kind": "listing", "url": "https://matt.ucc.asn.au/dropbear/releases/", "pattern": "dropbear-(?P<name>\\d{4}\\.\\d+)\\.tar\\.bz2"}],
+      "evidence": [{"id": "dropbear_CHANGES.txt", "kind": "sections", "url": "https://matt.ucc.asn.au/dropbear/CHANGES", "header": "^(?P<v>\\d{4}\\.\\d+) - \\d"}]
+    },
+    "libssh:libssh": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases": [
+        {"id": "libssh_07_listing.html", "kind": "listing", "url": "https://www.libssh.org/files/0.7/", "pattern": "libssh-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.xz"},
+        {"id": "libssh_08_listing.html", "kind": "listing", "url": "https://www.libssh.org/files/0.8/", "pattern": "libssh-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.xz"},
+        {"id": "libssh_09_listing.html", "kind": "listing", "url": "https://www.libssh.org/files/0.9/", "pattern": "libssh-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.xz"},
+        {"id": "libssh_010_listing.html", "kind": "listing", "url": "https://www.libssh.org/files/0.10/", "pattern": "libssh-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.xz"},
+        {"id": "libssh_011_listing.html", "kind": "listing", "url": "https://www.libssh.org/files/0.11/", "pattern": "libssh-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.xz"},
+        {"id": "libssh_012_listing.html", "kind": "listing", "url": "https://www.libssh.org/files/0.12/", "pattern": "libssh-(?P<name>\\d+\\.\\d+\\.\\d+)\\.tar\\.xz"}
+      ],
+      "evidence": [{"id": "libssh_CHANGELOG.txt", "kind": "sections", "url": "https://gitlab.com/libssh/libssh-mirror/-/raw/master/CHANGELOG", "header": "^version (?P<v>\\d+\\.\\d+\\.\\d+) \\(released"}]
+    },
+    "openbsd:openssh": {
+      "version_regex": "\\d+\\.\\d+(?:p\\d+)?",
+      "cpe_split": "(?P<version>\\d+\\.\\d+)(?P<update>p\\d+)",
+      "releases": [{"id": "openssh_portable_listing.html", "kind": "listing", "url": "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/", "pattern": "openssh-(?P<name>\\d+\\.\\d+p\\d+)\\.tar\\.gz"}],
+      "evidence": [{"id": "openssh_releasenotes.html", "kind": "sections", "url": "https://www.openssh.com/releasenotes.html", "header": "^OpenSSH (?P<v>\\d+\\.\\d+(?:p\\d+)?(?: ?/ ?\\d+\\.\\d+p\\d+)?) \\(\\d{4}-\\d{2}-\\d{2}\\)"}]
+    },
+    "linux:linux_kernel": {
+      "version_regex": "\\d+\\.\\d+(?:\\.\\d+){0,2}",
+      "releases": [
+        {"id": "kernel_v2.6_listing.html", "kind": "listing", "url": "https://cdn.kernel.org/pub/linux/kernel/v2.6/", "pattern": "linux-(?P<name>\\d+\\.\\d+(?:\\.\\d+){0,2})\\.tar\\.(?:xz|gz|bz2)"},
+        {"id": "kernel_v3.x_listing.html", "kind": "listing", "url": "https://cdn.kernel.org/pub/linux/kernel/v3.x/", "pattern": "linux-(?P<name>\\d+\\.\\d+(?:\\.\\d+){0,2})\\.tar\\.(?:xz|gz|bz2)"},
+        {"id": "kernel_v4.x_listing.html", "kind": "listing", "url": "https://cdn.kernel.org/pub/linux/kernel/v4.x/", "pattern": "linux-(?P<name>\\d+\\.\\d+(?:\\.\\d+){0,2})\\.tar\\.(?:xz|gz|bz2)"},
+        {"id": "kernel_v5.x_listing.html", "kind": "listing", "url": "https://cdn.kernel.org/pub/linux/kernel/v5.x/", "pattern": "linux-(?P<name>\\d+\\.\\d+(?:\\.\\d+){0,2})\\.tar\\.(?:xz|gz|bz2)"},
+        {"id": "kernel_v6.x_listing.html", "kind": "listing", "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/", "pattern": "linux-(?P<name>\\d+\\.\\d+(?:\\.\\d+){0,2})\\.tar\\.(?:xz|gz|bz2)"},
+        {"id": "kernel_v7.x_listing.html", "kind": "listing", "url": "https://cdn.kernel.org/pub/linux/kernel/v7.x/", "pattern": "linux-(?P<name>\\d+\\.\\d+(?:\\.\\d+){0,2})\\.tar\\.(?:xz|gz|bz2)"}
+      ],
+      "evidence": [],
+      "cna_tarball": {"id": "kernel_vulns.tar.gz", "url": "https://git.kernel.org/pub/scm/linux/security/vulns.git/snapshot/vulns-master.tar.gz",
+                      "member_regex": "[^/]+/cve/published/\\d{4}/(?P<cve>CVE-\\d{4}-\\d+)\\.json", "org_id": "f4215fc3-5b6b-47ff-a258-f7189bd81038", "product_regex": "Linux",
+                      "org_id_note": "the orgId every published record in the kernel CNA's vulns repository carries (checked at build); the repository is the vendor's own"}
+    }
+  }
+}
