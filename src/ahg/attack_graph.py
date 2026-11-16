@@ -14,10 +14,8 @@ Actions (all preconditions conjunctive):
              pre {execCode(t), fact(a)}, add {execCode(h)}, cost LOGIN_COST
              i.e. credentials taken from t AND network access to h's login service
 
-Goal: execCode(target). These are MulVAL's execCode/attackerLocated facts with
-MulVAL's cost-free intermediate facts (netAccess, canAccessHost,
-principalCompromised) folded into the actions that consume them; D12 gives
-the correspondence and why.
+Goal: execCode(target). The fact names follow MulVAL's execCode/attackerLocated,
+cited for their meaning only; no equivalence with MulVAL is claimed (D28 E6).
 
 PR-gated variant (pr_gated=True; the default schema above is unchanged).
 Each exploit also needs the capability its CVE's CVSS Privileges Required
