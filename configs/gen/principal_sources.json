@@ -1,0 +1,21 @@
+{
+  "decision": "P6 (16 Nov 2026): runtime-principal table = the documented run-as identity of the vulnerable process, cited (URL, retrieval date, SHA-256), else UNKNOWN; never inferred. Candidate pages fetched sequentially and paced.",
+  "pace_seconds": 4.0,
+  "pages": [
+    {"name": "dnsmasq-man.html", "url": "https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html", "for": ["thekelleys:dnsmasq|dns"]},
+    {"name": "unbound.conf.html", "url": "https://unbound.docs.nlnetlabs.nl/en/latest/manpages/unbound.conf.html", "for": ["nlnetlabs:unbound|dns"]},
+    {"name": "smbd.8.html", "url": "https://www.samba.org/samba/docs/current/man-html/smbd.8.html", "for": ["samba:samba|smb"]},
+    {"name": "httpd_mod_unixd.html", "url": "https://httpd.apache.org/docs/2.4/mod/mod_unixd.html", "for": ["apache:http_server|http"]},
+    {"name": "proftpd_User.html", "url": "http://www.proftpd.org/docs/directives/linked/config_ref_User.html", "for": ["proftpd:proftpd|ftp"]},
+    {"name": "exim_security.html", "url": "https://www.exim.org/exim-html-current/doc/html/spec_html/ch-security_considerations.html", "for": ["exim:exim|mail"]},
+    {"name": "openbsd_sshd.8.html", "url": "https://man.openbsd.org/sshd.8", "for": ["openbsd:openssh|ssh"]},
+    {"name": "mariadbd_options.html", "url": "https://mariadb.com/kb/en/mariadbd-options/", "for": ["mariadb:mariadb|sql"]},
+    {"name": "tomcat_security_howto.html", "url": "https://tomcat.apache.org/tomcat-10.1-doc/security-howto.html", "for": ["apache:tomcat|http"]},
+    {"name": "dovecot_service_configuration.html", "url": "https://doc.dovecot.org/2.3/configuration_manual/service_configuration/", "for": ["dovecot:dovecot|mail"]},
+    {"name": "xrdp_readme.md", "url": "https://raw.githubusercontent.com/neutrinolabs/xrdp/devel/README.md", "for": ["neutrinolabs:xrdp|rdp"]},
+    {"name": "iis_application_pool_identities.html", "url": "https://learn.microsoft.com/en-us/iis/manage/configuring-security/application-pool-identities", "for": ["IIS|http"]},
+    {"name": "sql_service_accounts.html", "url": "https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/configure-windows-service-accounts-and-permissions", "for": ["SQL Server|sql"]},
+    {"name": "openssh_windows_server_configuration.html", "url": "https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration", "for": ["OpenSSH for Windows|ssh"]},
+    {"name": "openssh_windows_keymanagement.html", "url": "https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement", "for": ["OpenSSH for Windows|ssh"]}
+  ]
+}
