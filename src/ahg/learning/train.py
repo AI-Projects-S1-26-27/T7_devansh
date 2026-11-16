@@ -12,7 +12,7 @@ import time
 import torch
 from torch.nn.functional import softplus
 
-from ..cost import SCALE
+from ..cost import SCALE, check_regime
 from ..dataset import LabelBatch
 from . import encode
 from .models import GNN, MLP, WLLinear, fit_ridge, goal_mask, output_transform, sparse_matrix, wl_transform
@@ -27,6 +27,25 @@ def loss_fn(pred, y, loss: str, w_over: float):
     if loss == "asym":
         err2 = torch.where(pred > y, w_over * err2, err2)
     return err2.mean()
+
+
+# Checkpoints from before P9a2 store no scales: they were trained on D9 units, targets h*/38 and cost inputs
+# /380 (GNN) or /38 (MLP features). load() gives them exactly those constants back.
+LEGACY_LABEL_SCALE, LEGACY_COST_SCALE = SCALE, 10 * SCALE
+MLP_COST_COLUMNS = [3, 5, 6]  # dataset.mlp_features columns that are costs: h_sp, mean and min action cost
+
+
+def label_scale(train: list[LabelBatch]) -> float:
+    """The model's output unit (P9a2, OQ-P9a-4): the mean h* of its own training examples, so the training
+    targets h*/scale have mean 1 in every cost regime. Rounded to float32, the precision the model stores it in,
+    so training and search divide and multiply by the same number."""
+    hs = [ex.hstar for b in train for ex in b.examples]
+    if not hs:
+        raise ValueError("no training examples: no label scale")
+    s = float(torch.tensor(sum(hs) / len(hs), dtype=torch.float32))
+    if not s > 0:
+        raise ValueError(f"the mean training h* is {s}; a label scale must be positive")
+    return s
 
 
 def _cat(xs):
@@ -54,15 +73,16 @@ def macro_mae(pred: torch.Tensor, y: torch.Tensor, net: torch.Tensor) -> float:
 
 
 def _train_mlp(cfg, train, val, history, deadline=None):
+    s = label_scale(train)
     X = _cat([encode.mlp_matrix(b) for b in train])
-    y = _cat([encode.targets(b) for b in train])
+    y = _cat([encode.targets(b) for b in train]) / s
     G = _cat([encode.goal_flags(b) for b in train])
     Xv = _cat([encode.mlp_matrix(b) for b in val])
-    yv = _cat([encode.targets(b) for b in val])
+    yv = _cat([encode.targets(b) for b in val]) / s
     Gv = _cat([encode.goal_flags(b) for b in val])
     dev = torch.device(cfg["device"])
     mean, std = X.mean(0), X.std(0).clamp_min(1e-6)  # train-only statistics (D14 §5)
-    model = MLP(X.shape[1], cfg["hidden"], mean, std).to(dev)
+    model = MLP(X.shape[1], cfg["hidden"], mean, std, s).to(dev)
     X, y, G, Xv, yv, Gv = X.to(dev), y.to(dev), G.to(dev), Xv.to(dev), yv.to(dev), Gv.to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
     gen = torch.Generator().manual_seed(cfg["seed"])
@@ -101,20 +121,24 @@ def gnn_pred(model, g, residual: bool, sl=slice(None)):
     same inputs that Learned.bind computes in search."""
     fx = g["fx"][sl]
     raw = model(fx, g["graph"], g["glob"][sl] if residual else None)
-    return output_transform(raw, goal_mask(fx), g["hm"][sl] if residual else None)
+    return output_transform(raw, goal_mask(fx), g["hm"][sl] / model.label_scale if residual else None)
 
 
 def _train_gnn(cfg, train, val, history, deadline=None):
     dev = torch.device(cfg["device"])
     residual, rank = cfg.get("target", "hstar") == "residual", cfg["loss"] == "rank"
+    s = label_scale(train)
+    # Targets (y) and ranking g-differences (dg) are in raw cost units in the encodings; the model's unit is s.
+    # A new dict and new tensors: the cached encodings are never changed in place.
     move = lambda gr: {k: ({kk: vv.to(dev) for kk, vv in v.items()} if k == "graph" else
+                           (v / s).to(dev) if k in ("y", "dg") else
                            v.to(dev) if torch.is_tensor(v) else v) for k, v in gr.items()}
     enc = encode.rank_groups if rank else encode.gnn_groups
     groups = [move(g) for b in train for g in enc(b, residual=residual)]
     vgroups = [move(g) for b in val for g in enc(b, residual=residual)]
     # Checkpoints are selected by h vs h* on every model, whatever its loss (F4): the labelled val states.
     mgroups = vgroups if not rank else [move(g) for b in val for g in encode.gnn_groups(b, residual=residual)]
-    model = new_gnn(cfg).to(dev)
+    model = new_gnn(cfg, s, s).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
     rng = random.Random(f"train:{cfg['seed']}")
     chunk = cfg["batch_size"]
@@ -163,12 +187,13 @@ def _train_gnn(cfg, train, val, history, deadline=None):
     return _early_stop(model, epoch, validate, cfg, history, deadline)
 
 
-def new_gnn(cfg: dict) -> GNN:
+def new_gnn(cfg: dict, label_scale: float, cost_scale: float) -> GNN:
     """The GNN a config describes; the residual target (D22 a, d) adds the h_max inputs.
 
     pre_agg / readout pick the aggregator grid cell (D28 Round 11). A config without them is a pre-D28 one,
     whose only architecture was mean / mean; that is what they mean when absent."""
     agg = {"pre_agg": cfg.get("pre_agg", "mean"), "readout": cfg.get("readout", "mean")}
+    agg.update(label_scale=label_scale, cost_scale=cost_scale)
     if cfg.get("target", "hstar") == "residual":
         return GNN(cfg["hidden"], cfg["layers"], fact_dim=4, global_dim=1, **agg)
     return GNN(cfg["hidden"], cfg["layers"], **agg)
@@ -210,8 +235,9 @@ def _train_wl(cfg, train, val, history, deadline=None):
     """deadline (D24 §5, AUDIT_1 L3): checked between IRLS rounds, like the GNN/MLP epoch check, so no new
     round starts after it. A ridge fit in progress is not interrupted: the bound is soft by one fit
     (373 s for the D23 WL), and the first fit always runs, as the first epoch does in _early_stop."""
+    s = label_scale(train)
     hists = [h for b in train for h in encode.wl_histograms(b)]
-    y = _cat([encode.targets(b) for b in train]).double()
+    y = _cat([encode.targets(b) for b in train]).double() / s
     G = _cat([encode.goal_flags(b) for b in train])
     vocab: dict[str, int] = {}
     for h in hists:  # fitted on train only; colours unseen in train are dropped later
@@ -219,7 +245,7 @@ def _train_wl(cfg, train, val, history, deadline=None):
             vocab.setdefault(c, len(vocab))
     X = sparse_matrix(hists, vocab)
     Xv = sparse_matrix([h for b in val for h in encode.wl_histograms(b)], vocab)
-    yv = _cat([encode.targets(b) for b in val]).double()
+    yv = _cat([encode.targets(b) for b in val]).double() / s
     Gv = _cat([encode.goal_flags(b) for b in val])
     net = network_ids(val)
     w, best = None, None
@@ -243,13 +269,21 @@ def _train_wl(cfg, train, val, history, deadline=None):
         if best is None or mae < best[0]:
             best = (mae, r, beta.clone(), bias)
     history.append({"vocab_size": len(vocab), "selected_round": best[1]})
-    return WLLinear(vocab, best[2], best[3])
+    return WLLinear(vocab, best[2], best[3], s)
 
 
 def train_model(cfg: dict, train: list[LabelBatch], val: list[LabelBatch], deadline: float | None = None):
     """Train one model; returns (model, history). cfg["kind"] in KINDS, cfg["loss"] in LOSSES."""
     if any(b.manifest["split"] != "train" for b in train) or any(b.manifest["split"] != "val" for b in val):
         raise ValueError("train_model takes train batches to fit and val batches to stop on, nothing else")
+    # D28 Round 5: labels of one cost regime are never used for the other. A config and every batch it
+    # reads must name the same regime; pre-D28 configs and batches name none, and still match each other.
+    regime = cfg.get("cost_regime")
+    if regime is not None:
+        check_regime(regime)
+    mismatched = sorted({str(b.manifest.get("cost_regime")) for b in train + val} - {str(regime)})
+    if mismatched:
+        raise ValueError(f"config cost regime {regime!r} differs from the batches' regime(s) {mismatched}")
     if cfg["kind"] != "gnn" and (cfg["loss"] == "rank" or cfg.get("target", "hstar") != "hstar"):
         raise ValueError("the ranking loss and the residual target are implemented for the GNN only (D22)")
     torch.manual_seed(cfg["seed"])
@@ -267,14 +301,19 @@ def load(path):
     ck = torch.load(path, weights_only=False)
     cfg, sd = ck["config"], ck["state_dict"]
     if ck["kind"] == "wl":
-        return WLLinear(sd["vocab"], sd["beta"], sd["bias"]), cfg
+        return WLLinear(sd["vocab"], sd["beta"], sd["bias"], sd.get("label_scale", LEGACY_LABEL_SCALE)), cfg
+    if "label_scale" not in sd:  # a pre-P9a2 checkpoint: give it back the D9 constants it was trained with
+        sd = dict(sd, label_scale=torch.tensor(float(LEGACY_LABEL_SCALE)))
+        if ck["kind"] == "mlp":
+            # Its standardisation statistics were fitted on cost features / 38; the features are raw costs now.
+            k = torch.ones_like(sd["mean"])
+            k[MLP_COST_COLUMNS] = LEGACY_LABEL_SCALE
+            sd["mean"], sd["std"] = sd["mean"] * k, sd["std"] * k
+        else:
+            sd["cost_scale"] = torch.tensor(float(LEGACY_COST_SCALE))
     if ck["kind"] == "mlp":
-        model = MLP(sd["mean"].shape[0], cfg["hidden"], sd["mean"], sd["std"])
+        model = MLP(sd["mean"].shape[0], cfg["hidden"], sd["mean"], sd["std"], float(sd["label_scale"]))
     else:
-        model = new_gnn(cfg)
+        model = new_gnn(cfg, float(sd["label_scale"]), float(sd["cost_scale"]))
     model.load_state_dict(sd)
     return model.eval(), cfg
-
-
-def effort_to_units(h: float) -> float:
-    return h * SCALE

@@ -1,7 +1,9 @@
 """Turn label batches into model inputs once, and cache them (D21 §1).
 
-Targets are h* in effort units (D9 units / 38), a fixed constant rather than
-a fitted scale (D14 §5). Encodings are cached under data/cache/<content
+Every encoding is in the regime's raw cost units: targets are h* itself, and the
+cost-valued inputs are raw costs. The scale a model works in is fitted on its own
+training labels and applied by the model and train.py (P9a2, OQ-P9a-4), so the
+encodings, and their cache, do not depend on any scale. Encodings are cached under data/cache/<content
 sha256 of the batch>/, so a batch is encoded once whatever runs read it; the
 cache key is the batch's own content hash, so a stale cache cannot be
 mistaken for a different batch. The file name also carries ENCODER_VERSION, a hash
@@ -16,8 +18,7 @@ import hashlib
 
 import torch
 
-from ..cost import SCALE
-from ..dataset import COST_SCALE, LabelBatch, mlp_features, static_graph, wl_colours
+from ..dataset import LabelBatch, mlp_features, static_graph, wl_colours
 from ..heuristics import INF, lmcut, relaxed_costs
 from ..search import astar
 
@@ -45,7 +46,8 @@ def _cached(batch: LabelBatch, kind: str, build, cache: Path | None):
 
 
 def targets(batch: LabelBatch) -> torch.Tensor:
-    return torch.tensor([ex.hstar / SCALE for ex in batch.examples], dtype=torch.float32)
+    """[states] h* in raw cost units."""
+    return torch.tensor([ex.hstar for ex in batch.examples], dtype=torch.float32)
 
 
 def goal_flags(batch: LabelBatch) -> torch.Tensor:
@@ -73,28 +75,28 @@ def fact_bits(task, states: list[int]) -> torch.Tensor:
 
 
 def hmax_inputs(task, states: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
-    """D22 residual inputs: [states, facts, 4] (held, is_goal, h_max-reachable, h_max cost / COST_SCALE)
-    and h_max(s) in D9 units. One relaxed pass per state with every fact final (stop_at_goal=False)."""
+    """D22 residual inputs: [states, facts, 4] (held, is_goal, h_max-reachable, h_max cost)
+    and h_max(s), both in raw cost units. One relaxed pass per state with every fact final (stop_at_goal=False)."""
     rows, hm = [], []
     for s in states:
         fc, _ = relaxed_costs(task, s, "max", stop_at_goal=False)
-        rows.append([(0.0, 0.0) if c == INF else (1.0, c / COST_SCALE) for c in fc])
+        rows.append([(0.0, 0.0) if c == INF else (1.0, float(c)) for c in fc])
         hm.append(max((fc[g] for g in task.goal), default=0))
     return torch.cat([fact_bits(task, states), torch.tensor(rows, dtype=torch.float32)], -1), \
         torch.tensor(hm, dtype=torch.float32)
 
 
 def gnn_inputs(task, states: list[int], residual: bool) -> dict:
-    """Model inputs for states of one instance: fx, and for the residual model glob ([B, 1]) and hm (effort units)."""
+    """Model inputs for states of one instance: fx, and for the residual model glob ([B, 1]) and hm (raw costs)."""
     if not residual:
         return {"fx": fact_bits(task, states)}
     fx, hm = hmax_inputs(task, states)
-    return {"fx": fx, "glob": (hm / COST_SCALE)[:, None], "hm": hm / SCALE}
+    return {"fx": fx, "glob": hm[:, None], "hm": hm}
 
 
 def gnn_groups(batch: LabelBatch, cache=None, residual: bool = False) -> list[dict]:
     """Per labelled instance: its static graph, the inputs of its labelled states, and their targets y = h*
-    (effort units). residual adds the h_max inputs; the residual model is trained through
+    (raw cost units). residual adds the h_max inputs; the residual model is trained through
     output_transform(raw, goal, h_max) against h* itself (D28 LRN7)."""
     def build():
         by_inst: dict[int, list[int]] = {}
@@ -117,7 +119,7 @@ def plan_open_pairs(task) -> tuple[list[int], list[tuple[int, int, float]]]:
     of a search that has expanded exactly s_0..s_{i-1}: every successor generated so far that is
     not a plan state, with the cheapest g through the expanded plan states. Each (s_i, s_j in O_i)
     is one pair. Returns the states (plan states s_1..s_n first, then off-plan states) and pairs
-    (index of s_i, index of s_j, g_i - g_j in effort units).
+    (index of s_i, index of s_j, g_i - g_j in raw cost units).
     """
     r = astar(task, lmcut)
     path, g = [task.init], [0]
@@ -137,7 +139,7 @@ def plan_open_pairs(task) -> tuple[list[int], list[tuple[int, int, float]]]:
             if s2 not in index:
                 index[s2] = len(states)
                 states.append(s2)
-            pairs.append((index[path[i]], index[s2], (g[i] - g2) / SCALE))
+            pairs.append((index[path[i]], index[s2], float(g[i] - g2)))
     return states, pairs
 
 

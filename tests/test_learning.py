@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from ahg.cost import SCALE
 from ahg.dataset import fact_features, open_batch, static_graph
 from ahg.evaluate import BASELINES, COMPARATORS, _geo_ci, evaluate, sibling_groups, sibling_order, summarise, \
     summarise_searches
@@ -145,7 +144,7 @@ def test_hstar_satisfies_every_ranking_pair(batches):
     train, _ = batches
     task = train.instances[train.examples[0].instance].task
     states, pairs = plan_open_pairs(task)
-    hstar = [astar(task, lmcut, start=s).cost / SCALE for s in states]
+    hstar = [astar(task, lmcut, start=s).cost for s in states]  # raw cost units, like the pairs (P9a2)
     assert pairs and all(dg + hstar[i] - hstar[j] <= 1e-9 for i, j, dg in pairs)
 
 
@@ -242,7 +241,7 @@ def _score_parity(model, cfg, batch, n_instances):
         with torch.no_grad():
             train_score = gnn_pred(model, g, True)
         h = Learned(model, cfg, "m").bind(inst)
-        search_score = torch.tensor([h(inst.task, s) / SCALE for s in states])
+        search_score = torch.tensor([h(inst.task, s) / float(model.label_scale) for s in states])
         assert torch.allclose(train_score, search_score, rtol=1e-5, atol=1e-4)
         # The order the ranking loss sees on its pairs is the order search sees.
         for a, b, _ in pairs:

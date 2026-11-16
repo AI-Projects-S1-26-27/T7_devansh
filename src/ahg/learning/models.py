@@ -1,4 +1,10 @@
-"""The three learned heuristics of D21 §1. Each predicts h*(s) in effort units and is ≥ 0.
+"""The three learned heuristics of D21 §1. Each predicts h*(s) / label_scale and is ≥ 0.
+
+label_scale (P9a2, OQ-P9a-4) is fitted on the model's own training labels: the mean h* of its training
+examples, so it is that cost regime's own unit and the training targets have mean 1. It is saved with the
+model; search multiplies by it. The GNN also divides its cost-valued inputs (action cost, per-fact and
+global h_max) by cost_scale, which equals label_scale for every model trained since P9a2. Checkpoints from
+before P9a2 have neither and load with the D9 constants they were trained with (train.load).
 
 The networks (MLP, GNN) return a raw output; output_transform is the one map
 from raw output to h (D28 LRN7), used by training, validation and search alike:
@@ -39,10 +45,11 @@ def goal_mask(fx: torch.Tensor) -> torch.Tensor:
 class MLP(nn.Module):
     """Graph-level hand-built features -> h. Standardisation stats are buffers, saved with the weights."""
 
-    def __init__(self, n_in: int, hidden: int, mean: torch.Tensor, std: torch.Tensor):
+    def __init__(self, n_in: int, hidden: int, mean: torch.Tensor, std: torch.Tensor, label_scale: float):
         super().__init__()
         self.register_buffer("mean", mean)
         self.register_buffer("std", std)
+        self.register_buffer("label_scale", torch.tensor(float(label_scale)))
         self.net = nn.Sequential(nn.Linear(n_in, hidden), nn.ReLU(), nn.Linear(hidden, hidden), nn.ReLU(),
                                  nn.Linear(hidden, 1))
 
@@ -96,11 +103,13 @@ class GNN(nn.Module):
     """
 
     def __init__(self, hidden: int, layers: int, fact_dim: int = FACT_DIM, global_dim: int = 0,
-                 pre_agg: str = "mean", readout: str = "mean"):
+                 pre_agg: str = "mean", readout: str = "mean", *, label_scale: float, cost_scale: float):
         super().__init__()
         if (pre_agg, readout) not in AGGREGATOR_GRID:
             raise ValueError(f"(pre_agg, readout) = {(pre_agg, readout)} is not in the grid {AGGREGATOR_GRID}")
         self.pre_agg, self.readout = pre_agg, readout
+        self.register_buffer("label_scale", torch.tensor(float(label_scale)))
+        self.register_buffer("cost_scale", torch.tensor(float(cost_scale)))
         self.enc_f = nn.Linear(fact_dim, hidden)
         self.enc_a = nn.Linear(ACTION_DIM, hidden)
         self.up_a = nn.ModuleList(nn.Linear(2 * hidden, hidden) for _ in range(layers))
@@ -110,8 +119,15 @@ class GNN(nn.Module):
     def forward(self, fx, g, glob=None):
         """fx: [B, facts, fact_dim]; g: dataset.static_graph of the instance; glob: [B, global_dim] or None."""
         b, n_f = fx.shape[0], fx.shape[1]
+        # Inputs arrive in the regime's raw cost units; only the cost-valued channels are rescaled: action
+        # cost (act_x column 0), the per-fact h_max cost (fx channel 3 of the residual model) and glob.
+        act_x = torch.cat([g["act_x"][:, :1] / self.cost_scale, g["act_x"][:, 1:]], -1)
+        if fx.shape[-1] > FACT_DIM:
+            fx = torch.cat([fx[..., :3], fx[..., 3:] / self.cost_scale], -1)
+        if glob is not None:
+            glob = glob / self.cost_scale
         f = torch.relu(self.enc_f(fx))
-        a = torch.relu(self.enc_a(g["act_x"])).expand(b, -1, -1)
+        a = torch.relu(self.enc_a(act_x)).expand(b, -1, -1)
         for up_a, up_f in zip(self.up_a, self.up_f):
             # An action sees the mean / sum / max of its preconditions: the AND side of the graph.
             m_a = aggregate_pre(f, g, self.pre_agg)
@@ -127,15 +143,15 @@ class GNN(nn.Module):
 class WLLinear:
     """Linear model on WL colour counts (WL-GOOSE style). vocab: colour -> column, fitted on train only."""
 
-    def __init__(self, vocab: dict[str, int], beta: torch.Tensor, bias: float):
-        self.vocab, self.beta, self.bias = vocab, beta, bias
+    def __init__(self, vocab: dict[str, int], beta: torch.Tensor, bias: float, label_scale: float):
+        self.vocab, self.beta, self.bias, self.label_scale = vocab, beta, bias, float(label_scale)
         self._w = {c: float(beta[k]) for c, k in vocab.items()}  # dict lookup is faster than a sparse dot here
 
     def raw_one(self, hist: Counter) -> float:
         return self.bias + sum(n * self._w.get(c, 0.0) for c, n in hist.items())
 
     def state_dict(self) -> dict:
-        return {"vocab": self.vocab, "beta": self.beta, "bias": self.bias}
+        return {"vocab": self.vocab, "beta": self.beta, "bias": self.bias, "label_scale": self.label_scale}
 
 
 def sparse_matrix(hists: list[Counter], vocab: dict[str, int]) -> torch.Tensor:

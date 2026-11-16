@@ -24,6 +24,19 @@ Usage:
       Projects the D17 seed plan's training cost from the wall time of the given pilot runs
       (selected configs; the config the ablation grid is priced at) and the timing run.
 
+D28 (P9a; real runs only after the CVE rebuild, generator and label generation):
+  python scripts/train.py grid --set KEY=VALUE ...
+      The GNN aggregator grid (Round 11): 6 cells x seeds 0-2 on `ac` offline data; every row recorded under
+      results/training/grid/ac/. The --set values give the base GNN config, including cost_regime=ac and
+      the train_batches / val_batches.
+  python scripts/train.py grid-freeze RUN [--rule configs/d28_grid_rule.json] --out configs/d28_aggregators.json
+      Select from a grid run by the decided rule (mean over seeds, 2% relative tie, simplest wins; P9a2) and
+      freeze the choice once; an existing file with another choice is never overwritten.
+  python scripts/train.py onpolicy --index K --protocol PROTOCOL.json [--aggregators FROZEN] --set KEY=VALUE ...
+      On-policy run K of onpolicy.plan() (regime x model x seed; 18 runs), exactly 2 rounds (Round 9), under
+      results/training/onpolicy/. A GNN run needs the frozen grid file. The --set values give the base config
+      and that regime's train_batches / val_batches.
+
 Runs go to results/training/<name>/<stamp>-<commit>/ through runlog (append-only).
 """
 
@@ -41,6 +54,7 @@ from ahg.dataset import open_batch
 from ahg.learning.runs import ROOT, TRAINING, make_config, train_run
 from ahg.learning.train import train_model
 from ahg.runlog import load_raw, write_run
+from ahg.timing import REPEATS, WARMUP
 
 # D21 §5, fixed before training. Order (D21 amendment 1): cheapest first, and for the GNN both
 # learning rates at each size before the next size, so the budget cuts the largest models, not one lr.
@@ -234,7 +248,7 @@ def cmd_gate(args):
             model, mcfg = load(out / "model.pt")
             models.append(Learned(model, mcfg, mid))
     val = [open_batch(ROOT / p) for p in make_config()["val_batches"]]
-    summ = summarise(evaluate(val, models, 200_000), [m.name for m in models], 200_000)
+    summ = summarise(evaluate(val, models, 200_000, repeats=REPEATS, warmup=WARMUP), [m.name for m in models], 200_000)
     for r in rows:
         new, old = summ[r["id"]], ref[r["d22"]]
         r["hmax"] = {"new": new["vs"]["hmax"]["expansions"], "d22": old["vs"]["hmax"]["expansions"]}
@@ -368,6 +382,34 @@ def cmd_project(args):
     print(write_run("projection", raw, "\n".join(L) + "\n", [], {"plan": PLAN}, root=TRAINING))
 
 
+def cmd_grid(args):
+    from ahg.aggregator_grid import run_grid, write_grid_run
+    base = make_config(**parse_set(args.set))
+    train, val = load_batches(base)
+    rows = run_grid(base, train, val)
+    print(write_grid_run(base, train, val, rows))
+
+
+def cmd_grid_freeze(args):
+    from ahg.aggregator_grid import freeze, load_rule, select
+    rows, rule = load_raw(args.run)["rows"], load_rule(args.rule)
+    frozen = freeze(select(rows, rule), rule, str(args.run.resolve().relative_to(ROOT)), args.out)
+    print(f"{args.out}: pre_agg={frozen['pre_agg']} readout={frozen['readout']} (tied: {frozen['tied']})")
+
+
+def cmd_onpolicy(args):
+    from ahg.aggregator_grid import frozen_aggregators
+    from ahg.onpolicy import run_config, run_onpolicy, write_onpolicy_run
+    agg = frozen_aggregators(args.aggregators) if args.aggregators else None
+    cfg = make_config(**run_config(args.index, parse_set(args.set), agg))
+    protocol = json.loads(args.protocol.read_text())
+    train, val = load_batches(cfg)
+    res = run_onpolicy(cfg, train, val, protocol)
+    extra = {"plan_index": args.index, "protocol_file": str(args.protocol),
+             "aggregators": None if agg is None else {**agg, "file": str(args.aggregators)}}
+    print(write_onpolicy_run(cfg, train, val, protocol, res, extra=extra))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -395,8 +437,19 @@ def main():
     p.add_argument("--timing", type=Path, required=True)
     p.add_argument("--primary", type=Path, nargs="+", required=True)
     p.add_argument("--ablation", type=Path, nargs="+", required=True)
+    p = sub.add_parser("grid")
+    p.add_argument("--set", action="append", required=True)
+    p = sub.add_parser("grid-freeze")
+    p.add_argument("run", type=Path)
+    p.add_argument("--rule", type=Path, default=ROOT / "configs" / "d28_grid_rule.json")
+    p.add_argument("--out", type=Path, required=True)
+    p = sub.add_parser("onpolicy")
+    p.add_argument("--index", type=int, required=True)
+    p.add_argument("--protocol", type=Path, required=True)
+    p.add_argument("--aggregators", type=Path)
+    p.add_argument("--set", action="append", required=True)
     args = ap.parse_args()
-    {"run": cmd_run, "search": cmd_search, "sequence": cmd_sequence, "plan": cmd_plan, "gate": cmd_gate, "finalize": cmd_finalize, "timing": cmd_timing,
+    {"grid": cmd_grid, "grid-freeze": cmd_grid_freeze, "onpolicy": cmd_onpolicy, "run": cmd_run, "search": cmd_search, "sequence": cmd_sequence, "plan": cmd_plan, "gate": cmd_gate, "finalize": cmd_finalize, "timing": cmd_timing,
      "project": cmd_project}[args.cmd](args)
 
 

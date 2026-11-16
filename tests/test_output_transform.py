@@ -11,7 +11,6 @@ import pytest
 import torch
 from torch.nn.functional import softplus
 
-from ahg.cost import SCALE
 from ahg.dataset import mlp_features, static_graph, wl_colours
 from ahg.learning.encode import gnn_inputs
 from ahg.learning.heuristic import Learned
@@ -27,9 +26,12 @@ RAW = [2.0, 0.0, -3.0]  # positive, zero and negative raw outputs
 F32 = dict(rtol=1e-6, atol=0.0)
 
 
-def _same(train, h, inst, states):
+LS, CS = 3.5, 2.25  # label and cost scales different from 1 and from each other, so a missing one shows
+
+
+def _same(train, h, inst, states, scale=LS):
     search = torch.tensor([h(inst.task, s) for s in states], dtype=torch.float64)
-    assert torch.allclose(SCALE * train.double(), search, **F32), (train, search)
+    assert torch.allclose(scale * train.double(), search, **F32), (train, search)
     assert search[-1] == 0 and train[-1] == 0  # h(goal) = 0 explicitly, in both paths
 
 
@@ -63,7 +65,7 @@ def test_gnn_training_and_search_values_are_identical(batches, c, residual):
     _, val = batches
     cfg = make_config(kind="gnn", hidden=8, layers=2, **({"target": "residual"} if residual else {}))
     torch.manual_seed(0)
-    model = new_gnn(cfg).eval()
+    model = new_gnn(cfg, LS, CS).eval()
     _constant(model.head[-1], c)
     inst, states = _states(val)
     g = {"graph": static_graph(inst), **gnn_inputs(inst.task, states, residual)}
@@ -71,7 +73,7 @@ def test_gnn_training_and_search_values_are_identical(batches, c, residual):
         train = gnn_pred(model, g, residual)
     h = Learned(model, cfg, "m").bind(inst)
     _same(train, h, inst, states)
-    expect = torch.tensor(softplus(torch.tensor(c)).item()) + (g["hm"][:-1] if residual else 0)
+    expect = torch.tensor(softplus(torch.tensor(c)).item()) + (g["hm"][:-1] / LS if residual else 0)
     assert torch.allclose(train[:-1], expect.expand(len(states) - 1), atol=1e-6)
 
 
@@ -80,7 +82,7 @@ def test_gnn_parity_with_trained_like_weights(batches, residual):
     _, val = batches
     cfg = make_config(kind="gnn", hidden=8, layers=2, **({"target": "residual"} if residual else {}))
     torch.manual_seed(1)
-    model = new_gnn(cfg).eval()
+    model = new_gnn(cfg, LS, CS).eval()
     inst, states = _states(val)
     g = {"graph": static_graph(inst), **gnn_inputs(inst.task, states, residual)}
     with torch.no_grad():
@@ -93,7 +95,7 @@ def test_mlp_training_and_search_values_are_identical(batches, c):
     _, val = batches
     inst, states = _states(val)
     X = torch.tensor([mlp_features(inst.task, s) for s in states], dtype=torch.float32)
-    model = MLP(X.shape[1], 8, X.mean(0), X.std(0).clamp_min(1e-6)).eval()
+    model = MLP(X.shape[1], 8, X.mean(0), X.std(0).clamp_min(1e-6), LS).eval()
     _constant(model.net[-1], c)
     G = torch.tensor([inst.task.is_goal(s) for s in states])
     with torch.no_grad():
@@ -110,9 +112,9 @@ def test_wl_training_and_search_values_are_identical(batches, c):
     hists = [wl_colours(inst.task, s) for s in states]
     vocab = {col: k for k, col in enumerate(sorted({col for hh in hists for col in hh}))}
     beta = torch.linspace(-0.01, 0.01, len(vocab), dtype=torch.float64)
-    model = WLLinear(vocab, beta, c)
+    model = WLLinear(vocab, beta, c, LS)
     G = torch.tensor([inst.task.is_goal(s) for s in states])
     train = wl_transform(sparse_matrix(hists, vocab) @ beta + c, G)  # what _train_wl computes
     h = Learned(model, make_config(kind="wl"), "m").bind(inst)
     search = torch.tensor([h(inst.task, s) for s in states], dtype=torch.float64)
-    assert torch.allclose(SCALE * train, search, rtol=1e-12, atol=0.0) and search[-1] == 0 and (search >= 0).all()
+    assert torch.allclose(LS * train, search, rtol=1e-12, atol=0.0) and search[-1] == 0 and (search >= 0).all()

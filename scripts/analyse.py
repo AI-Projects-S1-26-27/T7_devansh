@@ -15,6 +15,11 @@ Per model id and comparator (A* with h0, h_max, h_sp, h_add, LM-cut; GBFS+h_add;
   test, the rank-biserial r, and the D23 §2 verdict. Time and plan cost: CIs only, no p-values.
 H2 per model: plan-cost ratio CI; "small cost" if its upper bound <= 1.05, "falsified" if its lower bound > 1.10.
 On val every number here is a diagnostic: the primaries were selected on val (D22, D23 §1).
+
+Ported to the D28 harness (P9a, OQ-P7-2): times are the Timing records evaluate() writes (median of the timed
+repeats); expansion and time ratios use only the instances every seed of the model and the comparator solved
+(D28 Round 12: a budget stop is never replaced by the budget or any other value); a censored time is left out
+of the time ratio and counted. A pre-M1 evaluation run (no Timing records) is refused, never read as zero.
 """
 
 import argparse
@@ -24,6 +29,7 @@ import statistics
 from pathlib import Path
 
 from ahg.evaluate import comparators
+from ahg.timing import Timing, log_ratio
 from ahg.runlog import load_raw, write_run
 from ahg.stats import holm, nested_bootstrap, verdict, wilcoxon
 
@@ -43,13 +49,34 @@ def groups(raw: dict, frozen: dict) -> dict[str, list[tuple[int, str]]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
+def check_records(raw: dict) -> None:
+    """Refuse an evaluation run written before the D28 timing protocol: its records have no Timing."""
+    if "records" not in raw:
+        raise SystemExit("evaluation run has no 'records': not a scripts/evaluate.py run")
+    for r in raw["records"]:
+        missing = [k for k in ("repeats", "warmup") if k not in r]
+        missing += [m for m, run in r["runs"].items() if not isinstance(run.get("time"), dict)]
+        if missing:
+            raise SystemExit(f"record {r.get('seed')} lacks {missing}: a pre-M1 evaluation run without Timing "
+                             "records; rerun scripts/evaluate.py")
+
+
+def _solved(r, h) -> bool:
+    return r["runs"][h]["cost"] is not None
+
+
+def _censored(r, h) -> bool:
+    return Timing.from_record(r["runs"][h]["time"]).censored
+
+
 def analyse(raw: dict, frozen: dict) -> dict:
-    recs, budget = raw["records"], raw["budget"]
+    check_records(raw)
+    recs = raw["records"]
     comps = comparators(recs)
-    exp = lambda r, h: max(1, r["runs"][h]["expanded"] if not r["runs"][h]["budget_hit"] else budget)
     metric = {
-        "expansions": lambda r, m, c: math.log(exp(r, m) / exp(r, c)),
-        "time": lambda r, m, c: math.log(r["runs"][m]["seconds"] / r["runs"][c]["seconds"]),
+        "expansions": lambda r, m, c: log_ratio(r["runs"][m]["expanded"], r["runs"][c]["expanded"], f"{m}/{c} expansions"),
+        "time": lambda r, m, c: log_ratio(Timing.from_record(r["runs"][m]["time"]),
+                                          Timing.from_record(r["runs"][c]["time"]), f"{m}/{c} time"),
     }
     primaries = {r["id"] for r in frozen["runs"] if r["role"] == "primary"}
     out = {"split": raw["split"], "instances": len(recs), "comparators": comps, "models": {}, "searches": {}}
@@ -58,16 +85,23 @@ def analyse(raw: dict, frozen: dict) -> dict:
         seeds, names = [s for s, _ in members], [n for _, n in members]
         g = {"seeds": seeds, "primary": gid in primaries, "vs": {}}
         for c in comps:
-            g["vs"][c] = {}
+            # Commonly solved: every seed of the model and the comparator (D28 Round 12). Censored times are
+            # left out of the time ratio only, and counted.
+            both = [r for r in recs if _solved(r, c) and all(_solved(r, m) for m in names)]
+            timed_ = [r for r in both if not (_censored(r, c) or any(_censored(r, m) for m in names))]
+            g["vs"][c] = {"common": len(both), "time_censored": len(both) - len(timed_)}
             for key, f in metric.items():
-                logs = [[f(r, m, c) for m in names] for r in recs]
+                logs = [[f(r, m, c) for m in names] for r in (both if key == "expansions" else timed_)]
+                if not logs:
+                    raise SystemExit(f"{gid} vs {c}: no commonly solved {'uncensored ' * (key == 'time')}instances")
                 per_seed = [math.exp(statistics.fmean(col)) for col in zip(*logs)]
                 g["vs"][c][key] = {
                     "per_seed": per_seed, "mean": statistics.fmean(per_seed),
                     "sd": statistics.stdev(per_seed) if len(per_seed) > 1 else 0.0,
                     "pooled": nested_bootstrap(logs, f"{gid}:{c}:{key}")}
             if gid in primaries:
-                d = [statistics.fmean(math.log(exp(r, m)) for m in names) - math.log(exp(r, c)) for r in recs]
+                d = [statistics.fmean(math.log(r["runs"][m]["expanded"]) for m in names)
+                     - math.log(r["runs"][c]["expanded"]) for r in both]
                 tests.append((gid, c, wilcoxon(d)))
         cost = [[math.log(r["runs"][m]["cost"] / r["hstar"]) if r["runs"][m]["cost"] is not None else float("nan")
                  for m in names] for r in recs]
