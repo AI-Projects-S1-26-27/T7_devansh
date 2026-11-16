@@ -21,14 +21,13 @@
     "SQL Server": {"prefix": "Microsoft SQL Server"}
   },
   "unverified_release": {
-    "decision": "Devansh 16 Nov 2026 (BUILD_RULES rule 13): for products with no fixtures, vulnerable fixtures from exact version strings listed in NVD CPE matches, flagged unverified_release: no release date, no upstream validation, vulnerable fixtures only, never a fixed fixture; usable in the primary (p = 1) benchmark, not in p<1 cohorts; only strings NVD itself lists; OQ-P5-11 (Devansh 16 Nov 2026, rule 13): inclusive range endpoints (versionStartIncluding, versionEndIncluding) also accepted, exclusive never; one fixture per CVE, the highest such version (OQ-P5-12)",
+    "decision": "Devansh 16 Nov 2026 (BUILD_RULES rule 13): for CVEs with no verified fixture (wording confirmed per CVE, OQ-P5v-1, Devansh 16 Nov 2026; first written 'for products with no fixtures'), vulnerable fixtures from exact version strings listed in NVD CPE matches, flagged unverified_release: no release date, no upstream validation, vulnerable fixtures only, never a fixed fixture; usable in the primary (p = 1) benchmark, not in p<1 cohorts; only strings NVD itself lists; OQ-P5-11 (Devansh 16 Nov 2026, rule 13): inclusive range endpoints (versionStartIncluding, versionEndIncluding) also accepted, exclusive never; one fixture per CVE, the highest such version (OQ-P5-12)",
     "products": ["oracle:mysql", "mysql:mysql", "solarwinds:serv-u", "crushftp:crushftp", "postfix:postfix", "cerberusftp:ftp_server"],
     "nvd_raw_dir": "../ahg-data/data/raw/nvd/2026-10-21"
   },
   "p5v": "P5v 16 Nov 2026: the unverified_release products verified against vendor release evidence. oracle:mysql, mysql:mysql, solarwinds:serv-u and postfix:postfix moved from not_covered to products (dated vendor release lists found); cerberusftp:ftp_server release patterns extended to the page's older date formats; crushftp:crushftp stays not covered. Per CVE, a verified vulnerable fixture replaces the unverified one; CVEs without one keep their unverified_release fixture (task P5v).",
-  "not_covered": {
-    "crushftp:crushftp": "the vendor version pages (crushftp.com/version10.html, version11_build.html) list versions and fix notes without release dates (probes 16 Nov 2026, P5 and P5v); Round 4 records a release date"
-  },
+  "p5v_followup": "P5v follow-up, decided 16 Nov 2026 by Devansh: OQ-P5v-1 per-CVE unverified rule confirmed; OQ-P5v-2 an official vendor version list counts as release evidence without dates, date recorded 'undated' (crushftp:crushftp moved from not_covered to products); OQ-P5v-3 a hotfix an official vendor advisory names as the fix counts as the fixed release, citing that advisory (Serv-U).",
+  "not_covered": {},
   "products": {
     "isc:bind": {
       "version_regex": "\\d+\\.\\d+\\.\\d+(?:-[PS]\\d+)*",
@@ -176,7 +175,38 @@
         {"id": "servu_15-5-4_release_notes.html", "kind": "sections", "url": "https://documentation.solarwinds.com/en/success_center/servu/content/release_notes/servu_15-5-4_release_notes.htm", "header": "^Serv-U (?:File Server |MFT |FTP Server )?(?P<v>\\d+(?:\\.\\d+)+(?: Hotfix \\d+)?) [Rr]elease [Nn]otes$", "cve_at_line_start": true},
         {"id": "servu_15-5-4-hotfix-1_release_notes.html", "kind": "sections", "url": "https://documentation.solarwinds.com/en/success_center/servu/content/release_notes/servu_15-5-4-hotfix-1_release_notes.htm", "header": "^Serv-U (?:File Server |MFT |FTP Server )?(?P<v>\\d+(?:\\.\\d+)+(?: Hotfix \\d+)?) [Rr]elease [Nn]otes$", "cve_at_line_start": true},
         {"id": "servu_2026-3_release_notes.html", "kind": "sections", "url": "https://documentation.solarwinds.com/en/success_center/servu/content/release_notes/servu_2026-3_release_notes.htm", "header": "^Serv-U (?:File Server |MFT |FTP Server )?(?P<v>\\d+(?:\\.\\d+)+(?: Hotfix \\d+)?) [Rr]elease [Nn]otes$", "cve_at_line_start": true},
-        {"id": "sw_advisory", "kind": "per_cve", "url_template": "https://www.solarwinds.com/trust-center/security-advisories/{cve_lower}", "patterns": ["Fixed Software Release\\n(?:SolarWinds )?Serv-U (?:File Server |MFT |FTP Server )?(?P<v>\\d+(?:\\.\\d+)+(?: (?:HF|Hotfix) ?\\d+)?)"]}
+        {"id": "sw_advisory", "kind": "per_cve", "url_template": "https://www.solarwinds.com/trust-center/security-advisories/{cve_lower}", "patterns": ["Fixed Software Release\\n(?:SolarWinds )?Serv-U (?:File Server |MFT |FTP Server )?(?P<v>\\d+(?:\\.\\d+)+(?: (?:HF|Hotfix) ?\\d+)?)"],
+         "fix_releases": "\\d+(?:\\.\\d+)+ Hotfix \\d+",
+         "fix_releases_note": "OQ-P5v-3 (Devansh 16 Nov 2026): a hotfix the advisory names as the fixed software release counts as the fixed release, dated 'undated', citing the advisory"}
+      ],
+      "version_aliases": [[" (?:HF|Hotfix) ?(\\d+)$", " Hotfix \\1"]]
+    },
+    "crushftp:crushftp": {
+      "version_regex": "\\d+\\.\\d+\\.\\d+",
+      "releases_note": "OQ-P5v-2 (Devansh 16 Nov 2026): the vendor version pages are an official version list; a release they name without a date is recorded 'undated'. Names come from version header lines, lines that open with a version (also after a build prefix '_N:', e.g. '_24:10.5.3:'), the second half of '10.6.1 / 10.7.1:', and, on the 7.x and 8.x pages, dated lines 'CrushFTP 8.1.0 - 04/11/2017' (month first). Major versions 7 to 11 only, so library versions (OpenSSL, Java) never match. Builds (_N) are not releases: NVD versions are X.Y.Z.",
+      "releases": [
+        {"id": "crushftp_version7.html", "kind": "text", "url": "https://www.crushftp.com/version7.html", "pattern": "^CrushFTP (?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+) - (?P<date>\\d{2}/\\d{2}/\\d{4})$", "date_format": "%m/%d/%Y"},
+        {"id": "crushftp_version7.html", "kind": "text", "url": "https://www.crushftp.com/version7.html", "pattern": "^(?:_\\d+:)?(?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)(?![\\d.])", "undated": true},
+        {"id": "crushftp_version8.html", "kind": "text", "url": "https://www.crushftp.com/version8.html", "pattern": "^CrushFTP (?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+) - (?P<date>\\d{2}/\\d{2}/\\d{4})$", "date_format": "%m/%d/%Y"},
+        {"id": "crushftp_version8.html", "kind": "text", "url": "https://www.crushftp.com/version8.html", "pattern": "^(?:_\\d+:)?(?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)(?![\\d.])", "undated": true},
+        {"id": "crushftp_version8_build.html", "kind": "text", "url": "https://www.crushftp.com/version8_build.html", "pattern": "^(?:_\\d+:)?(?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)(?![\\d.])", "undated": true},
+        {"id": "crushftp_version9.html", "kind": "text", "url": "https://www.crushftp.com/version9.html", "pattern": "^(?:_\\d+:)?(?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)(?![\\d.])", "undated": true},
+        {"id": "crushftp_version9_build.html", "kind": "text", "url": "https://www.crushftp.com/version9_build.html", "pattern": "^(?:_\\d+:)?(?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)(?![\\d.])", "undated": true},
+        {"id": "crushftp_version10.html", "kind": "text", "url": "https://www.crushftp.com/version10.html", "pattern": "^(?:_\\d+:)?(?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)(?![\\d.])", "undated": true},
+        {"id": "crushftp_version10.html", "kind": "text", "url": "https://www.crushftp.com/version10.html", "pattern": "^(?:[789]|1[01])\\.\\d+\\.\\d+ / (?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)", "undated": true},
+        {"id": "crushftp_version10_build.html", "kind": "text", "url": "https://www.crushftp.com/version10_build.html", "pattern": "^(?:_\\d+:)?(?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)(?![\\d.])", "undated": true},
+        {"id": "crushftp_version10_build.html", "kind": "text", "url": "https://www.crushftp.com/version10_build.html", "pattern": "^(?:[789]|1[01])\\.\\d+\\.\\d+ / (?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)", "undated": true},
+        {"id": "crushftp_version11.html", "kind": "text", "url": "https://www.crushftp.com/version11.html", "pattern": "^(?:_\\d+:)?(?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)(?![\\d.])", "undated": true},
+        {"id": "crushftp_version11_build.html", "kind": "text", "url": "https://www.crushftp.com/version11_build.html", "pattern": "^(?:_\\d+:)?(?P<name>(?:[789]|1[01])\\.\\d+\\.\\d+)(?![\\d.])", "undated": true}
+      ],
+      "evidence_note": "fix statements: the version pages (a CVE inside a version section is fixed in that version) and the v10 and v11 wiki Update pages, which NVD links as Vendor Advisory for CrushFTP CVEs; a 'versions below X are vulnerable' sentence alone is a bound, not a fix (OQ-P5-3)",
+      "evidence": [
+        {"id": "crushftp_version10.html", "kind": "sections", "url": "https://www.crushftp.com/version10.html", "header": "^(?P<v>1[01]\\.\\d+\\.\\d+(?: / 1[01]\\.\\d+\\.\\d+)?)(?:[: ]|<br/?>|$)"},
+        {"id": "crushftp_version10_build.html", "kind": "sections", "url": "https://www.crushftp.com/version10_build.html", "header": "^(?P<v>1[01]\\.\\d+\\.\\d+(?: / 1[01]\\.\\d+\\.\\d+)?)(?:[: ]|<br/?>|$)"},
+        {"id": "crushftp_version11.html", "kind": "sections", "url": "https://www.crushftp.com/version11.html", "header": "^(?P<v>1[01]\\.\\d+\\.\\d+(?: / 1[01]\\.\\d+\\.\\d+)?)(?:[: ]|<br/?>|$)"},
+        {"id": "crushftp_version11_build.html", "kind": "sections", "url": "https://www.crushftp.com/version11_build.html", "header": "^(?P<v>1[01]\\.\\d+\\.\\d+(?: / 1[01]\\.\\d+\\.\\d+)?)(?:[: ]|<br/?>|$)"},
+        {"id": "crushftp_crush11wiki_update.html", "kind": "page_regex", "url": "https://www.crushftp.com/crush11wiki/Wiki.jsp?page=Update", "patterns": ["\\((?P<cves>CVE-\\d{4}-\\d+)\\)\\n[^\\n]*?patched in v(?P<v>\\d+\\.\\d+\\.\\d+)", "\\(CVE: (?P<cves>CVE-\\d{4}-\\d+)\\)\\n(?:(?![^\\n]*\\(CVE: )[^\\n]*\\n){0,8}?(?P<v>\\d+\\.\\d+\\.\\d+ and \\d+\\.\\d+\\.\\d+) were published"]},
+        {"id": "crushftp_crush10wiki_update.html", "kind": "page_regex", "url": "https://www.crushftp.com/crush10wiki/Wiki.jsp?page=Update", "patterns": ["Regarding (?P<v>\\d+\\.\\d+\\.\\d+) and the CrushFTP exploit[^\\n]*?(?P<cves>CVE-\\d{4}-\\d+)"]}
       ]
     },
     "cerberusftp:ftp_server": {

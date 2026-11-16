@@ -686,3 +686,89 @@ def test_build_refuses_a_changed_master(tmp_path):
     master.write_bytes(gzip.compress(b"{}\n"))
     with pytest.raises(SystemExit):
         bf.load_master({"master_dataset": str(master), "master_sha256": "0" * 64})
+
+
+# ---------------------------------------------------------------- P5v follow-up (OQ-P5v-1 to -3, decided 16 Nov 2026)
+
+
+def test_a_real_date_wins_over_undated_in_either_order():
+    a = [("10.5.3", "undated", "e", "r1"), ("10.5.3", "2023-08-01", "e", "r2")]
+    for found in (a, a[::-1]):
+        rels, _ = fx.build_releases(found, None)
+        assert [(r.name, r.date, r.raw_name) for r in rels] == [("10.5.3", "2023-08-01", "r2")]
+    rels, _ = fx.build_releases([("11.0.1", "undated", "e", "r")], None)
+    assert rels[0].date == fx.UNDATED
+
+
+def test_cpe_update_is_written_as_nvd_writes_it():
+    split = P5["products"]["solarwinds:serv-u"]["cpe_split"]
+    assert fx.cpe_split("15.4.2 Hotfix 1", split) == ("15.4.2", "hotfix1")
+    assert fx.Range("c", exact="15.4.2", update="hotfix1").contains(*fx.cpe_split("15.4.2 Hotfix 1", split))
+    assert fx.cpe_split("9.6p1", r"(?P<version>\d+\.\d+)(?P<update>p\d+)") == ("9.6", "p1")
+
+
+def test_advisory_hotfix_becomes_the_fixed_release(tmp_path):
+    """OQ-P5v-3: a hotfix the vendor advisory names as the fix is a fixed release, undated, citing the advisory."""
+    bf = load_script("build_fixtures")
+    pc = P5["products"]["solarwinds:serv-u"]
+    adv = "<html><body><p>Fixed Software Release</p><p>SolarWinds Serv-U 15.2.2 HF 1</p></body></html>"
+    notes = "<html><body><h1>Serv-U 15.5.4 Hotfix 1 release notes</h1><p>Release date: June 4, 2026</p></body></html>"
+    adv2 = "<html><body><p>Fixed Software Release</p><p>SolarWinds Serv-U 15.5.4 HF1</p></body></html>"
+    snap = tmp_path / "fixtures_p5v2" / "2026-11-16"
+    write_raw(snap, {"solarwinds__serv-u/sw_advisory/CVE-2021-25276.html": adv, "solarwinds__serv-u/sw_advisory/CVE-2026-28318.html": adv2,
+                     "solarwinds__serv-u/n.html": notes})
+    raw = bf.Raw([snap])
+    small = {**pc, "releases": [{**pc["releases"][0], "id": "n.html"}], "evidence": [pc["evidence"][-1]]}
+    rels, _, _ = bf.product_releases("solarwinds:serv-u", small, raw)
+    docs, _, _ = bf.product_docs("solarwinds:serv-u", small, ["CVE-2021-25276", "CVE-2026-28318"], raw, {})
+    assert sorted((d.cve, d.version) for d in docs) == [("CVE-2021-25276", "15.2.2 Hotfix 1"), ("CVE-2026-28318", "15.5.4 Hotfix 1")]
+    extra = bf.advisory_fix_releases("solarwinds:serv-u", small, docs, rels)
+    assert [(r.name, r.cpe_version, r.cpe_update, r.date, r.raw_name) for r in extra] == [
+        ("15.2.2 Hotfix 1", "15.2.2", "hotfix1", "undated", "solarwinds__serv-u/sw_advisory/CVE-2021-25276.html")]  # 15.5.4 Hotfix 1 has its own page
+    idx = fx.ReleaseIndex(rels + extra + rels_named("15.2.2"))
+    cat = fx.catalogue_product({"CVE-2021-25276": [fx.Range("c", exact="15.2.2", update="-")]}, idx, docs)
+    assert cat.fixtures["15.2.2 Hotfix 1"]["fixed_for"][0]["after"] == "15.2.2"
+    assert cat.fixtures["15.2.2 Hotfix 1"]["release_date"] == "undated"
+
+
+def rels_named(*names):
+    return [fx.Release(n, n, "", "2021-01-21", "r", "e") for n in names]
+
+
+CRUSH_V10 = """<p>10.8.3</p><p>_0:released. password reset link vulnerability fix (CVE-2024-53552 - credit X)</p>
+<p>10.8.2 updates SMB3 library</p><p>10.6.1 / 10.7.1:</p><p>_0: KEX changes (CVE-2023-48795)</p>
+<p>_24:10.5.3:updated SFTP libraries, OpenSSL 3.0.13 and Java 1.13.2</p><p>10.4.0</p>"""
+
+
+def crush_releases(page: str, page_id: str) -> list[tuple[str, str]]:
+    found = []
+    for src in P5["products"]["crushftp:crushftp"]["releases"]:
+        if src["id"] != page_id:
+            continue
+        got = fx.parse_text_releases(page, src["pattern"], src.get("date_format"))
+        found += [(n, d or fx.UNDATED, e, src["id"]) if src.get("undated") else (n, d, e, src["id"]) for n, d, e in got]
+    return [(r.name, r.date) for r in fx.build_releases(found, None)[0]]
+
+
+def test_crushftp_version_pages_give_undated_and_dated_releases():
+    assert crush_releases("<html><body>" + CRUSH_V10 + "</body></html>", "crushftp_version10.html") == [
+        ("10.4.0", "undated"), ("10.5.3", "undated"), ("10.6.1", "undated"), ("10.7.1", "undated"), ("10.8.2", "undated"), ("10.8.3", "undated")]
+    v8 = "<html><body><p>CrushFTP 8.1.0 - 04/11/2017</p><p>8.0.4_0:fix for uploads</p><p>CrushFTP 8.0.4 - 12/03/2016</p></body></html>"
+    assert crush_releases(v8, "crushftp_version8.html") == [("8.0.4", "2016-12-03"), ("8.1.0", "2017-04-11")]
+    pc = P5["products"]["crushftp:crushftp"]
+    sec = next(e for e in pc["evidence"] if e["id"] == "crushftp_version10.html")
+    docs = fx.ev_sections("<html><body>" + CRUSH_V10 + "</body></html>", sec["header"], pc["version_regex"], "n")
+    assert sorted((d.cve, d.version) for d in docs) == [("CVE-2023-48795", "10.6.1"), ("CVE-2023-48795", "10.7.1"), ("CVE-2024-53552", "10.8.3")]
+
+
+def test_crushftp_wiki_fix_statements_stay_in_their_section():
+    pc = P5["products"]["crushftp:crushftp"]
+    wiki11 = ("<html><body><p>July 18th, 2025 - Unauthenticated access (CVE: CVE-2025-54309)</p><p>See more info here</p>"
+              "<p>March 21, 2025 - port access (CVE: CVE-2025-31161)</p><p>This issue ... (CVE-2025-0282 appears to be a copycat)</p>"
+              "<p>10.8.4 and 11.3.1 were published on 3/21/2025</p><p>April 19th, 2024 - (CVE-2024-4040)</p>"
+              "<p>CrushFTP v11 versions below 11.1 have a vulnerability. This has been patched in v11.1.0.</p></body></html>")
+    wiki10 = "<html><body><p>Regarding 10.7.1 and the CrushFTP exploit allowing access to system files <a>CVE-2024-4040</a> .</p></body></html>"
+    got = []
+    for e, page in ((pc["evidence"][-2], wiki11), (pc["evidence"][-1], wiki10)):
+        got += [(d.cve, d.version) for p in e["patterns"] for d in fx.ev_page_regex(page, p, pc["version_regex"], "n")]
+    assert sorted(got) == [("CVE-2024-4040", "10.7.1"), ("CVE-2024-4040", "11.1.0"), ("CVE-2025-31161", "10.8.4"), ("CVE-2025-31161", "11.3.1")]

@@ -217,13 +217,14 @@ def parse_date(text: str, fmt: str | None = None) -> str:
 
 
 def cpe_split(name: str, split: str | None) -> tuple[str, str]:
-    """(CPE version, CPE update) of a published version, e.g. '9.6p1' -> ('9.6', 'p1') for OpenSSH."""
+    """(CPE version, CPE update) of a published version, e.g. '9.6p1' -> ('9.6', 'p1') for OpenSSH. The
+    update is lower-cased without spaces, as NVD writes it ('15.4.2 Hotfix 1' -> ('15.4.2', 'hotfix1'))."""
     if not split:
         return name, ""
     m = re.fullmatch(split, name)
     if not m:
         raise ValueError(f"release {name!r} does not fit cpe_split {split!r}")
-    return m["version"], (m.groupdict().get("update") or "").lower()
+    return m["version"], (m.groupdict().get("update") or "").lower().replace(" ", "")
 
 
 def parse_listing(page: str, pattern: str) -> list[tuple[str, str | None, str]]:
@@ -293,9 +294,17 @@ def parse_github_tags(page: str, pattern: str) -> dict[str, dict]:
     return out
 
 
+UNDATED = "undated"  # release date of a release an official vendor version list names without a date (P5v follow-up, OQ-P5v-2)
+
+
+def _dated(d: str | None) -> bool:
+    return d is not None and d != UNDATED
+
+
 def build_releases(found: list[tuple[str, str | None, str, str]], split: str | None) -> tuple[list[Release], list[str]]:
     """Stable releases (one per version, earliest date kept) sorted by version, plus the pre-release names
-    excluded (P5 decision: stable releases only). `found` holds (name, date, entry, raw_name)."""
+    excluded (P5 decision: stable releases only). `found` holds (name, date, entry, raw_name). A real date
+    always wins over a missing or "undated" one, whichever source lists the release first."""
     by_name: dict[str, Release] = {}
     pre: set[str] = set()
     for name, date, entry, raw in found:
@@ -304,7 +313,7 @@ def build_releases(found: list[tuple[str, str | None, str, str]], split: str | N
             continue
         v, u = cpe_split(name, split)
         old = by_name.get(name)
-        if old is None or (date and (old.date is None or date < old.date)):
+        if old is None or (_dated(date) and (not _dated(old.date) or date < old.date)):
             by_name[name] = Release(name, v, u, date, raw, entry)
     return sorted(by_name.values(), key=lambda r: r.key), sorted(pre)
 

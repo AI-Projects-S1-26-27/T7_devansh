@@ -27,6 +27,7 @@ import statistics
 import sys
 import tarfile
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -234,6 +235,10 @@ def product_releases(product: str, pc: dict, raw: Raw) -> tuple[list[fx.Release]
                 got = fx.parse_release_page(page, src["pattern"], src["date_pattern"], src.get("date_format"))
             else:
                 raise ValueError(f"{product}: unknown release kind {src['kind']!r}")
+            if src.get("undated"):
+                # An official vendor version list without dates still validates the release (OQ-P5v-2);
+                # the date is recorded as "undated", never guessed.
+                got = [(n, d or fx.UNDATED, e) for n, d, e in got]
             found += [(n, d, e, name) for n, d, e in got]
     rels, pre = fx.build_releases(found, pc.get("cpe_split"))
     return rels, pre, list(dict.fromkeys(used))  # one page may serve several patterns (Cerberus date formats)
@@ -321,9 +326,31 @@ def product_docs(product: str, pc: dict, cves: list[str], raw: Raw, tar_records:
                 if refusal:
                     notes.append(f"{cve}: {refusal}")
         used.append(t["id"])
+    # One spelling per release: vendors write the same hotfix as "15.5.4 HF1", "15.4.2 HF 2" or
+    # "15.5.4 Hotfix 1"; `version_aliases` rewrites documented versions to the release-list spelling.
+    for pattern, repl in pc.get("version_aliases", []):
+        docs = [replace(d, version=re.sub(pattern, repl, d.version)) for d in docs]
     # Keep only documents about this product's candidate CVEs (pages also name other issues).
     keep = set(cves)
     return [d for d in docs if d.cve in keep], sorted(set(used)), notes
+
+
+def advisory_fix_releases(product: str, pc: dict, docs: list[fx.FixDoc], rels: list[fx.Release]) -> list[fx.Release]:
+    """Hotfixes that an official vendor advisory names as the fix (OQ-P5v-3): for an evidence source with
+    `fix_releases` (a regex on the documented version), each documented version that fits it and is not in
+    the release list becomes a release, dated "undated", whose source is that advisory."""
+    known = {r.name.lower() for r in rels}
+    out: dict[str, fx.Release] = {}
+    for src in pc["evidence"]:
+        if "fix_releases" not in src:
+            continue
+        prefix = f"{slug(product)}/{src['id']}"
+        for d in docs:
+            if d.raw_name.startswith(prefix) and re.fullmatch(src["fix_releases"], d.version) and d.version.lower() not in known:
+                v, u = fx.cpe_split(d.version, pc.get("cpe_split"))
+                out.setdefault(d.version, fx.Release(d.version, v, u, fx.UNDATED, d.raw_name,
+                                                     f"fixed release named by vendor advisory: {d.excerpt[:150]}"))
+    return sorted(out.values(), key=lambda r: r.key)
 
 
 def kernel_records(raw: Raw, t: dict) -> dict[str, tuple[str, dict]]:
@@ -420,6 +447,9 @@ def build_linux(product: str, info: dict, cfg: dict, raw: Raw, tar_records: dict
             range_notes[cve] = notes
     rels, pre, rel_used = product_releases(product, pc, raw)
     docs, ev_used, ev_notes = product_docs(product, pc, cve_ids, raw, tar_records)
+    extra = advisory_fix_releases(product, pc, docs, rels)
+    rels = sorted(rels + extra, key=lambda r: r.key)
+    rel_used = list(dict.fromkeys(rel_used + [r.raw_name for r in extra]))
     base = {"product": product, "os": info["os"], "families": sorted(info["families"]),
             "candidate_cves": {c: {k: info["cves"][c][k] for k in ("cohort", "stage", "family")} for c in cve_ids},
             "release_sources": [raw.ref(n) for n in rel_used], "evidence_sources": [ref_of(raw, n) for n in ev_used],
@@ -686,7 +716,7 @@ def main() -> None:
     a_f = sub.add_parser("fetch")
     a_f.add_argument("config", type=Path)
     a_f.add_argument("--date", default=datetime.now(timezone.utc).date().isoformat())
-    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement", "fixtures_p5v"],
+    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement", "fixtures_p5v", "fixtures_p5v2"],
                      help="data/raw/<source>/<date>/; any source but 'fixtures' is a supplement and needs --base")
     a_f.add_argument("--base", type=Path, nargs="*", default=[], help="finished snapshots this one supplements")
     a_b = sub.add_parser("build")
@@ -697,7 +727,7 @@ def main() -> None:
     if a.cmd == "fetch":
         date_ = datetime.strptime(a.date, "%Y-%m-%d").date().isoformat()  # rejects anything but YYYY-MM-DD
         if (a.source != "fixtures") != bool(a.base):
-            sys.exit("a supplement snapshot (fixtures_supplement, fixtures_p5v) needs --base, and only a supplement takes one")
+            sys.exit("a supplement snapshot (fixtures_supplement, fixtures_p5v, fixtures_p5v2) needs --base, and only a supplement takes one")
         fetch(cfg, date_, [b.resolve() for b in a.base], a.source)
     else:
         build(cfg, [d.resolve() for d in a.raw_dirs])
