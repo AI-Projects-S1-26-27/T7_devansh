@@ -313,23 +313,39 @@ def test_fix_on_a_later_affected_branch_is_not_this_intervals_fix():
     assert dropped[0]["reason"] == "no_documented_fix_after_vulnerable_fixture"  # 5.4.249 (affected) lies between
 
 
-def test_unverified_fixtures_use_exact_nvd_strings_only():
+def test_unverified_fixtures_use_exact_and_inclusive_nvd_strings_only():
     exact = lambda v, u="*": fx.Range(f"cpe:2.3:a:v:p:{v}:{u}:*:*:*:*:*:*", v, u)  # noqa: E731
-    bounded = fx.Range("cpe:2.3:a:v:p:*:*:*:*:*:*:*:*", end_incl="3.0")
-    cves = {"CVE-2020-1": [exact("1.0"), exact("1.2"), exact("2.0-rc1"), bounded],
-            "CVE-2020-2": [bounded],
+    star = "cpe:2.3:a:v:p:*:*:*:*:*:*:*:*"
+    cves = {"CVE-2020-1": [exact("1.0"), exact("1.2"), exact("2.0-rc1"), fx.Range(star, end_excl="3.0")],
+            "CVE-2020-2": [fx.Range(star, start_incl="4.0", end_incl="4.5"), fx.Range(star, start_incl="5.0", end_excl="5.3")],
             "CVE-2020-3": [exact("1.2", "hotfix1")],
-            "CVE-2020-4": [exact("9.9")]}  # fmt: skip
-    listed = {c: {r.criteria for r in rs} for c, rs in cves.items() if c != "CVE-2020-4"}
-    fixtures, dropped = fx.unverified_fixtures(cves, listed)
-    assert [(f["version"], [v["cve"] for v in f["vulnerable_for"]], f["fixed_for"], f["release_date"]) for f in fixtures] == [
-        ("1.2", ["CVE-2020-1"], [], None), ("1.2:hotfix1", ["CVE-2020-3"], [], None)]
+            "CVE-2020-4": [exact("9.9")],
+            "CVE-2020-5": [fx.Range(star, start_excl="6.0", end_excl="6.4")],
+            "CVE-2020-6": [fx.Range(star, end_incl="7.0-rc1")]}  # fmt: skip
+    raw = {c: {fx.nvd_match_key({"criteria": r.criteria, "versionStartIncluding": r.start_incl, "versionStartExcluding": r.start_excl,
+                                 "versionEndIncluding": r.end_incl, "versionEndExcluding": r.end_excl}) for r in rs}
+           for c, rs in cves.items() if c != "CVE-2020-4"}  # fmt: skip
+    fixtures, dropped = fx.unverified_fixtures(cves, raw)
+    got = [(f["version"], [(v["cve"], v["version_from"]) for v in f["vulnerable_for"]], f["fixed_for"], f["release_date"]) for f in fixtures]
+    # CVE-2020-1: exact 1.2 (the 3.0 bound is exclusive). CVE-2020-2: the highest inclusive bound is 5.0, a start bound
+    # (4.5 < 5.0; 5.3 is exclusive). The exclusive-only and pre-release-only CVEs get nothing.
+    assert got == [("1.2", [("CVE-2020-1", "exact")], [], None), ("1.2:hotfix1", [("CVE-2020-3", "exact")], [], None),
+                   ("5.0", [("CVE-2020-2", "versionStartIncluding")], [], None)]  # fmt: skip
     assert all(f["unverified_release"] for f in fixtures)
-    # 1.2 lies in CVE-2020-1 and under the 3.0 bound of CVE-2020-2; the hotfix build only matches its own CPE and the bound
-    assert fixtures[0]["affected_by"] == ["CVE-2020-1", "CVE-2020-2"]
-    assert fixtures[1]["affected_by"] == ["CVE-2020-1", "CVE-2020-2", "CVE-2020-3"]
+    # 1.2 also lies under CVE-2020-6's 7.0-rc1 bound; the hotfix CPE matches its own update only
+    assert fixtures[0]["affected_by"] == ["CVE-2020-1", "CVE-2020-6"]
+    assert fixtures[1]["affected_by"] == ["CVE-2020-1", "CVE-2020-3", "CVE-2020-6"]
+    assert fixtures[2]["affected_by"] == ["CVE-2020-2", "CVE-2020-6"]
     assert {(d["cve"], d["reason"]) for d in dropped} == {
-        ("CVE-2020-2", "no_exact_version_in_cpe_matches"), ("CVE-2020-4", "exact_criteria_not_in_raw_nvd_record")}
+        ("CVE-2020-4", "cpe_match_not_in_raw_nvd_record"), ("CVE-2020-5", "no_exact_or_inclusive_version_in_cpe_matches"),
+        ("CVE-2020-6", "only_prerelease_versions")}
+
+
+def test_unverified_bound_must_match_the_raw_nvd_record():
+    rg = fx.Range("cpe:2.3:a:v:p:*:*:*:*:*:*:*:*", end_incl="2.0")
+    other = {fx.nvd_match_key({"criteria": rg.criteria, "versionEndIncluding": "1.9"})}  # raw record has a different bound
+    fixtures, dropped = fx.unverified_fixtures({"CVE-2020-1": [rg]}, {"CVE-2020-1": other})
+    assert fixtures == [] and dropped[0]["reason"] == "cpe_match_not_in_raw_nvd_record"
 
 
 def test_build_refuses_unverified_fixtures_for_a_product_with_verified_ones():
@@ -490,7 +506,7 @@ def test_build_end_to_end(tmp_path):
     my = cat["linux"]["oracle:mysql"]
     assert my["status"] == "unverified_release" and my["verified_status"] == "dropped"
     assert [(f["version"], f["release_date"], f["unverified_release"], f["fixed_for"], f["affected_by"]) for f in my["fixtures"]] == [
-        ("5.7.2", None, True, [], ["CVE-2023-9"])]  # highest exact string; the 5.7.9 bound is never a fixture
+        ("5.7.9", None, True, [], ["CVE-2023-9"])]  # highest exact or inclusive string: the 5.7.9 end bound (OQ-P5-11)
     assert my["fixtures"][0]["release_source"][0]["retrieved_utc"] == "2026-10-21T08:00:00+00:00"
     win = cat["windows"]["Windows Server 2019"]
     assert [(f["version"], f["affected_by"]) for f in win["fixtures"]] == [

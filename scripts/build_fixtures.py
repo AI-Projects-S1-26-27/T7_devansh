@@ -315,11 +315,11 @@ def kernel_records(raw: Raw, t: dict) -> dict[str, tuple[str, dict]]:
     return out
 
 
-def nvd_raw_criteria(cfg: dict, product: str) -> tuple[dict[str, set[str]], dict[str, dict]]:
-    """Vulnerable CPE criteria per CVE in the raw NVD pages of one product, and each CVE's page provenance.
+def nvd_raw_criteria(cfg: dict, product: str) -> tuple[dict[str, set[tuple]], dict[str, dict]]:
+    """Vulnerable CPE matches (criteria and bounds, fx.nvd_match_key) per CVE in the raw NVD pages of one product, and each CVE's page provenance.
 
     The pages are the NVD snapshot the master dataset was built from (BUILD_RULES rule 5 manifest); a file
-    whose SHA-256 differs from its manifest record is refused. Unverified fixtures may only use criteria
+    whose SHA-256 differs from its manifest record is refused. Unverified fixtures may only use matches
     found here, so every version string is one NVD itself lists.
     """
     d = (ROOT / cfg["unverified_release"]["nvd_raw_dir"]).resolve()
@@ -337,7 +337,7 @@ def nvd_raw_criteria(cfg: dict, product: str) -> tuple[dict[str, set[str]], dict
             refs[cve] = {"raw": f"{cfg['unverified_release']['nvd_raw_dir']}/{r['path']}", "url": r["url"], "retrieved_utc": r["fetched_utc"], "sha256": r["sha256"],
                          "nvd_detail": f"https://nvd.nist.gov/vuln/detail/{cve}"}  # fmt: skip
             criteria.setdefault(cve, set()).update(
-                m["criteria"] for _, m, neg in walk_matches(v["cve"].get("configurations", [])) if m.get("vulnerable") and not neg)
+                fx.nvd_match_key(m) for _, m, neg in walk_matches(v["cve"].get("configurations", [])) if m.get("vulnerable") and not neg)
     return criteria, refs
 
 
