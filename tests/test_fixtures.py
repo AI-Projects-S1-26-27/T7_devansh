@@ -905,7 +905,9 @@ def test_build_windows_follow_up_rules(tmp_path):
             win_row("CVE-2023-2", "Windows Server 2019", ["5031361"]),          # fixed in the first listed release
             win_row("CVE-2023-3", "Windows Server 2019", ["4519337"]),          # standalone, dated title
             win_row("CVE-2023-4", "Windows Server 2019", ["5012170"]),          # standalone, undated title: MSRC date
-            win_row("CVE-2023-5", "Windows Server 2019", ["4519338"])]          # standalone, title names no KB: the requested one
+            win_row("CVE-2023-5", "Windows Server 2019", ["4519338"]),          # standalone, title names no KB: the requested one
+            win_row("CVE-2020-6", "Windows Server 2019", ["5012170"])]          # same undated KB, older MSRC record
+    rows[-1]["msrc"]["initial_release"] = "2020-02-11T08:00:00"  # its own date would place the 2023 KB in 2020
     snap = tmp_path / "fixtures_p5w2" / "2026-11-17"
     write_raw(snap, {"windows_update_history/h.html": uh, "windows_update_history/ri.html": RELEASE_INFO,
                      "windows_kb/KB4601345.html": kb_page("February 9, 2021—KB4601345 (OS Build 17763.1757) - EXPIRED"),
@@ -919,7 +921,7 @@ def test_build_windows_follow_up_rules(tmp_path):
               "windows_update_history": {"Windows Server 2019": {"id": "h.html", "url": "u", "build_line": "17763"}}}
     out = bf.build_windows(fx.candidate_units(rows), rows, config, bf.Raw([snap]))["Windows Server 2019"]
     assert out["previews_excluded"] == ["5031000"] and out["n_releases_from_kb_articles"] == 1 and out["initial_release"]["version"] == "10.0.17763.1"
-    assert out["standalone_kb_cves"] == ["CVE-2023-3", "CVE-2023-4", "CVE-2023-5"] and out["dropped"] == []
+    assert out["standalone_kb_cves"] == ["CVE-2020-6", "CVE-2023-3", "CVE-2023-4", "CVE-2023-5"] and out["dropped"] == []
     got = {f["version"]: ([i["cve"] for i in f["vulnerable_for"]], [i["cve"] for i in f["fixed_for"]]) for f in out["fixtures"]}
     # Servicing order: 17763.1 (initial) < .1757 (KB article, 2021-02-09) < .4974 < .5122. CVE-2023-3's KB is dated
     # 2023-10-08, before .4974 (2023-10-10), so its base is .1757; CVE-2023-4's MSRC date 2023-11-14 gives .4974.
@@ -927,15 +929,15 @@ def test_build_windows_follow_up_rules(tmp_path):
                    "10.0.17763.1757": (["CVE-2023-2", "CVE-2023-3", "CVE-2023-5"], ["CVE-2023-1"]),
                    "10.0.17763.1757+KB4519337": ([], ["CVE-2023-3"]),
                    "10.0.17763.1757+KB4519338": ([], ["CVE-2023-5"]),
-                   "10.0.17763.4974": (["CVE-2023-4"], ["CVE-2023-2"]),
-                   "10.0.17763.4974+KB5012170": ([], ["CVE-2023-4"])}
+                   "10.0.17763.4974": (["CVE-2020-6", "CVE-2023-4"], ["CVE-2023-2"]),
+                   "10.0.17763.4974+KB5012170": ([], ["CVE-2020-6", "CVE-2023-4"])}  # one KB, one date, one fixture
     assert [f["version"] for f in out["fixtures"]] == list(got)  # a base+KB fixture follows its base
     by = {f["version"]: f for f in out["fixtures"]}
     s = by["10.0.17763.4974+KB5012170"]
     ev = s["fixed_for"][0]["evidence"]
-    assert (s["release_date"], ev["kb_date_source"], s["standalone_kbs"], s["base"]) == ("2023-11-14", "msrc_initial_release", ["KB5012170"], "10.0.17763.4974")
+    assert (s["release_date"], ev["kb_date_source"], s["standalone_kbs"], s["base"]) == ("2023-11-14", "msrc_latest_initial_release_listing_kb", ["KB5012170"], "10.0.17763.4974")
     assert by["10.0.17763.1757+KB4519337"]["release_date"] == "2023-10-08" and ev["kb_article"]["raw"].endswith("windows_kb/KB5012170.html")
     assert s["affected_by"] == [] and s["affected_unknown_standalone"] == ["CVE-2023-3", "CVE-2023-5"]
-    assert by["10.0.17763.1757+KB4519337"]["affected_by"] == ["CVE-2023-2", "CVE-2023-4", "CVE-2023-5"]
-    assert by["10.0.17763.1757"]["affected_by"] == ["CVE-2023-2", "CVE-2023-3", "CVE-2023-4", "CVE-2023-5"]
+    assert by["10.0.17763.1757+KB4519337"]["affected_by"] == ["CVE-2020-6", "CVE-2023-2", "CVE-2023-4", "CVE-2023-5"]
+    assert by["10.0.17763.1757"]["affected_by"] == ["CVE-2020-6", "CVE-2023-2", "CVE-2023-3", "CVE-2023-4", "CVE-2023-5"]
     assert by["10.0.17763.4974"]["affected_unknown_standalone"] == ["CVE-2023-3", "CVE-2023-5"]  # later than its base: not documented either way

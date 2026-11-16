@@ -665,8 +665,12 @@ def history_entry(name: str, hc: dict, cves: dict[str, dict], hosted: set[str], 
             if a is None or (a["match"] and fx.cumulative_release(a["match"], line) is not None):
                 continue
             date, how = a["date"], "kb_article_title"
-            if date is None:  # e.g. KB5012170's title names no date: the MSRC record that lists the KB is dated
-                date, how = (cves[cve]["row"]["msrc"].get("initial_release") or "")[:10] or None, "msrc_initial_release"
+            if date is None:
+                # e.g. KB5012170's title names no date. One date per KB: the latest MSRC initial release among the
+                # CVEs that list it (the KB cannot predate any CVE it fixes; CVE-2020-0689's 2020 record was later
+                # revised to name the 2022 KB, so its own date would be wrong).
+                listing = [(cves[c]["row"]["msrc"].get("initial_release") or "")[:10] for c in cves if kb in cves[c]["kbs"]]
+                date, how = max((d for d in listing if d), default=None), "msrc_latest_initial_release_listing_kb"
             if date:
                 options.append((date, kb, how))
         if not options:
