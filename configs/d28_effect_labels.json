@@ -1,0 +1,20 @@
+{
+  "decision": "OQ-M2-1 (decided 16 Nov 2026): frozen effect labels live untracked under data/d28/effect/<version>/; ahg.effect.load_frozen_labels refuses a file whose SHA-256 differs from this config.",
+  "versions": {
+    "p3-labels-v1": {
+      "path": "data/d28/effect/p3-labels-v1/p3-labels-v1.jsonl.gz",
+      "sha256": "7e3aac969caebb1dd6308354d698ae5971969ec97585f0203c67bc58a42a18b9",
+      "source_run": "results/d28_effect/2026-11-15T212421Z-f4e879a/frozen/p3-labels-v1.jsonl.gz"
+    },
+    "p3-labels-v2": {
+      "path": "data/d28/effect/p3-labels-v2/p3-labels-v2.jsonl.gz",
+      "sha256": "4936a5309480a8896bd2da819e2e052b39a8d8680f0c976063f7a1eca5796f09",
+      "source_run": "results/d28_effect/2026-11-16T060526Z-4b60755/frozen/p3-labels-v2.jsonl.gz"
+    },
+    "p3-labels-v2.1": {
+      "path": "data/d28/effect/p3-labels-v2.1/p3-labels-v2.1.jsonl.gz",
+      "sha256": "5e80198a25d6eb55740bb83685689825e3372756a06dc1cbb3b74aa1f5ca28d6",
+      "source_run": "results/d28_effect/2026-11-16T062413Z-89dd346/frozen/p3-labels-v2.1.jsonl.gz"
+    }
+  }
+}

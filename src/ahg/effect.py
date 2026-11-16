@@ -14,6 +14,7 @@ Only RCE_CONFIRMED (remote) and ADMIN_CONFIRMED (local) create actions that rais
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import random
 import re
@@ -29,6 +30,8 @@ ROLES = ("server", "client", "library", "unclear")
 EFFECTS = ("code_execution", "privilege_escalation", "denial_of_service", "information_disclosure",
            "authentication_bypass", "memory_corruption", "other")  # fmt: skip
 MAX_SPAN = 300
+ROOT = Path(__file__).resolve().parents[2]
+LABELS_CONFIG = ROOT / "configs" / "d28_effect_labels.json"
 GHSA_URL = re.compile(r"github\.com/[^/\s]+/[^/\s]+/security/advisories/(GHSA(?:-[0-9a-z]{4}){3})")
 
 
@@ -444,3 +447,19 @@ def human_check_row(item: dict) -> dict:
             "msrc_title": t.get("msrc_title", ""), "msrc_faq": t.get("msrc_faq", ""), "msrc_cna_note": t.get("msrc_cna_note", ""),
             "other_texts": other, "role_question_products": "; ".join(sorted({u["product"] for u in item["units"] if u["role_question"]})),
             "answer_effect": "", "answer_target_privilege": "", "answer_roles": "", "answer_evidence_span": "", "notes": ""}
+
+
+# ---------------------------------------------------------------- frozen label sets (OQ-M2-1, decided 16 Nov 2026)
+
+def load_frozen_labels(version: str, config: Path = LABELS_CONFIG, root: Path = ROOT) -> list[dict]:
+    """Rows of a frozen effect-label set, e.g. "p3-labels-v2.1", read from its untracked copy under data/.
+
+    The file lives outside git, so the tracked config's SHA-256 is the only thing tying it to the frozen
+    labels P4 validated; a file that differs (edited, truncated, the superseded draft) is refused, never read.
+    """
+    entry = json.loads(config.read_text())["versions"][version]  # KeyError: unknown version
+    blob = (root / entry["path"]).read_bytes()
+    got = hashlib.sha256(blob).hexdigest()
+    if got != entry["sha256"]:
+        raise ValueError(f"{entry['path']}: SHA-256 {got} does not match {entry['sha256']} in {config.name}")
+    return [json.loads(line) for line in gzip.decompress(blob).decode().splitlines() if line.strip()]
