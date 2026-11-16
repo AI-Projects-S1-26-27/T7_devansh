@@ -632,8 +632,10 @@ def history_entry(name: str, hc: dict, cves: dict[str, dict], hosted: set[str], 
     for kb in sorted({k for v in cves.values() for k in v["kbs"]} - {r["kb"] for r in listed}):
         n = f"windows_kb/KB{kb}.html"
         a = fx.parse_kb_article(raw.text(n)) if raw.has(n) else None
-        if a and a["kb"] == kb:
-            articles[kb] = {**a, "source": raw.ref(n)}
+        # The article was fetched as support.microsoft.com/help/<kb>; some titles name no KB ("MS16-045: ...
+        # Hyper-V: April 12, 2016"), which is then the requested one. A title naming another KB is refused.
+        if a and a["kb"] in (kb, None):
+            articles[kb] = {**a, "kb": kb, "source": raw.ref(n)}
     from_articles = []
     for kb, a in sorted(articles.items()):
         r = fx.cumulative_release(a["match"], line) if a["match"] else None
@@ -982,8 +984,8 @@ def main() -> None:
     a_f = sub.add_parser("fetch")
     a_f.add_argument("config", type=Path)
     a_f.add_argument("--date", default=datetime.now(timezone.utc).date().isoformat())
-    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement", "fixtures_p5v", "fixtures_p5v2", "fixtures_p5w", "fixtures_p5w2"],
-                     help="data/raw/<source>/<date>/; any source but 'fixtures' is a supplement and needs --base")
+    a_f.add_argument("--source", default="fixtures",
+                     help="data/raw/<source>/<date>/: 'fixtures', or a supplement fixtures_<name> (e.g. fixtures_p5w3) that needs --base")
     a_f.add_argument("--base", type=Path, nargs="*", default=[], help="finished snapshots this one supplements")
     a_b = sub.add_parser("build")
     a_b.add_argument("config", type=Path)
@@ -992,8 +994,10 @@ def main() -> None:
     cfg = load_config(a.config)
     if a.cmd == "fetch":
         date_ = datetime.strptime(a.date, "%Y-%m-%d").date().isoformat()  # rejects anything but YYYY-MM-DD
+        if not re.fullmatch(r"fixtures(?:_[a-z0-9]+)*", a.source):
+            sys.exit(f"--source {a.source!r}: expected fixtures or fixtures_<name>")
         if (a.source != "fixtures") != bool(a.base):
-            sys.exit("a supplement snapshot (fixtures_supplement, fixtures_p5v, fixtures_p5v2, fixtures_p5w, fixtures_p5w2) needs --base, and only a supplement takes one")
+            sys.exit("a supplement snapshot (fixtures_<name>) needs --base, and only a supplement takes one")
         fetch(cfg, date_, [b.resolve() for b in a.base], a.source)
     else:
         build(cfg, [d.resolve() for d in a.raw_dirs])
