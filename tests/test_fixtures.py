@@ -313,6 +313,31 @@ def test_fix_on_a_later_affected_branch_is_not_this_intervals_fix():
     assert dropped[0]["reason"] == "no_documented_fix_after_vulnerable_fixture"  # 5.4.249 (affected) lies between
 
 
+def test_unverified_fixtures_use_exact_nvd_strings_only():
+    exact = lambda v, u="*": fx.Range(f"cpe:2.3:a:v:p:{v}:{u}:*:*:*:*:*:*", v, u)  # noqa: E731
+    bounded = fx.Range("cpe:2.3:a:v:p:*:*:*:*:*:*:*:*", end_incl="3.0")
+    cves = {"CVE-2020-1": [exact("1.0"), exact("1.2"), exact("2.0-rc1"), bounded],
+            "CVE-2020-2": [bounded],
+            "CVE-2020-3": [exact("1.2", "hotfix1")],
+            "CVE-2020-4": [exact("9.9")]}  # fmt: skip
+    listed = {c: {r.criteria for r in rs} for c, rs in cves.items() if c != "CVE-2020-4"}
+    fixtures, dropped = fx.unverified_fixtures(cves, listed)
+    assert [(f["version"], [v["cve"] for v in f["vulnerable_for"]], f["fixed_for"], f["release_date"]) for f in fixtures] == [
+        ("1.2", ["CVE-2020-1"], [], None), ("1.2:hotfix1", ["CVE-2020-3"], [], None)]
+    assert all(f["unverified_release"] for f in fixtures)
+    # 1.2 lies in CVE-2020-1 and under the 3.0 bound of CVE-2020-2; the hotfix build only matches its own CPE and the bound
+    assert fixtures[0]["affected_by"] == ["CVE-2020-1", "CVE-2020-2"]
+    assert fixtures[1]["affected_by"] == ["CVE-2020-1", "CVE-2020-2", "CVE-2020-3"]
+    assert {(d["cve"], d["reason"]) for d in dropped} == {
+        ("CVE-2020-2", "no_exact_version_in_cpe_matches"), ("CVE-2020-4", "exact_criteria_not_in_raw_nvd_record")}
+
+
+def test_build_refuses_unverified_fixtures_for_a_product_with_verified_ones():
+    bf = load_script("build_fixtures")
+    with pytest.raises(SystemExit):
+        bf.add_unverified({"product": "a:b", "fixtures": [{"version": "1.0"}]}, {"cves": {}}, {})
+
+
 def test_runs():
     assert fx.runs([1, 2, 3, 7, 8, 10]) == [(1, 3), (7, 8), (10, 10)] and fx.runs([]) == []
 
@@ -406,10 +431,13 @@ def write_raw(folder: Path, files: dict[str, str]) -> None:
 def test_build_end_to_end(tmp_path):
     bf = load_script("build_fixtures")
     tomcat_cfg = cfg(m("cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*", versionStartIncluding="9.0.0", versionEndExcluding="9.0.83"))
+    mysql_cfg = cfg(m("cpe:2.3:a:oracle:mysql:5.7.1:*:*:*:*:*:*:*"), m("cpe:2.3:a:oracle:mysql:5.7.2:*:*:*:*:*:*:*"),
+                    m("cpe:2.3:a:oracle:mysql:*:*:*:*:*:*:*:*", versionEndIncluding="5.7.9"))
     rows = [
         {"cve_id": "CVE-2023-46589", "nvd": {"source_identifier": "x"}, "configurations": tomcat_cfg, "msrc": None,
          "units": [unit("apache:tomcat")]},
-        {"cve_id": "CVE-2023-9", "nvd": None, "configurations": [], "msrc": None, "units": [unit("oracle:mysql", family="sql")]},
+        {"cve_id": "CVE-2023-9", "nvd": None, "configurations": mysql_cfg, "msrc": None,
+         "units": [unit("oracle:mysql", stage="local_candidate", family="sql")]},
         {"cve_id": "CVE-2024-2", "nvd": None, "configurations": [],
          **msrc_row("CVE-2024-2", {"1": ("Windows Server 2019", ["10.0.17763.5329"])}),
          "units": [unit("windows_os", stage="local_candidate", os_="windows", family="os")]},
@@ -419,7 +447,16 @@ def test_build_end_to_end(tmp_path):
     master = tmp_path / "cves.jsonl.gz"
     master.write_bytes(gzip.compress("".join(json.dumps(r) + "\n" for r in rows).encode()))
     labels = tmp_path / "labels.jsonl.gz"
-    labels.write_bytes(gzip.compress((json.dumps(label("CVE-2024-2", "windows_os", "local", "ADMIN_CONFIRMED")) + "\n").encode()))
+    labels.write_bytes(gzip.compress("".join(json.dumps(r) + "\n" for r in (
+        label("CVE-2024-2", "windows_os", "local", "ADMIN_CONFIRMED"),
+        label("CVE-2023-9", "oracle:mysql", "local", "ADMIN_CONFIRMED"))).encode()))
+    nvd = tmp_path / "nvd"
+    nvd.mkdir()
+    page = gzip.compress(json.dumps({"vulnerabilities": [{"cve": {"id": "CVE-2023-9", "configurations": mysql_cfg}}]}).encode())
+    (nvd / "sql__oracle__mysql__00000.json.gz").write_bytes(page)
+    (nvd / "manifest.json").write_text(json.dumps({"files": [{
+        "product": "oracle:mysql", "path": "sql__oracle__mysql__00000.json.gz", "url": "https://services.nvd.nist.gov/x",
+        "fetched_utc": "2026-10-21T08:00:00+00:00", "sha256": hashlib.sha256(page).hexdigest()}]}))
     msrc = tmp_path / "msrc"
     write_raw(msrc, {"cvrf_2024-Jan.json": "{}"})
     raw = tmp_path / "raw"
@@ -432,6 +469,7 @@ def test_build_end_to_end(tmp_path):
         "results_root": str(tmp_path / "results"), "candidate_stages": ["remote_candidate", "local_candidate"],
         "cpe_part": {"default": "a"}, "windows_products": {"default": {"names": ["Windows Server 2019"]}},
         "not_covered": {"oracle:mysql": "no dated release list"},
+        "unverified_release": {"products": ["oracle:mysql"], "nvd_raw_dir": str(nvd), "decision": "test"},
         "products": {"apache:tomcat": {
             "version_regex": r"\d+\.\d+\.\d+(?:-M\d+)?",
             "releases": [{"id": "l.html", "kind": "listing", "url": "u", "pattern": r"v(?P<name>\d+\.\d+\.\d+)/"}],
@@ -448,15 +486,24 @@ def test_build_end_to_end(tmp_path):
     ev = tom["fixtures"][1]["fixed_for"][0]["evidence"][0]
     assert ev["url"] == "https://example.org/apache__tomcat/s.html" and len(ev["sha256"]) == 64 and ev["retrieved_utc"]
     assert tom["fixtures"][0]["release_source"]["raw"] == f"{tmp_path.name}/raw/apache__tomcat/l.html"  # <source>/<date>/<file>
-    assert cat["linux"]["oracle:mysql"]["status"] == "dropped"
+    my = cat["linux"]["oracle:mysql"]
+    assert my["status"] == "unverified_release" and my["verified_status"] == "dropped"
+    assert [(f["version"], f["release_date"], f["unverified_release"], f["fixed_for"], f["affected_by"]) for f in my["fixtures"]] == [
+        ("5.7.2", None, True, [], ["CVE-2023-9"])]  # highest exact string; the 5.7.9 bound is never a fixture
+    assert my["fixtures"][0]["release_source"][0]["retrieved_utc"] == "2026-10-21T08:00:00+00:00"
     win = cat["windows"]["Windows Server 2019"]
     assert [(f["version"], f["affected_by"]) for f in win["fixtures"]] == [
         ("10.0.17763.5000", ["CVE-2024-2"]), ("10.0.17763.5329", [])]
     assert win["fixtures"][1]["release_source"][0]["sha256"] == hashlib.sha256(b"{}").hexdigest()
     run = next((tmp_path / "results" / "catalogue").iterdir())
     assert "apache:tomcat" in (run / "report.md").read_text()
+    regained = json.loads(gzip.decompress((run / "raw.json.gz").read_bytes()))["unverified_regained"]
+    assert regained == [{"product": "oracle:mysql", "status": "unverified_release", "unverified_fixtures": 1, "candidate_cves": 1,
+                         "candidate_cves_with_fixture": 1, "eligible_remote": 0, "eligible_remote_regained": 0,
+                         "eligible_local": 1, "eligible_local_regained": 1}]  # fmt: skip
     el = json.loads(gzip.decompress((out / "catalogue_eligible.json.gz").read_bytes()))
-    assert el["linux"] == {}  # the Tomcat CVE has no eligible label
+    assert list(el["linux"]) == ["oracle:mysql"]  # the Tomcat CVE has no eligible label
+    assert el["linux"]["oracle:mysql"]["fixtures"][0]["unverified_release"] is True
     assert [f["version"] for f in el["windows"]["Windows Server 2019"]["fixtures"]] == ["10.0.17763.5000", "10.0.17763.5329"]
 
 

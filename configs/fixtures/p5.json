@@ -20,6 +20,11 @@
     "Exchange": {"prefix": "Microsoft Exchange Server"},
     "SQL Server": {"prefix": "Microsoft SQL Server"}
   },
+  "unverified_release": {
+    "decision": "Devansh 16 Nov 2026 (BUILD_RULES rule 13): for products with no fixtures, vulnerable fixtures from exact version strings listed in NVD CPE matches, flagged unverified_release: no release date, no upstream validation, vulnerable fixtures only, never a fixed fixture; usable in the primary (p = 1) benchmark, not in p<1 cohorts; only strings NVD itself lists",
+    "products": ["oracle:mysql", "mysql:mysql", "solarwinds:serv-u", "crushftp:crushftp", "postfix:postfix", "cerberusftp:ftp_server"],
+    "nvd_raw_dir": "../ahg-data/data/raw/nvd/2026-10-21"
+  },
   "not_covered": {
     "oracle:mysql": "no upstream release list with release dates reachable: dev.mysql.com release notes answered 403 to the generic client, cdn.mysql.com/archives/mysql-8.0/ answered 404 (probe 16 Nov 2026); GitHub tags carry no dates",
     "mysql:mysql": "same upstream as oracle:mysql (no reachable dated release list)",

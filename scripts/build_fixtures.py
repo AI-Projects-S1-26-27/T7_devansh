@@ -32,6 +32,7 @@ from pathlib import Path
 
 from ahg import fixtures as fx
 from ahg import runlog
+from ahg.cvedata import walk_matches
 from ahg.rawfetch import Fetcher, write_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,10 +68,13 @@ def load_master(cfg: dict) -> list[dict]:
     return load_pinned_jsonl(cfg["master_dataset"], cfg["master_sha256"])
 
 
-def candidates(cfg: dict, rows: list[dict]) -> tuple[dict, set[tuple[str, str]]]:
-    """(candidate units per product, eligible units): the pre-P3 superset plus every eligible unit."""
-    eligible = fx.eligible_units(load_pinned_jsonl(cfg["eligible_labels"], cfg["eligible_labels_sha256"]))
-    return fx.candidate_units(rows, tuple(cfg["candidate_stages"]), eligible), eligible
+def candidates(cfg: dict, rows: list[dict]) -> tuple[dict, set[tuple[str, str]], dict[str, set[tuple[str, str]]]]:
+    """(candidate units per product, eligible units, eligible units per label set 'remote'/'local'): the
+    pre-P3 superset plus every eligible unit."""
+    labels = load_pinned_jsonl(cfg["eligible_labels"], cfg["eligible_labels_sha256"])
+    eligible = fx.eligible_units(labels)
+    by_set = {s: fx.eligible_units(r for r in labels if r["label_set"] == s) for s in ("remote", "local")}
+    return fx.candidate_units(rows, tuple(cfg["candidate_stages"]), eligible), eligible, by_set
 
 
 def patterns(src: dict) -> list[str]:
@@ -94,7 +98,7 @@ def fetch(cfg: dict, date: str, base: list[Path], source: str) -> None:
     already in a finished `base` snapshot are not fetched again: a supplement (source
     "fixtures_supplement") holds only what the base lacks, and build reads both."""
     rows = load_master(cfg)
-    cands, _ = candidates(cfg, rows)
+    cands = candidates(cfg, rows)[0]
     have = Raw(base) if base else None
     f = Fetcher(ROOT / "data" / "raw" / source / date, "scripts/build_fixtures.py", cfg["pace_seconds"])
     failed = []
@@ -311,6 +315,52 @@ def kernel_records(raw: Raw, t: dict) -> dict[str, tuple[str, dict]]:
     return out
 
 
+def nvd_raw_criteria(cfg: dict, product: str) -> tuple[dict[str, set[str]], dict[str, dict]]:
+    """Vulnerable CPE criteria per CVE in the raw NVD pages of one product, and each CVE's page provenance.
+
+    The pages are the NVD snapshot the master dataset was built from (BUILD_RULES rule 5 manifest); a file
+    whose SHA-256 differs from its manifest record is refused. Unverified fixtures may only use criteria
+    found here, so every version string is one NVD itself lists.
+    """
+    d = (ROOT / cfg["unverified_release"]["nvd_raw_dir"]).resolve()
+    manifest = json.loads((d / "manifest.json").read_text())
+    criteria: dict[str, set[str]] = {}
+    refs: dict[str, dict] = {}
+    for r in manifest["files"]:
+        if r["product"] != product:
+            continue
+        data = (d / r["path"]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != r["sha256"]:
+            sys.exit(f"{d / r['path']}: SHA-256 differs from its manifest record")
+        for v in json.loads(gzip.decompress(data))["vulnerabilities"]:
+            cve = v["cve"]["id"]
+            refs[cve] = {"raw": f"{cfg['unverified_release']['nvd_raw_dir']}/{r['path']}", "url": r["url"], "retrieved_utc": r["fetched_utc"], "sha256": r["sha256"],
+                         "nvd_detail": f"https://nvd.nist.gov/vuln/detail/{cve}"}  # fmt: skip
+            criteria.setdefault(cve, set()).update(
+                m["criteria"] for _, m, neg in walk_matches(v["cve"].get("configurations", [])) if m.get("vulnerable") and not neg)
+    return criteria, refs
+
+
+def add_unverified(entry: dict, info: dict, cfg: dict) -> dict:
+    """Unverified-release vulnerable fixtures for a product with no verified fixture (decision 16 Nov 2026)."""
+    product = entry["product"]
+    if entry["fixtures"]:
+        sys.exit(f"{product}: has verified fixtures; unverified_release applies only to products with none")
+    part = cfg["cpe_part"].get(product, cfg["cpe_part"]["default"])
+    ranges = {c: fx.cve_ranges(info["cves"][c]["row"]["configurations"], product, part)[0] for c in info["cves"]}
+    criteria, refs = nvd_raw_criteria(cfg, product)
+    fixtures, dropped = fx.unverified_fixtures(ranges, criteria)
+    for f in fixtures:
+        f["release_source"] = [refs[v["cve"]] for v in f["vulnerable_for"]]
+    out = {**entry, "verified_status": entry["status"], "verified_drop_reason": entry.get("drop_reason"),
+           "unverified_release_decision": cfg["unverified_release"]["decision"], "fixtures": fixtures,
+           "dropped": entry["dropped"] + [{**d, "stage": "unverified_release"} for d in dropped],
+           "status": "unverified_release" if fixtures else "dropped"}  # fmt: skip
+    if fixtures:
+        out.pop("drop_reason", None)
+    return out
+
+
 def ref_of(raw: Raw, name: str) -> dict:
     """Provenance of a raw name, including members of the kernel tarball ('<tar>#<member>')."""
     base, _, member = name.partition("#")
@@ -428,6 +478,7 @@ def summarize(entry: dict) -> dict:
         "fixtures": len(fixtures),
         "vulnerable_fixtures": sum(bool(f["vulnerable_for"]) for f in fixtures),
         "fixed_fixtures": sum(bool(f["fixed_for"]) for f in fixtures),
+        "unverified_release_fixtures": sum(bool(f.get("unverified_release")) for f in fixtures),
         "cves_with_vulnerable_fixture": len({v["cve"] for f in fixtures for v in f["vulnerable_for"]}),
         "cves_with_fixed_fixture": len({v["cve"] for f in fixtures for v in f["fixed_for"]}),
         "affected_by_min": min(n_aff) if n_aff else None, "affected_by_median": statistics.median(n_aff) if n_aff else None,
@@ -465,19 +516,47 @@ def fixture_lines(catalogue: dict) -> list[str]:
                 if f["fixed_for"]:
                     roles.append(f"fixed for {len(f['fixed_for'])}")
                 ids = f["affected_by"]
-                lines.append(f"- {f['version']} ({f['release_date']}): {', '.join(roles)}; affected by {len(ids)}: "
+                when = "unverified release, no date" if f.get("unverified_release") else f["release_date"]
+                lines.append(f"- {f['version']} ({when}): {', '.join(roles)}; affected by {len(ids)}: "
                              + ", ".join(ids[:12]) + (" ..." if len(ids) > 12 else ""))  # fmt: skip
     return lines
 
 
-def report(summary: dict, catalogue: dict, meta: dict, el_summary: dict, el_catalogue: dict) -> str:
+def unverified_regained(catalogue: dict, eligible_by_set: dict[str, set[tuple[str, str]]]) -> list[dict]:
+    """Per product in the unverified_release list: eligible remote and local units that the unverified
+    fixtures give a vulnerable fixture (none of these products has a verified fixture)."""
+    out = []
+    for product, e in sorted(catalogue["linux"].items()):
+        if "unverified_release_decision" not in e:
+            continue
+        covered = {v["cve"] for f in e["fixtures"] for v in f["vulnerable_for"]}
+        row = {"product": product, "status": e["status"], "unverified_fixtures": len(e["fixtures"]),
+               "candidate_cves": len(e["candidate_cves"]), "candidate_cves_with_fixture": len(covered)}  # fmt: skip
+        for s, units in eligible_by_set.items():
+            el = {c for c, p in units if p == product}
+            row[f"eligible_{s}"], row[f"eligible_{s}_regained"] = len(el), len(el & covered)
+        out.append(row)
+    return out
+
+
+def regained_table(rows: list[dict]) -> list[str]:
+    lines = ["| product | status | unverified fixtures | candidate CVEs | with fixture | eligible remote | regained | eligible local | regained |",
+             "|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
+    for r in rows:
+        lines.append(f"| {r['product']} | {r['status']} | {r['unverified_fixtures']} | {r['candidate_cves']} | {r['candidate_cves_with_fixture']} | "
+                     f"{r['eligible_remote']} | {r['eligible_remote_regained']} | {r['eligible_local']} | {r['eligible_local_regained']} |")  # fmt: skip
+    return lines
+
+
+def report(summary: dict, catalogue: dict, meta: dict, el_summary: dict, el_catalogue: dict, regained: list[dict]) -> str:
     lines = ["# P5 fixture catalogue", "", f"Catalogue: `{meta['catalogue_path']}` (SHA-256 `{meta['catalogue_sha256']}`)",
              f"Eligible view: `{meta['eligible_path']}` (SHA-256 `{meta['eligible_sha256']}`), labels SHA-256 `{meta['eligible_labels_sha256']}`, "
              f"{meta['eligible_units']} eligible (CVE, product) units",
              f"Raw snapshots: {', '.join(f'`{d}` (manifest SHA-256 `{h}`)' for d, h in zip(meta['raw_dirs'], meta['raw_manifest_sha256']))}",
              f"Master dataset SHA-256: `{meta['master_sha256']}`", "",
              "Candidates: pre-P3 superset plus every eligible unit (P5 decisions). Fixture counts are distinct releases/builds per product.", "",
-             "## Eligible view (p3-labels-v2.1)", ""]  # fmt: skip
+             "## Unverified-release fixtures (decision 16 Nov 2026; vulnerable role only, p = 1 only)", ""]  # fmt: skip
+    lines += regained_table(regained) + ["", "## Eligible view (p3-labels-v2.1)", ""]
     lines += summary_table(el_summary)
     lines += ["", "## Superset (pre-P3 candidates)", ""] + summary_table(summary)
     lines += ["", "## Eligible view: fixtures and the eligible CVEs each is affected by", "",
@@ -489,7 +568,7 @@ def report(summary: dict, catalogue: dict, meta: dict, el_summary: dict, el_cata
 
 def build(cfg: dict, raw_dirs: list[Path]) -> None:
     rows = load_master(cfg)
-    cands, eligible = candidates(cfg, rows)
+    cands, eligible, eligible_by_set = candidates(cfg, rows)
     raw = Raw(raw_dirs)
     linux: dict[str, dict] = {}
     for product, info in sorted(cands.items()):
@@ -500,6 +579,8 @@ def build(cfg: dict, raw_dirs: list[Path]) -> None:
                               "candidate_cves": {c: {k: info["cves"][c][k] for k in ("cohort", "stage", "family")} for c in info["cves"]},
                               "status": "dropped", "drop_reason": cfg["not_covered"][product],
                               "fixtures": [], "dropped": [], "unmatched_docs": []}  # fmt: skip
+            if product in cfg["unverified_release"]["products"]:
+                linux[product] = add_unverified(linux[product], info, cfg)
             continue
         if product not in cfg["products"]:
             sys.exit(f"{product}: candidate product with no configuration and no not_covered reason")
@@ -507,6 +588,8 @@ def build(cfg: dict, raw_dirs: list[Path]) -> None:
         if "cna_tarball" in cfg["products"][product] and raw.has(cfg["products"][product]["cna_tarball"]["id"]):
             tar_records = kernel_records(raw, cfg["products"][product]["cna_tarball"])
         linux[product] = build_linux(product, info, cfg, raw, tar_records)
+        if product in cfg["unverified_release"]["products"]:
+            linux[product] = add_unverified(linux[product], info, cfg)
         print(f"{product}: {summarize(linux[product])}", flush=True)
     windows = build_windows(cands, rows, cfg)
     catalogue = {"schema": "ahg.fixtures/1", "task": "P5", "decisions": cfg["decisions"], "linux": linux, "windows": windows,
@@ -532,9 +615,10 @@ def build(cfg: dict, raw_dirs: list[Path]) -> None:
             "raw_manifest_sha256": [hashlib.sha256((d / "manifest.json").read_bytes()).hexdigest() for d in raw_dirs],
             "master_sha256": cfg["master_sha256"]}  # fmt: skip
     (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
-    run_raw = {"meta": meta, "summary": [{"os": k[0], "product": k[1], **v} for k, v in sorted(summary.items())],
+    regained = unverified_regained(catalogue, eligible_by_set)
+    run_raw = {"meta": meta, "unverified_regained": regained, "summary": [{"os": k[0], "product": k[1], **v} for k, v in sorted(summary.items())],
                "eligible_summary": [{"os": k[0], "product": k[1], **v} for k, v in sorted(el_summary.items())]}  # fmt: skip
-    run = runlog.write_run("catalogue", run_raw, report(summary, catalogue, meta, el_summary, el_cat), [], cfg,
+    run = runlog.write_run("catalogue", run_raw, report(summary, catalogue, meta, el_summary, el_cat, regained), [], cfg,
                            root=ROOT / cfg["results_root"])  # fmt: skip
     print(f"catalogue: {meta['catalogue_path']}\nrun: {rel(run)}")
 
