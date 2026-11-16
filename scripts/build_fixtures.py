@@ -81,6 +81,14 @@ def patterns(src: dict) -> list[str]:
     return src.get("patterns") or [src["pattern"]]
 
 
+def decode_raw(data: bytes) -> str:
+    """Text of a raw file. Wayback `id_` captures return the original server bytes, which may be
+    gzip-encoded; they are stored as fetched (raw files are never edited) and decompressed only here."""
+    if data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    return data.decode("utf-8", errors="replace")
+
+
 # ---------------------------------------------------------------- fetch
 
 
@@ -122,17 +130,24 @@ def fetch(cfg: dict, date: str, base: list[Path], source: str) -> None:
                 github_pages(get, f"{s}/{src['id']}", f"{GITHUB_API}/{src['repo']}/releases", cfg["github_pages_max"])
             else:
                 get(f"{s}/{src['id']}", src["url"])
+        if "git_tags" in pc:
+            t = pc["git_tags"]
+            github_pages(get, f"{s}/{t['id']}", f"{GITHUB_API}/{t['repo']}/tags", cfg["github_pages_max"])
         for src in pc["evidence"]:
             kind = src["kind"]
             if kind in ("sections", "page_regex", "table"):
                 get(f"{s}/{src['id']}", src["url"])
             elif kind == "per_cve":
+                # A template names every CVE's page; a `urls` map names only the CVEs a vendor page is
+                # about (each one the NVD record itself links as a vendor advisory, cited in the config).
                 for cve in cves:
-                    get(f"{s}/{src['id']}/{cve}.html", src["url_template"].format(cve=cve, cve_lower=cve.lower()))
+                    url = src["urls"].get(cve) if "urls" in src else src["url_template"].format(cve=cve, cve_lower=cve.lower())
+                    if url:
+                        get(f"{s}/{src['id']}/{cve}.html", url)
             elif kind == "index":
                 rec = get(f"{s}/{src['id']}/index.html", src["url"])
                 if rec.get("http", 200) == 200:
-                    page = Path(rec["path"]).read_text(errors="replace")
+                    page = decode_raw(Path(rec["path"]).read_bytes())
                     url_dir = src["url"].rsplit("/", 1)[0] + "/"
                     for link in sorted(set(re.findall(r'href="(' + src["link_pattern"] + r')"', page))):
                         get(f"{s}/{src['id']}/{link}", url_dir + link)
@@ -188,7 +203,7 @@ class Raw:
         return self.where[name] / name
 
     def text(self, name: str) -> str:
-        return self.path(name).read_bytes().decode("utf-8", errors="replace")
+        return decode_raw(self.path(name).read_bytes())
 
     def ref(self, name: str) -> dict:
         r = self.files[name]
@@ -215,11 +230,26 @@ def product_releases(product: str, pc: dict, raw: Raw) -> tuple[list[fx.Release]
                 got = fx.parse_text_releases(page, src["pattern"], src.get("date_format"))
             elif src["kind"] == "github_releases":
                 got = fx.parse_github_releases(page, src["pattern"])
+            elif src["kind"] == "page":
+                got = fx.parse_release_page(page, src["pattern"], src["date_pattern"], src.get("date_format"))
             else:
                 raise ValueError(f"{product}: unknown release kind {src['kind']!r}")
             found += [(n, d, e, name) for n, d, e in got]
     rels, pre = fx.build_releases(found, pc.get("cpe_split"))
-    return rels, pre, used
+    return rels, pre, list(dict.fromkeys(used))  # one page may serve several patterns (Cerberus date formats)
+
+
+def product_tags(product: str, pc: dict, raw: Raw) -> dict[str, dict] | None:
+    """The vendor's official Git tags per release name ({name: {tag, commit, url, source}}), or None if the
+    product configures none. Tags corroborate the release list; they never add a release."""
+    if "git_tags" not in pc:
+        return None
+    t = pc["git_tags"]
+    out: dict[str, dict] = {}
+    for name in raw.under(f"{slug(product)}/{t['id']}/"):
+        for rel_name, info in fx.parse_github_tags(raw.text(name), t["pattern"]).items():
+            out.setdefault(rel_name, {**info, "url": f"https://github.com/{t['repo']}/tree/{info['tag']}", "source": raw.ref(name)})
+    return out
 
 
 def ghsa_union(raw: Raw, s: str, src: dict) -> tuple[list[str], str | None]:
@@ -342,21 +372,32 @@ def nvd_raw_criteria(cfg: dict, product: str) -> tuple[dict[str, set[tuple]], di
 
 
 def add_unverified(entry: dict, info: dict, cfg: dict) -> dict:
-    """Unverified-release vulnerable fixtures for a product with no verified fixture (decision 16 Nov 2026)."""
+    """Unverified-release vulnerable fixtures (decision 16 Nov 2026) for the listed product's CVEs that have
+    no verified vulnerable fixture.
+
+    P5v: "a fixture with evidence becomes a normal fixture; one without stays unverified_release". A CVE
+    that the catalogue rule gives a verified vulnerable fixture never also gets an unverified one, and an
+    unverified version that is also a verified release name is refused (two fixtures, one version).
+    """
     product = entry["product"]
-    if entry["fixtures"]:
-        sys.exit(f"{product}: has verified fixtures; unverified_release applies only to products with none")
     part = cfg["cpe_part"].get(product, cfg["cpe_part"]["default"])
     ranges = {c: fx.cve_ranges(info["cves"][c]["row"]["configurations"], product, part)[0] for c in info["cves"]}
+    verified = entry["fixtures"]
+    covered = {v["cve"] for f in verified for v in f["vulnerable_for"]}
     criteria, refs = nvd_raw_criteria(cfg, product)
-    fixtures, dropped = fx.unverified_fixtures(ranges, criteria)
+    fixtures, dropped = fx.unverified_fixtures(ranges, criteria, only=set(ranges) - covered)
+    clash = {f["version"] for f in fixtures} & {f["version"] for f in verified}
+    if clash:
+        sys.exit(f"{product}: unverified fixtures {sorted(clash)} share a version with verified fixtures")
     for f in fixtures:
         f["release_source"] = [refs[v["cve"]] for v in f["vulnerable_for"]]
+    status = entry["status"] if verified else ("unverified_release" if fixtures else "dropped")
     out = {**entry, "verified_status": entry["status"], "verified_drop_reason": entry.get("drop_reason"),
-           "unverified_release_decision": cfg["unverified_release"]["decision"], "fixtures": fixtures,
+           "unverified_release_decision": cfg["unverified_release"]["decision"],
+           "fixtures": sorted(verified + fixtures, key=lambda f: fx.version_key(f["version"])),
            "dropped": entry["dropped"] + [{**d, "stage": "unverified_release"} for d in dropped],
-           "status": "unverified_release" if fixtures else "dropped"}  # fmt: skip
-    if fixtures:
+           "status": status}  # fmt: skip
+    if status != "dropped":
         out.pop("drop_reason", None)
     return out
 
@@ -387,6 +428,11 @@ def build_linux(product: str, info: dict, cfg: dict, raw: Raw, tar_records: dict
     if not rels:
         return {**base, "status": "dropped", "drop_reason": "no stable upstream release parsed from the release sources",
                 "fixtures": [], "dropped": [], "unmatched_docs": []}  # fmt: skip
+    tags = product_tags(product, pc, raw)
+    if tags is not None:
+        base["git_tag_check"] = {"repo": pc["git_tags"]["repo"], "releases": len(rels),
+                                 "releases_with_tag": sum(r.name in tags for r in rels),
+                                 "releases_without_tag": [r.name for r in rels if r.name not in tags]}  # fmt: skip
     index = fx.ReleaseIndex(rels)
     cat = fx.catalogue_product(ranges, index, docs)
     aff = fx.affected_by(list(cat.fixtures), index, ranges)
@@ -396,7 +442,8 @@ def build_linux(product: str, info: dict, cfg: dict, raw: Raw, tar_records: dict
             for ev in ff["evidence"]:
                 ev.update(ref_of(raw, ev.pop("raw")))
         fixtures.append({**{k: v for k, v in f.items() if k != "release_raw"},
-                         "release_source": raw.ref(f["release_raw"]), "affected_by": aff[f["version"]]})  # fmt: skip
+                         "release_source": raw.ref(f["release_raw"]), "affected_by": aff[f["version"]],
+                         **({"git_tag": tags.get(f["version"])} if tags is not None else {})})  # fmt: skip
     for u in cat.unmatched_docs:
         u.update(ref_of(raw, u.pop("raw")))
     status = "ok" if fixtures else "dropped"
@@ -523,28 +570,36 @@ def fixture_lines(catalogue: dict) -> list[str]:
 
 
 def unverified_regained(catalogue: dict, eligible_by_set: dict[str, set[tuple[str, str]]]) -> list[dict]:
-    """Per product in the unverified_release list: eligible remote and local units that the unverified
-    fixtures give a vulnerable fixture (none of these products has a verified fixture)."""
+    """Per product in the unverified_release list: fixtures by kind (verified from release evidence,
+    unverified_release), candidate CVEs with a vulnerable fixture of any kind and with a verified one, and
+    the eligible remote and local units each covers (`regained`: any kind; `verified`: verified only)."""
     out = []
     for product, e in sorted(catalogue["linux"].items()):
         if "unverified_release_decision" not in e:
             continue
         covered = {v["cve"] for f in e["fixtures"] for v in f["vulnerable_for"]}
-        row = {"product": product, "status": e["status"], "unverified_fixtures": len(e["fixtures"]),
-               "candidate_cves": len(e["candidate_cves"]), "candidate_cves_with_fixture": len(covered)}  # fmt: skip
+        covered_verified = {v["cve"] for f in e["fixtures"] if not f.get("unverified_release") for v in f["vulnerable_for"]}
+        n_unverified = sum(bool(f.get("unverified_release")) for f in e["fixtures"])
+        row = {"product": product, "status": e["status"], "verified_fixtures": len(e["fixtures"]) - n_unverified,
+               "unverified_fixtures": n_unverified, "candidate_cves": len(e["candidate_cves"]),
+               "candidate_cves_with_fixture": len(covered), "candidate_cves_with_verified_fixture": len(covered_verified)}  # fmt: skip
         for s, units in eligible_by_set.items():
             el = {c for c, p in units if p == product}
             row[f"eligible_{s}"], row[f"eligible_{s}_regained"] = len(el), len(el & covered)
+            row[f"eligible_{s}_verified"] = len(el & covered_verified)
         out.append(row)
     return out
 
 
 def regained_table(rows: list[dict]) -> list[str]:
-    lines = ["| product | status | unverified fixtures | candidate CVEs | with fixture | eligible remote | regained | eligible local | regained |",
-             "|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
+    lines = ["| product | status | verified fixtures | unverified fixtures | candidate CVEs | with fixture | with verified fixture | "
+             "eligible remote | covered | verified | eligible local | covered | verified |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
     for r in rows:
-        lines.append(f"| {r['product']} | {r['status']} | {r['unverified_fixtures']} | {r['candidate_cves']} | {r['candidate_cves_with_fixture']} | "
-                     f"{r['eligible_remote']} | {r['eligible_remote_regained']} | {r['eligible_local']} | {r['eligible_local_regained']} |")  # fmt: skip
+        lines.append(f"| {r['product']} | {r['status']} | {r['verified_fixtures']} | {r['unverified_fixtures']} | {r['candidate_cves']} | "
+                     f"{r['candidate_cves_with_fixture']} | {r['candidate_cves_with_verified_fixture']} | "
+                     f"{r['eligible_remote']} | {r['eligible_remote_regained']} | {r['eligible_remote_verified']} | "
+                     f"{r['eligible_local']} | {r['eligible_local_regained']} | {r['eligible_local_verified']} |")  # fmt: skip
     return lines
 
 
@@ -555,7 +610,9 @@ def report(summary: dict, catalogue: dict, meta: dict, el_summary: dict, el_cata
              f"Raw snapshots: {', '.join(f'`{d}` (manifest SHA-256 `{h}`)' for d, h in zip(meta['raw_dirs'], meta['raw_manifest_sha256']))}",
              f"Master dataset SHA-256: `{meta['master_sha256']}`", "",
              "Candidates: pre-P3 superset plus every eligible unit (P5 decisions). Fixture counts are distinct releases/builds per product.", "",
-             "## Unverified-release fixtures (decision 16 Nov 2026; vulnerable role only, p = 1 only)", ""]  # fmt: skip
+             "## Products of the unverified_release list (decision 16 Nov 2026; P5v)", "",
+             "Verified fixtures come from vendor release evidence by the catalogue rule. Unverified fixtures (vulnerable role only, "
+             "p = 1 only) remain for the CVEs that have no verified vulnerable fixture.", ""]  # fmt: skip
     lines += regained_table(regained) + ["", "## Eligible view (p3-labels-v2.1)", ""]
     lines += summary_table(el_summary)
     lines += ["", "## Superset (pre-P3 candidates)", ""] + summary_table(summary)
@@ -629,8 +686,8 @@ def main() -> None:
     a_f = sub.add_parser("fetch")
     a_f.add_argument("config", type=Path)
     a_f.add_argument("--date", default=datetime.now(timezone.utc).date().isoformat())
-    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement"],
-                     help="data/raw/<source>/<date>/; a supplement needs --base")
+    a_f.add_argument("--source", default="fixtures", choices=["fixtures", "fixtures_supplement", "fixtures_p5v"],
+                     help="data/raw/<source>/<date>/; any source but 'fixtures' is a supplement and needs --base")
     a_f.add_argument("--base", type=Path, nargs="*", default=[], help="finished snapshots this one supplements")
     a_b = sub.add_parser("build")
     a_b.add_argument("config", type=Path)
@@ -639,8 +696,8 @@ def main() -> None:
     cfg = load_config(a.config)
     if a.cmd == "fetch":
         date_ = datetime.strptime(a.date, "%Y-%m-%d").date().isoformat()  # rejects anything but YYYY-MM-DD
-        if (a.source == "fixtures_supplement") != bool(a.base):
-            sys.exit("a fixtures_supplement snapshot needs --base, and only a supplement takes one")
+        if (a.source != "fixtures") != bool(a.base):
+            sys.exit("a supplement snapshot (fixtures_supplement, fixtures_p5v) needs --base, and only a supplement takes one")
         fetch(cfg, date_, [b.resolve() for b in a.base], a.source)
     else:
         build(cfg, [d.resolve() for d in a.raw_dirs])

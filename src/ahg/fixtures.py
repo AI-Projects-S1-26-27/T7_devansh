@@ -268,6 +268,31 @@ def parse_github_releases(page: str, pattern: str) -> list[tuple[str, str | None
     return out
 
 
+def parse_release_page(page: str, name_pattern: str, date_pattern: str, date_format: str | None) -> list[tuple[str, str | None, str]]:
+    """One release from its own release-notes page (Serv-U: "Serv-U 15.2.2 Release Notes" ... "Release
+    date: January 21, 2021"). The version is the first visible line that fits `name_pattern` (group
+    `name`), the date the first line that fits `date_pattern` (group `date`). A page that lacks either
+    yields nothing: an undated page is not a release record (Round 4 records a release date)."""
+    lines = html_text_lines(page)
+    name = next((m for m in (re.search(name_pattern, line) for line in lines) if m), None)
+    date = next((m for m in (re.search(date_pattern, line) for line in lines) if m), None)
+    if not (name and date):
+        return []
+    return [(name["name"], parse_date(date["date"], date_format), f"{name.group(0)[:120]} | {date.group(0)[:80]}")]
+
+
+def parse_github_tags(page: str, pattern: str) -> dict[str, dict]:
+    """Tags on one GitHub /tags API page whose name fits `pattern` (group `name`): {name: {"tag", "commit"}}.
+    Tags carry no date and no release status, so they corroborate a release list; they never make one."""
+    rx = re.compile(pattern)
+    out = {}
+    for t in json.loads(page):
+        m = rx.fullmatch(t.get("name") or "")
+        if m:
+            out[m["name"]] = {"tag": t["name"], "commit": (t.get("commit") or {}).get("sha")}
+    return out
+
+
 def build_releases(found: list[tuple[str, str | None, str, str]], split: str | None) -> tuple[list[Release], list[str]]:
     """Stable releases (one per version, earliest date kept) sorted by version, plus the pre-release names
     excluded (P5 decision: stable releases only). `found` holds (name, date, entry, raw_name)."""
@@ -583,9 +608,12 @@ def _range_key(rg: Range) -> tuple:
     return (rg.criteria, rg.start_incl, rg.start_excl, rg.end_incl, rg.end_excl)
 
 
-def unverified_fixtures(cves: dict[str, list[Range]], nvd_matches: dict[str, set[tuple]]) -> tuple[list[dict], list[dict]]:
-    """Vulnerable fixtures from version strings NVD itself lists as affected, for products with no verified
-    fixture.
+def unverified_fixtures(cves: dict[str, list[Range]], nvd_matches: dict[str, set[tuple]],
+                        only: set[str] | None = None) -> tuple[list[dict], list[dict]]:
+    """Vulnerable fixtures from version strings NVD itself lists as affected, for the CVEs of the listed
+    products that have no verified vulnerable fixture: `only` names those CVEs (None: all of them, a product
+    with no verified fixture). P5v: "a fixture with evidence becomes a normal fixture; one without stays
+    unverified_release". `affected_by` still counts every CVE in `cves`.
 
     Decisions 16 Nov 2026 (Devansh, after P5; rule 13): such fixtures carry "unverified_release": no release
     date, no upstream validation, vulnerable role only, never a fixed fixture; usable in the primary (p = 1)
@@ -600,6 +628,9 @@ def unverified_fixtures(cves: dict[str, list[Range]], nvd_matches: dict[str, set
     fixtures: dict[str, dict] = {}
     dropped: list[dict] = []
     for cve in sorted(cves, key=cve_sort_key):
+        if only is not None and cve not in only:
+            continue
+
         def options(rgs: list[Range]) -> list[tuple[str, str, str, Range]]:
             out = []
             for rg in rgs:

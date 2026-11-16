@@ -348,10 +348,126 @@ def test_unverified_bound_must_match_the_raw_nvd_record():
     assert fixtures == [] and dropped[0]["reason"] == "cpe_match_not_in_raw_nvd_record"
 
 
-def test_build_refuses_unverified_fixtures_for_a_product_with_verified_ones():
+def nvd_dir(tmp_path: Path, product: str, cves: dict[str, list]) -> Path:
+    """A raw NVD snapshot as the master was built from: one page of the product's CVEs and its manifest."""
+    d = tmp_path / "nvd"
+    d.mkdir()
+    page = gzip.compress(json.dumps({"url": "u", "fetched_utc": "t", "params": {}, "response": {
+        "vulnerabilities": [{"cve": {"id": c, "configurations": conf}} for c, conf in cves.items()]}}).encode())
+    (d / "p.json.gz").write_bytes(page)
+    (d / "manifest.json").write_text(json.dumps({"files": [{"product": product, "path": "p.json.gz", "url": "https://nvd.example/x",
+                                                            "fetched_utc": "2026-10-21T08:00:00+00:00", "sha256": hashlib.sha256(page).hexdigest()}]}))
+    return d
+
+
+def test_unverified_fixtures_only_for_cves_without_a_verified_one(tmp_path):
+    """P5v: a CVE with a verified vulnerable fixture gets no unverified one; the others keep theirs."""
     bf = load_script("build_fixtures")
+    confs = {"CVE-2020-1": cfg(m("cpe:2.3:a:v:p:1.0:*:*:*:*:*:*:*")), "CVE-2020-2": cfg(m("cpe:2.3:a:v:p:2.0:*:*:*:*:*:*:*"))}
+    info = {"cves": {c: {"row": {"configurations": conf}} for c, conf in confs.items()}}
+    config = {"cpe_part": {"default": "a"}, "unverified_release": {"nvd_raw_dir": str(nvd_dir(tmp_path, "v:p", confs)), "decision": "test"}}
+    verified = {"version": "1.0", "vulnerable_for": [{"cve": "CVE-2020-1"}], "fixed_for": [], "affected_by": ["CVE-2020-1"]}
+    entry = {"product": "v:p", "status": "ok", "fixtures": [verified], "dropped": []}
+    out = bf.add_unverified(entry, info, config)
+    assert out["status"] == "ok" and out["verified_status"] == "ok"
+    assert [(f["version"], f.get("unverified_release", False), [v["cve"] for v in f["vulnerable_for"]]) for f in out["fixtures"]] == [
+        ("1.0", False, ["CVE-2020-1"]), ("2.0", True, ["CVE-2020-2"])]
+    # A product with no verified fixture keeps the old behaviour: every CVE gets its unverified fixture.
+    out = bf.add_unverified({**entry, "status": "dropped", "drop_reason": "x", "fixtures": []}, info, config)
+    assert out["status"] == "unverified_release" and "drop_reason" not in out
+    assert [f["version"] for f in out["fixtures"]] == ["1.0", "2.0"]
+
+
+def test_unverified_version_equal_to_a_verified_release_is_refused(tmp_path):
+    bf = load_script("build_fixtures")
+    confs = {"CVE-2020-1": cfg(m("cpe:2.3:a:v:p:1.0:*:*:*:*:*:*:*")), "CVE-2020-2": cfg(m("cpe:2.3:a:v:p:2.0:*:*:*:*:*:*:*"))}
+    info = {"cves": {c: {"row": {"configurations": conf}} for c, conf in confs.items()}}
+    config = {"cpe_part": {"default": "a"}, "unverified_release": {"nvd_raw_dir": str(nvd_dir(tmp_path, "v:p", confs)), "decision": "test"}}
+    # A verified 2.0 that is not CVE-2020-2's vulnerable fixture: CVE-2020-2's unverified fixture would be a second "2.0".
+    clash = {"version": "2.0", "vulnerable_for": [], "fixed_for": [{"cve": "CVE-2020-1"}], "affected_by": []}
     with pytest.raises(SystemExit):
-        bf.add_unverified({"product": "a:b", "fixtures": [{"version": "1.0"}]}, {"cves": {}}, {})
+        bf.add_unverified({"product": "v:p", "status": "ok", "fixtures": [clash], "dropped": []}, info, config)
+
+
+def test_release_page_needs_version_and_date():
+    page = "<html><body><h1>Serv-U File Server 15.2.2 Release Notes</h1><p>15.2.1 Release Notes</p><p>Release date: January 21, 2021</p></body></html>"
+    pat, dpat = r"^Serv-U (?:File Server )?(?P<name>\d+(?:\.\d+)+) Release Notes$", r"^Release date: (?P<date>[A-Z][a-z]+ \d{1,2}, \d{4})$"
+    assert [(n, d) for n, d, _ in fx.parse_release_page(page, pat, dpat, "%B %d, %Y")] == [("15.2.2", "2021-01-21")]
+    assert fx.parse_release_page(page.replace("Release date", "Updated"), pat, dpat, "%B %d, %Y") == []  # undated: no release
+
+
+def test_github_tags_corroborate_names_only():
+    page = json.dumps([{"name": "mysql-5.7.14", "commit": {"sha": "abc"}}, {"name": "mysql-cluster-7.5.3", "commit": {"sha": "d"}},
+                       {"name": "mysql-5.7.10-2", "commit": {"sha": "e"}}])
+    assert fx.parse_github_tags(page, r"mysql-(?P<name>\d+\.\d+\.\d+)") == {"5.7.14": {"tag": "mysql-5.7.14", "commit": "abc"}}
+
+
+def test_raw_text_reads_gzip_encoded_captures(tmp_path):
+    """Wayback id_ captures keep the origin's gzip encoding; the raw bytes stay as fetched, text is decoded."""
+    bf = load_script("build_fixtures")
+    d = tmp_path / "fixtures_p5v" / "2026-11-16"
+    d.mkdir(parents=True)
+    body = gzip.compress("<p>Changes in MySQL 5.5.62 (2018-10-22, General availability)</p>".encode())
+    (d / "a.html").write_bytes(body)
+    (d / "fetch_log.jsonl").write_text(json.dumps({"name": "a.html", "url": "u", "date_utc": "t", "http": 200, "bytes": len(body),
+                                                   "sha256": hashlib.sha256(body).hexdigest(), "content_type": "text/html",
+                                                   "script": "t", "git_commit": "x", "git_dirty": False}) + "\n")
+    write_manifest(d)
+    raw = bf.Raw([d])
+    assert "5.5.62" in raw.text("a.html") and raw.ref("a.html")["sha256"] == hashlib.sha256(body).hexdigest()
+
+
+# ---------------------------------------------------------------- P5v configuration patterns
+
+
+P5 = json.loads((Path(__file__).resolve().parents[1] / "configs" / "fixtures" / "p5.json").read_text())
+
+
+def releases_from(product: str, page: str) -> list[tuple[str, str]]:
+    found = []
+    for src in P5["products"][product]["releases"]:
+        if src["kind"] == "text":
+            found += [(n, d) for n, d, _ in fx.parse_text_releases(page, src["pattern"], src.get("date_format"))]
+        elif src["kind"] == "page":
+            found += [(n, d) for n, d, _ in fx.parse_release_page(page, src["pattern"], src["date_pattern"], src.get("date_format"))]
+    return sorted(set(found))
+
+
+def test_mysql_release_notes_pattern_keeps_ga_only():
+    page = "\n".join(f"<p>Changes in MySQL {x}</p>" for x in (
+        "5.7.14 (2016-07-29)", "8.0.36 (2024-01-16, General Availability)", "5.5.62 (2018-10-22, General availability)",
+        "8.3.0 (2024-01-16, Innovation Release)", "5.7.8 (2015-08-03, Release Candidate)", "5.7.6 (2015-03-09, Milestone 16)",
+        "8.0.4 (2018-01-23, Development Milestone)", "5.7.0 (Not released, Milestone 10)", "9.7.4.1 (Not yet released)"))
+    for product in ("oracle:mysql", "mysql:mysql"):
+        assert releases_from(product, "<html><body>" + page + "</body></html>") == [
+            ("5.5.62", "2018-10-22"), ("5.7.14", "2016-07-29"), ("8.0.36", "2024-01-16"), ("8.3.0", "2024-01-16")]
+
+
+def test_cerberus_patterns_read_all_dated_formats_and_skip_betas():
+    page = "<html><body>" + "".join(f"<h3>{x}</h3>" for x in (
+        "Version 2026.3 Official Release — 26 August 2026", "Version 2025.1.1 Official Release — March 25 2025",
+        "Version 8.0.10.1 Official Release — 2/09/2017", "Version 12.11.7 Final Release — 4/12/2023",
+        "Version 2.43 Official notes — 3/19/2007", "Version 2.0 BETA 1 notes — 1/02/2003")) + "</body></html>"
+    assert releases_from("cerberusftp:ftp_server", page) == [
+        ("12.11.7", "2023-04-12"), ("2.43", "2007-03-19"), ("2025.1.1", "2025-03-25"), ("2026.3", "2026-08-26"), ("8.0.10.1", "2017-02-09")]
+
+
+def test_servu_release_page_pattern():
+    page = "<html><body><h1>Serv-U 15.1.6 Release Notes</h1><p>Release date: December 7, 2017</p></body></html>"
+    assert releases_from("solarwinds:serv-u", page) == [("15.1.6", "2017-12-07")]
+    rels, _ = fx.build_releases([("15.5.4 Hotfix 1", "2026-06-01", "e", "r"), ("15.5.4", "2026-02-01", "e", "r")], P5["products"]["solarwinds:serv-u"]["cpe_split"])
+    assert [(r.name, r.cpe_version) for r in rels] == [("15.5.4", "15.5.4"), ("15.5.4 Hotfix 1", "15.5.4")]
+
+
+def test_postfix_announcement_pattern_needs_the_db_config_entry():
+    src = P5["products"]["postfix:postfix"]["evidence"][0]
+    text = ("<html><body><h1>Postfix stable release 3.2.2 and legacy releases 3.1.6, 3.0.10 and 2.11.10</h1>"
+            "<p>[An on-line version of this announcement will be available at http://www.postfix.org/announcements/postfix-3.2.2.html ]</p>"
+            "<p>Fixed in all supported releases:</p><p>Security: Berkeley DB versions 2 and later try to read settings from a file DB_CONFIG in the current directory.</p>"
+            "</body></html>")  # fmt: skip
+    docs = [d for p in src["patterns"] for d in fx.ev_page_regex(text, p, P5["products"]["postfix:postfix"]["version_regex"], "n", "CVE-2017-10140", True)]
+    assert sorted(d.version for d in docs) == ["2.11.10", "3.0.10", "3.1.6", "3.2.2"] and {d.cve for d in docs} == {"CVE-2017-10140"}
+    assert not [d for p in src["patterns"] for d in fx.ev_page_regex(text.replace("DB_CONFIG", "X"), p, r"\d+\.\d+\.\d+", "n", "CVE-2017-10140", True)]
 
 
 def test_runs():
@@ -515,9 +631,10 @@ def test_build_end_to_end(tmp_path):
     run = next((tmp_path / "results" / "catalogue").iterdir())
     assert "apache:tomcat" in (run / "report.md").read_text()
     regained = json.loads(gzip.decompress((run / "raw.json.gz").read_bytes()))["unverified_regained"]
-    assert regained == [{"product": "oracle:mysql", "status": "unverified_release", "unverified_fixtures": 1, "candidate_cves": 1,
-                         "candidate_cves_with_fixture": 1, "eligible_remote": 0, "eligible_remote_regained": 0,
-                         "eligible_local": 1, "eligible_local_regained": 1}]  # fmt: skip
+    assert regained == [{"product": "oracle:mysql", "status": "unverified_release", "verified_fixtures": 0, "unverified_fixtures": 1,
+                         "candidate_cves": 1, "candidate_cves_with_fixture": 1, "candidate_cves_with_verified_fixture": 0,
+                         "eligible_remote": 0, "eligible_remote_regained": 0, "eligible_remote_verified": 0,
+                         "eligible_local": 1, "eligible_local_regained": 1, "eligible_local_verified": 0}]  # fmt: skip
     el = json.loads(gzip.decompress((out / "catalogue_eligible.json.gz").read_bytes()))
     assert list(el["linux"]) == ["oracle:mysql"]  # the Tomcat CVE has no eligible label
     assert el["linux"]["oracle:mysql"]["fixtures"][0]["unverified_release"] is True
