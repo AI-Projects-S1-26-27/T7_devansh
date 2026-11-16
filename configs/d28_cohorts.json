@@ -1,0 +1,432 @@
+{
+ "task": "P7",
+ "decisions": "decisions.md Rounds 6, 9, 10, 11, 18; P7 task text (17 Nov 2026); OQ-P7-* in open_questions.md",
+ "frozen": false,
+ "frozen_note": "No cohort except a smoke cohort is built while frozen is false. Freezing is a commit that sets it true after Devansh approves the sizes, the generation limit and the held-out product set (OQ-P7-1, OQ-P7-2, OQ-P6-8).",
+ "heldout_products": null,
+ "heldout_note": "Held-out product set (Round 10): null = not chosen yet (OQ-P6-8). Every cohort with exclude 'heldout_products' is refused while it is null; [] would mean 'no product split'.",
+ "seed_format": "{namespace}/n{n}/{index}",
+ "training_total_solvable": 3000,
+ "cohorts": [
+  {
+   "name": "d28_train",
+   "role": "training",
+   "analysis": null,
+   "hypothesis": null,
+   "namespace": "d28.train",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "solvable_quota",
+   "per_size": 1500,
+   "max_candidates_per_size": 100000,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_val",
+   "role": "validation",
+   "analysis": null,
+   "hypothesis": null,
+   "namespace": "d28.val",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_id",
+   "role": "test",
+   "analysis": "primary",
+   "hypothesis": "H-ID",
+   "namespace": "d28.test.id",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_size30",
+   "role": "test",
+   "analysis": "primary",
+   "hypothesis": "H-S30",
+   "namespace": "d28.test.size30",
+   "archetype": "tree",
+   "sizes": [
+    30
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_size60",
+   "role": "test",
+   "analysis": "exploratory",
+   "hypothesis": "H-S60",
+   "namespace": "d28.test.size60",
+   "archetype": "tree",
+   "sizes": [
+    60
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_structure",
+   "role": "test",
+   "analysis": "primary",
+   "hypothesis": "H-STR",
+   "namespace": "d28.test.structure",
+   "archetype": "chain",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [
+    "n4_pass"
+   ],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_temporal",
+   "role": "test",
+   "analysis": "primary",
+   "hypothesis": "H-TMP",
+   "namespace": "d28.test.temporal",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "temporal",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_product",
+   "role": "test",
+   "analysis": "primary",
+   "hypothesis": "H-PRD",
+   "namespace": "d28.test.product",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "none",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": [
+    "OQ-P6-8",
+    "OQ-P7-5"
+   ]
+  },
+  {
+   "name": "d28_test_cve",
+   "role": "test",
+   "analysis": "primary",
+   "hypothesis": "H-CVE",
+   "namespace": "d28.test.cve",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": [
+    "OQ-P7-4"
+   ]
+  },
+  {
+   "name": "d28_test_ac",
+   "role": "test",
+   "analysis": "proposed",
+   "hypothesis": null,
+   "namespace": "d28.test.ac",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": [
+    "OQ-P7-3"
+   ]
+  },
+  {
+   "name": "d28_test_os25",
+   "role": "test",
+   "analysis": "sensitivity",
+   "hypothesis": null,
+   "namespace": "d28.test.os25",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.25,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_os75",
+   "role": "test",
+   "analysis": "sensitivity",
+   "hypothesis": null,
+   "namespace": "d28.test.os75",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.75,
+   "p": 1.0,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_p075",
+   "role": "test",
+   "analysis": "sensitivity",
+   "hypothesis": null,
+   "namespace": "d28.test.p075",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 0.75,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_p050",
+   "role": "test",
+   "analysis": "sensitivity",
+   "hypothesis": null,
+   "namespace": "d28.test.p050",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 0.5,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "d28_test_p025",
+   "role": "test",
+   "analysis": "sensitivity",
+   "hypothesis": null,
+   "namespace": "d28.test.p025",
+   "archetype": "tree",
+   "sizes": [
+    12,
+    20
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.5,
+   "p": 0.25,
+   "exclude": "heldout_products",
+   "selection": "fixed",
+   "per_size": 200,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  }
+ ],
+ "smoke_note": "Smoke cohorts (seed namespace p7-smoke) exist only to test the pipeline end to end. Their tasks are never data; they need neither the freeze nor the held-out set.",
+ "smoke": [
+  {
+   "name": "p7_smoke_train",
+   "role": "training",
+   "analysis": null,
+   "hypothesis": null,
+   "namespace": "p7-smoke.train",
+   "archetype": "tree",
+   "sizes": [
+    12
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.75,
+   "p": 1.0,
+   "exclude": "none",
+   "selection": "solvable_quota",
+   "per_size": 2,
+   "max_candidates_per_size": 60,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "p7_smoke_val",
+   "role": "validation",
+   "analysis": null,
+   "hypothesis": null,
+   "namespace": "p7-smoke.val",
+   "archetype": "tree",
+   "sizes": [
+    12
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.75,
+   "p": 1.0,
+   "exclude": "none",
+   "selection": "fixed",
+   "per_size": 4,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  },
+  {
+   "name": "p7_smoke_test",
+   "role": "test",
+   "analysis": "primary",
+   "hypothesis": "H-ID",
+   "namespace": "p7-smoke.test",
+   "archetype": "tree",
+   "sizes": [
+    12
+   ],
+   "gen_cohort": "core",
+   "os_linux": 0.75,
+   "p": 1.0,
+   "exclude": "none",
+   "selection": "fixed",
+   "per_size": 4,
+   "max_candidates_per_size": null,
+   "requires": [],
+   "blocked_by": []
+  }
+ ],
+ "n4": {
+  "namespace": "d28.train.n4",
+  "smoke_namespace": "p7-smoke.n4",
+  "sizes": [
+   12,
+   20
+  ],
+  "archetypes": [
+   "tree",
+   "chain"
+  ],
+  "per_family_size": 300,
+  "smoke_per_family_size": 6,
+  "note": "Round 6 P0c: 300 networks per family x size, training-style seeds; no solvability filter (structure only)."
+ },
+ "landscape": {
+  "per_stratum": 100,
+  "smoke_per_stratum": 2,
+  "note": "Round 12 P0c: 100 training networks per family x size stratum."
+ },
+ "budget_pilot": {
+  "tasks": 200,
+  "smoke_tasks": 2,
+  "cap": 20000,
+  "candidates": [
+   100,
+   300,
+   1000,
+   3000,
+   10000,
+   20000
+  ],
+  "target": 0.99,
+  "note": "Round 9 pilot: smallest candidate under which >= target of sampled states certify in both regimes (OQ-P7-8)."
+ }
+}
