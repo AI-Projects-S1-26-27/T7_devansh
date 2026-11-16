@@ -553,3 +553,14 @@ def test_build_refuses_a_changed_master(tmp_path):
     master.write_bytes(gzip.compress(b"{}\n"))
     with pytest.raises(SystemExit):
         bf.load_master({"master_dataset": str(master), "master_sha256": "0" * 64})
+
+
+def test_p5_config_inputs_are_repo_local_and_labels_match_frozen_registry():
+    """M3 (DECIDED-BY-AGENT): after the merge into d28-rebuild, P5 inputs resolve inside this checkout, not a
+    sibling track worktree, and the eligible view reads the canonical frozen p3-labels-v2.1 (OQ-M2-1 registry)."""
+    root = Path(__file__).resolve().parents[1]
+    cfg = json.loads((root / "configs" / "fixtures" / "p5.json").read_text())
+    paths = [cfg["master_dataset"], cfg["eligible_labels"], cfg["unverified_release"]["nvd_raw_dir"], *cfg["msrc_fetch_logs"]]
+    assert all(not Path(p).is_absolute() and ".." not in Path(p).parts for p in paths)
+    frozen = json.loads((root / "configs" / "d28_effect_labels.json").read_text())["versions"]["p3-labels-v2.1"]
+    assert (cfg["eligible_labels"], cfg["eligible_labels_sha256"]) == (frozen["path"], frozen["sha256"])
