@@ -14,7 +14,8 @@ def row(arch, n, solvable, length=None, **kw):
          "reason": None if solvable else "no_foothold_on_goal_host_reachable", "flag_unverified": False,
          "actions": 10, "remote_actions": 7, "local_actions": 3, "merged_transitions": 2, "matches": 5,
          "remote_matches": 4, "remote_matches_unknown_principal": 3, "vulnerable_components": 6,
-         "vulnerable_components_without_match": 1, "reused_configs": 2, "hosts": 12, "windows_hosts": 6, "seconds": 0.5}
+         "vulnerable_components_without_match": 1, "reused_configs": 2, "hosts": 12, "windows_hosts": 6, "seconds": 0.5,
+         "goal_os": "linux", "goal_families": ["smb"], "goal_remote_matches": 1 if solvable else 0, "goal_local_matches": 1}
     if solvable:
         r["plan_ac"] = {"cost": 4 * length, "length": length, "expanded": 3, "budget_hit": False}
         r["plan_uniform"] = {"cost": length, "length": length, "expanded": 3, "budget_hit": False}
@@ -29,6 +30,9 @@ def test_summary_counts_and_medians():
     assert (s["tasks"], s["infeasible"]) == (3, 1)
     assert (t["tasks"], t["solvable"], t["plan_len_ac_median"], t["plan_cost_uniform_median"]) == (3, 2, 4.0, 4.0)
     assert s["remote_matches_unknown_principal"] == 9 and s["unsolvable_reasons"] == {"no_foothold_on_goal_host_reachable": 1}
+    assert s["solvability_by_cohort_p_os"] == {"core|p=1.0|linux=0.5": {"solvable": 2, "tasks": 3}}
+    assert s["goal_host"]["core"] == {"tasks": 3, "goal_has_remote_match": 2, "goal_has_local_match": 3,
+                                      "goal_has_both": 2, "goal_os_linux": 3}
 
 
 def test_report_renders_every_section():
@@ -43,5 +47,5 @@ def test_report_renders_every_section():
                                    "family_has_two_eligible": False}]}
     text = smoke.report(raw)
     for head in ("Action pool funnel", "Products and families", "Hosts per zone", "Per archetype and size", "Totals",
-                 "Held-out product candidates"):
+                 "Held-out product candidates", "Solvability by cohort, p and Linux share", "Goal host"):
         assert head in text

@@ -49,6 +49,11 @@ def candidate(ctx, arch, seed, n, cohort, linux, p, budget) -> dict:
             "windows_hosts": sum(h["os"] == "windows" for h in hosts), "hosts": len(hosts),
             "vulnerable_components": len(vuln), "vulnerable_components_without_match": sum(v not in matched for v in vuln),
             "products": sorted({x["product"] for h in hosts for x in h["components"]})}
+    g = doc["metadata"]["goal_host"]
+    gh = next(h for h in hosts if h["id"] == g)
+    row |= {"goal_os": gh["os"], "goal_families": [x["family"] for x in gh["components"][1:]],
+            "goal_remote_matches": sum(m["host"] == g and m["kind"] == "remote" for m in doc["metadata"]["matches"]),
+            "goal_local_matches": sum(m["host"] == g and m["kind"] == "local" for m in doc["metadata"]["matches"])}
     if doc["solvable"]:
         row["plan_ac"], row["plan_uniform"] = plan(doc, "ac", budget), plan(doc, "uniform", budget)
     row["seconds"] = round(time.perf_counter() - t0, 3)
@@ -121,7 +126,23 @@ def summarise(rows: list[dict]) -> dict:
         cell[k][0] += r["solvable"]
         cell[k][1] += 1
     tot = lambda k: sum(r[k] for r in ok)
+    cpo = defaultdict(lambda: [0, 0])
+    for r in ok:
+        k = f"{r['cohort']}|p={r['p']}|linux={r['os_linux']}"
+        cpo[k][0] += r["solvable"]
+        cpo[k][1] += 1
+    goal = defaultdict(Counter)
+    for r in ok:
+        if "goal_os" in r:
+            c = goal[r["cohort"]]
+            c["tasks"] += 1
+            c["goal_has_remote_match"] += r["goal_remote_matches"] > 0
+            c["goal_has_local_match"] += r["goal_local_matches"] > 0
+            c["goal_has_both"] += r["goal_remote_matches"] > 0 and r["goal_local_matches"] > 0
+            c[f"goal_os_{r['goal_os']}"] += 1
     return {
+        "solvability_by_cohort_p_os": {k: {"solvable": v[0], "tasks": v[1]} for k, v in sorted(cpo.items())},
+        "goal_host": {k: dict(v) for k, v in sorted(goal.items())},
         "tasks": len(ok), "infeasible": len(rows) - len(ok), "by_archetype_size": by_size,
         "solvability_by_archetype_size_cohort": {k: {"solvable": v[0], "tasks": v[1]} for k, v in sorted(cell.items())},
         "solvability_by_cohort": rate("cohort"), "solvability_by_p": rate("p"), "solvability_by_os_linux": rate("os_linux"),
@@ -168,6 +189,10 @@ def report(raw: dict) -> str:
     L += [f"| {k} | {v['solvable']}/{v['tasks']} |" for k, v in s["solvability_by_archetype_size_cohort"].items()]
     for name in ("solvability_by_cohort", "solvability_by_p", "solvability_by_os_linux"):
         L += ["", f"{name}: " + "; ".join(f"{k}: {v['solvable']}/{v['tasks']} ({fmt(v['rate'])})" for k, v in s[name].items())]
+    L += ["", "Solvability by cohort, p and Linux share:", "", "| cell | solvable/tasks |", "|---|---|"]
+    L += [f"| {k} | {v['solvable']}/{v['tasks']} |" for k, v in s["solvability_by_cohort_p_os"].items()]
+    L += ["", "Goal host (admin target) per cohort: tasks where it has a remote match, a local match, both:", ""]
+    L += [f"- {k}: {v}" for k, v in s["goal_host"].items()]
     L += ["", f"Unsolvable reasons: {s['unsolvable_reasons']}", "",
           "## Totals", "",
           f"- tasks {s['tasks']}, infeasible candidates {s['infeasible']}, hosts {s['hosts']} (Windows {s['windows_hosts']})",
