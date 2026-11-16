@@ -88,7 +88,7 @@
       "evidence": [{"id": "xlight_whatsnew.html", "kind": "sections", "url": "https://www.xlightftpd.com/whatsnew.htm", "header": "^(?P<v>\\d+\\.\\d+(?:\\.\\d+)*)\\(\\d{4}-\\d{1,2}-\\d{1,2}\\)"}]
     },
     "proftpd:proftpd": {
-      "version_regex": "\\d+\\.\\d+\\.\\d+[a-z]?(?:rc\\d+)?",
+      "version_regex": "\\d+\\.\\d+\\.\\d+(?:rc\\d+|[a-z]\\b)?",
       "cpe_split": "(?P<version>\\d+\\.\\d+\\.\\d+)(?P<update>[a-z]?)",
       "releases": [{"id": "proftpd_NEWS.txt", "kind": "text", "url": "https://raw.githubusercontent.com/proftpd/proftpd/master/NEWS", "pattern": "^(?P<name>\\d+\\.\\d+\\.\\d+[a-z]?) - Released (?P<date>\\d{1,2}-[A-Z][a-z]{2}-\\d{4})", "date_format": "%d-%b-%Y"}],
       "evidence": [{"id": "proftpd_NEWS.txt", "kind": "sections", "url": "https://raw.githubusercontent.com/proftpd/proftpd/master/NEWS", "header": "^(?P<v>\\d+\\.\\d+\\.\\d+[a-z]?(?:rc\\d+)?)(?: - Released\\b|$)"}]
@@ -121,12 +121,12 @@
         {"id": "tomcat11_listing.html", "kind": "listing", "url": "https://archive.apache.org/dist/tomcat/tomcat-11/", "pattern": "v(?P<name>\\d+\\.\\d+\\.\\d+)/"}
       ],
       "evidence": [
-        {"id": "tomcat_security_6.html", "kind": "sections", "url": "https://tomcat.apache.org/security-6.html", "header": "^Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)", "cve_at_line_start": true},
-        {"id": "tomcat_security_7.html", "kind": "sections", "url": "https://tomcat.apache.org/security-7.html", "header": "^Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)", "cve_at_line_start": true},
-        {"id": "tomcat_security_8.html", "kind": "sections", "url": "https://tomcat.apache.org/security-8.html", "header": "^Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)", "cve_at_line_start": true},
-        {"id": "tomcat_security_9.html", "kind": "sections", "url": "https://tomcat.apache.org/security-9.html", "header": "^Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)", "cve_at_line_start": true},
-        {"id": "tomcat_security_10.html", "kind": "sections", "url": "https://tomcat.apache.org/security-10.html", "header": "^Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)", "cve_at_line_start": true},
-        {"id": "tomcat_security_11.html", "kind": "sections", "url": "https://tomcat.apache.org/security-11.html", "header": "^Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)", "cve_at_line_start": true}
+        {"id": "tomcat_security_6.html", "kind": "sections", "url": "https://tomcat.apache.org/security-6.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_7.html", "kind": "sections", "url": "https://tomcat.apache.org/security-7.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_8.html", "kind": "sections", "url": "https://tomcat.apache.org/security-8.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_9.html", "kind": "sections", "url": "https://tomcat.apache.org/security-9.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_10.html", "kind": "sections", "url": "https://tomcat.apache.org/security-10.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true},
+        {"id": "tomcat_security_11.html", "kind": "sections", "url": "https://tomcat.apache.org/security-11.html", "header": "Fixed in Apache Tomcat (?P<v>\\d+\\.\\d+\\.\\d+(?:[.-]M\\d+)?)$", "cve_at_line_start": true}
       ],
       "cna": {"sources": ["security@apache.org"], "short_name": "apache", "product_regex": "Apache Tomcat"}
     },

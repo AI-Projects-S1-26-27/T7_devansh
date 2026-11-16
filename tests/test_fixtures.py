@@ -163,6 +163,23 @@ def test_sections_assign_cves_to_the_header_version():
     assert [(d.cve, d.version) for d in loose] == [("CVE-2023-50387", "2.90"), ("CVE-2023-50868", "2.90")]
 
 
+def test_sections_follow_dated_headers_after_a_table_of_contents():
+    """The Tomcat pages list every "Fixed in" header in a contents block, then repeat each one with its
+    release date in front. CVEs must go to the dated section they sit in, not to the last contents entry."""
+    page = """<html><body><ul><li>Fixed in Apache Tomcat 9.0.83</li><li>Fixed in Apache Tomcat 9.0.82</li></ul>
+    <h3><span>15 November 2023</span> Fixed in Apache Tomcat 9.0.83</h3><p>CVE-2023-46589</p>
+    <h3><span>10 October 2023</span> Fixed in Apache Tomcat 9.0.82</h3><p>CVE-2023-42795</p></body></html>"""
+    docs = fx.ev_sections(page, r"Fixed in Apache Tomcat (?P<v>\d+\.\d+\.\d+(?:[.-]M\d+)?)$", r"\d+\.\d+\.\d+", "raw", True)
+    assert [(d.cve, d.version) for d in docs] == [("CVE-2023-46589", "9.0.83"), ("CVE-2023-42795", "9.0.82")]
+
+
+def test_proftpd_version_regex_keeps_rc_suffixes():
+    import json as _json
+    cfgfile = Path(__file__).resolve().parents[1] / "configs" / "fixtures" / "p5.json"
+    vr = _json.loads(cfgfile.read_text())["products"]["proftpd:proftpd"]["version_regex"]
+    assert fx.versions_in("1.3.10rc6 and 1.3.8b, 1.3.9", vr) == ["1.3.10rc6", "1.3.8b", "1.3.9"]
+
+
 def test_page_regex_nginx_and_per_cve_pages():
     page = "<html><body><p>Buffer overflow</p><p>CVE-2026-1001</p><p>Not vulnerable: 1.31.7+, 1.30.6+</p>" \
            "<p>Vulnerable: 1.0.0-1.31.6</p></body></html>"
