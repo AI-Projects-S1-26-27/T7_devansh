@@ -219,13 +219,17 @@ def product_releases(product: str, pc: dict, raw: Raw) -> tuple[list[fx.Release]
 
 
 def ghsa_union(raw: Raw, s: str, src: dict) -> tuple[list[str], str | None]:
-    """The two GitHub advisory pages; refusal text if together they may miss advisories."""
-    names = [f"{s}/{src['id']}_{d}.json" for d in ("asc", "desc")]
-    if not all(raw.has(n) for n in names):
-        return [], "advisory pages missing"
+    """The two GitHub advisory pages, plus a note if together they may miss advisories.
+
+    Every advisory on the pages is a valid vendor statement, so the pages are always read; the note only
+    says that a CVE without a document may have an advisory that was not fetched.
+    """
+    names = [f"{s}/{src['id']}_{d}.json" for d in ("asc", "desc") if raw.has(f"{s}/{src['id']}_{d}.json")]
+    if len(names) < 2:
+        return names, "advisory pages missing"
     ids = [{a["ghsa_id"] for a in json.loads(raw.text(n))} for n in names]
     if all(len(i) == 100 for i in ids) and not (ids[0] & ids[1]):
-        return [], "more than 200 advisories: the two pages do not overlap"
+        return names, "incomplete: more than 200 advisories (the oldest and newest 100 do not overlap); the middle ones were not fetched"
     return names, None
 
 

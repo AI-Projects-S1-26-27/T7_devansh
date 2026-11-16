@@ -483,6 +483,15 @@ def test_fetch_never_shadows_its_base_snapshots():
     assert "base" not in assigned
 
 
+def test_ghsa_pages_are_read_even_when_incomplete(tmp_path):
+    bf = load_script("build_fixtures")
+    asc = [{"ghsa_id": f"A{i}", "cve_id": None, "vulnerabilities": []} for i in range(100)]
+    desc = [{"ghsa_id": f"D{i}", "cve_id": None, "vulnerabilities": []} for i in range(100)]
+    write_raw(tmp_path / "fixtures" / "2026-11-16", {"p/adv_asc.json": json.dumps(asc), "p/adv_desc.json": json.dumps(desc)})
+    names, note = bf.ghsa_union(bf.Raw([tmp_path / "fixtures" / "2026-11-16"]), "p", {"id": "adv"})
+    assert names == ["p/adv_asc.json", "p/adv_desc.json"] and note.startswith("incomplete")
+
+
 def test_candidate_units_include_eligible_units_outside_candidate_stages():
     rows = [{"cve_id": "CVE-2026-81642", "units": [unit("nlnetlabs:unbound", stage="role_not_server", family="dns")]}]
     assert fx.candidate_units(rows) == {}
