@@ -37,7 +37,7 @@ def dumps(doc: dict) -> str:
 
 @dataclass
 class Context:
-    """Pinned inputs, loaded once; inventories are cached per (cohort, p, exclusions)."""
+    """Pinned inputs, loaded once; inventories are cached per (cohort, p, excluded products, excluded CVEs)."""
 
     cfg: dict
     units: list[pool.Unit]
@@ -61,14 +61,20 @@ class Context:
                   "principals": pool.sha256_file(ppath)}
         return cls(cfg, units, funnel, master, cat, table, hashes)
 
-    def run_units(self, cohort: str, excluded: frozenset[str]) -> list[pool.Unit]:
-        return pool.restrict(self.units, self.master, cohort, excluded)
+    def run_units(self, cohort: str, excluded: frozenset[str],
+                  excluded_cves: frozenset[str] = frozenset()) -> list[pool.Unit]:
+        return pool.restrict(self.units, self.master, cohort, excluded, excluded_cves)
 
-    def inventory(self, cohort: str, p: float, excluded: frozenset[str]) -> inventory.Inventory:
-        key = (cohort, p, excluded)
+    def inventory(self, cohort: str, p: float, excluded: frozenset[str],
+                  excluded_cves: frozenset[str] = frozenset()) -> inventory.Inventory:
+        key = (cohort, p, excluded, excluded_cves)
         if key not in self._inv:
-            self._inv[key] = inventory.build_inventory(self.cfg, self.catalogue, self.run_units(cohort, excluded),
+            # Fixture statuses come from the run's own units, so with excluded CVEs a fixture vulnerable only
+            # to excluded CVEs counts as unaffected in this run, exactly as with excluded products.
+            self._inv[key] = inventory.build_inventory(self.cfg, self.catalogue,
+                                                       self.run_units(cohort, excluded, excluded_cves),
                                                        self.master, cohort, p, excluded)
+            self._inv[key].report["excluded_cves"] = len(excluded_cves)
         return self._inv[key]
 
 
@@ -80,20 +86,24 @@ def check_params(os_mix: dict[str, float], p: float, cfg: dict) -> None:
 
 
 def generate(ctx: Context, archetype: str, seed: str, n: int, cohort: str = "core",
-             os_mix: dict[str, float] | None = None, p: float = 1.0, excluded: frozenset[str] = frozenset()) -> dict:
+             os_mix: dict[str, float] | None = None, p: float = 1.0, excluded: frozenset[str] = frozenset(),
+             excluded_cves: frozenset[str] = frozenset()) -> dict:
+    """One task. `excluded` holds products (every CVE touching one is dropped; held-out-product split);
+    `excluded_cves` holds canonical CVE IDs that never become an action (unseen-CVE split, Round 10)."""
     cfg = ctx.cfg
     os_mix = dict(os_mix or cfg["os_mix_default"])
     check_params(os_mix, p, cfg)
-    excluded = frozenset(excluded)
+    excluded, excluded_cves = frozenset(excluded), frozenset(excluded_cves)
     lay = topology.layout(archetype, n, cfg["topology"])
     rng = random.Random(f"{archetype}:{seed}")
-    inv = ctx.inventory(cohort, p, excluded)
+    inv = ctx.inventory(cohort, p, excluded, excluded_cves)
+    units = ctx.run_units(cohort, excluded, excluded_cves)
     roles = [(h, s.zone) for s in lay.subnets if s.zone != "internet" for h in s.hosts]
     configs = hosts_mod.configure(rng, inv, roles, cfg["roles"], os_mix, tuple(cfg["families_per_host"]),
                                   cfg["reuse_alpha"])
     families_of = {0: []} | {h: c.families for h, c in configs.items()}
     firewall = topology.draw_firewall(lay, families_of, rng, cfg["topology"]["firewall_allow_probability"])
-    matches = build.match_records(configs, ctx.run_units(cohort, excluded), ctx.master, ctx.catalogue["windows"],
+    matches = build.match_records(configs, units, ctx.master, ctx.catalogue["windows"],
                                   tuple(cfg["rollup_lines"]), ctx.match_cache)
     sensitive = sorted(h for s in lay.subnets if s.zone == "sensitive" for h in s.hosts)
     goal_host = sensitive[0] if len(sensitive) == 1 else random.Random(f"goal:{archetype}:{seed}").choice(sensitive)
@@ -108,7 +118,9 @@ def generate(ctx: Context, archetype: str, seed: str, n: int, cohort: str = "cor
     return {
         "schema": cfg["schema"],
         "params": {"archetype": archetype, "seed": seed, "n": n, "cohort": cohort, "os_mix": os_mix, "p": p,
-                   "excluded": sorted(excluded)},
+                   "excluded": sorted(excluded),
+                   # CVE IDs stay in the metadata block; the planner-visible part carries only their hash
+                   "excluded_cves": {"count": len(excluded_cves), "sha256": pool.cve_set_sha256(excluded_cves)}},
         "network": {
             "hosts": [{"id": 0, "zone": "internet", "subnet": 0, "families": []}]
                      + [{"id": h, "zone": zone[h], "subnet": lay.subnet_of()[h], "families": configs[h].families}
@@ -129,6 +141,7 @@ def generate(ctx: Context, archetype: str, seed: str, n: int, cohort: str = "cor
                   "reused_configs": sum(c.copied_from is not None for c in configs.values())},
         "metadata": {
             "inputs": ctx.input_hashes,
+            "excluded_cves": sorted(excluded_cves, key=pool.cve_key),
             "goal_host": goal_host,
             "principals": built.principals,
             "hosts": [{"id": h, "os": c.os, "copied_from": c.copied_from,

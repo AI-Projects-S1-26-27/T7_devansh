@@ -96,6 +96,36 @@ def test_cohort_and_exclusion_isolation():
     assert all(c.master[m["cve"]]["cohort"] == "temporal" for m in t["metadata"]["matches"])
 
 
+def test_excluded_cves_never_become_actions():
+    """§18 (17 Nov 2026): an excluded CVE (canonical ID) is dropped from the run's units for every product,
+    never matched, never in an action, alongside excluded products; the planner-visible part carries only
+    the set's hash, the IDs sit in the metadata block."""
+    c = ctx()
+    base = [doc("tree", f"t{s}", 12) for s in range(3)]
+    hit = sorted({m["cve"] for d in base for m in d["metadata"]["matches"]}, key=pool.cve_key)
+    assert len(hit) >= 2
+    ex_cves = frozenset(hit[::2])
+    multi = [cid for cid in {u.cve_id for u in c.units} if sum(u.cve_id == cid for u in c.units) > 1]
+    units = c.run_units("core", frozenset(), ex_cves | frozenset(multi[:3]))
+    assert not {u.cve_id for u in units} & (ex_cves | set(multi[:3]))  # every product unit of an excluded CVE
+    assert {u.cve_id for u in c.run_units("core", frozenset())} - {u.cve_id for u in units} == \
+        {u.cve_id for u in c.units if u.cohort == "core"} & (ex_cves | set(multi[:3]))
+    ex_prod = frozenset({"apache:http_server"})
+    for s in range(3):
+        d = gen.generate(c, "tree", f"t{s}", 12, excluded=ex_prod, excluded_cves=ex_cves)
+        assert not {m["cve"] for m in d["metadata"]["matches"]} & ex_cves
+        assert not {cv for a in d["metadata"]["actions"] for cv in a["cves"]} & ex_cves
+        assert not any(pool.touches(c.master[m["cve"]], set(ex_prod)) for m in d["metadata"]["matches"])
+        assert d["params"]["excluded_cves"] == {"count": len(ex_cves), "sha256": pool.cve_set_sha256(ex_cves)}
+        assert d["metadata"]["excluded_cves"] == sorted(ex_cves, key=pool.cve_key)
+        assert not any(cv in gen.dumps({k: d[k] for k in ("task", "network", "params")}) for cv in ex_cves)
+        assert gen.dumps(d) == gen.dumps(gen.generate(c, "tree", f"t{s}", 12, excluded=ex_prod, excluded_cves=ex_cves))
+    assert doc("tree", "t0", 12)["params"]["excluded_cves"]["count"] == 0
+    with pytest.raises(ValueError, match="canonical"):
+        c.run_units("core", frozenset(), frozenset({"CVE-1999-99999999"}))
+    assert pool.cve_set_sha256(["CVE-2020-10", "CVE-2020-9"]) == pool.cve_set_sha256({"CVE-2020-9", "CVE-2020-10"})
+
+
 def test_mysql_mysql_is_never_offered():
     from ahg.gen import inventory
     inv = ctx().inventory("core", 1.0, frozenset())
@@ -499,7 +529,7 @@ def test_leakage_audit_passes_on_task_features():
 
 def test_no_trust_login_credential_coupling_or_pr_gating_on_the_d28_path():
     params = set(inspect.signature(gen.generate).parameters)
-    assert params == {"ctx", "archetype", "seed", "n", "cohort", "os_mix", "p", "excluded"}
+    assert params == {"ctx", "archetype", "seed", "n", "cohort", "os_mix", "p", "excluded", "excluded_cves"}
     imported = set()
     for f in sorted((ROOT / "src" / "ahg" / "gen").glob("*.py")):
         for nd in ast.walk(ast.parse(f.read_text())):

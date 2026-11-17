@@ -128,8 +128,26 @@ def touches(master_row: dict, products: set[str]) -> bool:
     return any(p.split(":", 1)[1] in products for p in master_row["affected_products"])
 
 
-def restrict(units: list[Unit], master: dict[str, dict], cohort: str, excluded: frozenset[str]) -> list[Unit]:
-    """The units a generator run may use: its cohort only, and no CVE touching an excluded product."""
+def check_cve_ids(cves: frozenset[str], master: dict[str, dict]) -> None:
+    """Excluded CVEs must be canonical master IDs (CV9: one master row per canonical CVE ID), so a typo or an
+    alias cannot silently exclude nothing."""
+    bad = sorted(c for c in cves if c not in master)
+    if bad:
+        raise ValueError(f"excluded CVEs not in the master dataset (canonical IDs only): {bad[:5]}")
+
+
+def restrict(units: list[Unit], master: dict[str, dict], cohort: str, excluded: frozenset[str],
+             excluded_cves: frozenset[str] = frozenset()) -> list[Unit]:
+    """The units a generator run may use: its cohort only, no CVE touching an excluded product, and no
+    excluded CVE (the unseen-CVE split, Round 10; §18 17 Nov 2026). Units are keyed by canonical CVE ID, so
+    excluding a CVE removes every product unit of it."""
     if cohort not in ("core", "temporal"):
         raise ValueError(f"cohort must be 'core' or 'temporal', not {cohort!r}")
-    return [u for u in units if u.cohort == cohort and not (excluded and touches(master[u.cve_id], set(excluded)))]
+    check_cve_ids(excluded_cves, master)
+    return [u for u in units if u.cohort == cohort and u.cve_id not in excluded_cves
+            and not (excluded and touches(master[u.cve_id], set(excluded)))]
+
+
+def cve_set_sha256(cves) -> str:
+    """SHA-256 of a CVE set: its IDs in numeric order, one per line, each line ending in a newline."""
+    return hashlib.sha256("".join(f"{c}\n" for c in sorted(cves, key=cve_key)).encode()).hexdigest()
