@@ -122,3 +122,16 @@ def test_rollup_cumulative_citation_is_verbatim_in_its_hashed_page():
     raw = raw_path.read_bytes()
     assert hashlib.sha256(raw).hexdigest() == cite["sha256"]
     assert cite["quote"] in page_text(raw)
+
+
+def test_citation_sources_configs_are_well_formed_and_the_fetch_script_takes_a_source():
+    """Other cited sources (e.g. NASim's firewall rule, OQ-P6-18) use the same paced fetch into data/raw/<source>/."""
+    paths = sorted((ROOT / "configs" / "gen").glob("citation_sources_*.json"))
+    assert paths
+    for path in paths:
+        cfg = json.loads(path.read_text())
+        names = [p["name"] for p in cfg["pages"]]
+        assert len(names) == len(set(names)) and cfg["pace_seconds"] >= 2, path
+        assert all(re.fullmatch(r"https://[^\s]+", p["url"]) and "/" not in p["name"] for p in cfg["pages"])
+    script = (ROOT / "scripts" / "fetch_principals.py").read_text()
+    assert '"--source"' in script and '"data" / "raw" / a.source / a.date' in script
