@@ -13,11 +13,14 @@ CFG = {"regimes": ["ac", "uniform"], "state_budget": 1000, "walk_cap": 20, "walk
        "successor_cap": 50, "oracle_all_max_n": 60, "oracle_states": 20, "oracle_max_pops": 10000, "enum_cap": 1000}
 
 
-def test_config_file_is_valid_and_budget_unfrozen():
+def test_config_file_is_valid_and_budget_frozen_by_the_rule():
+    # Frozen 17 Nov 2026 (decisions.md §20): the OQ-P7-8 rule's value from the budget pilot (checked against the
+    # run in test_prereg.py). A null budget still refuses without an explicit value.
     cfg = dl.load_config()
-    assert cfg["state_budget"] is None and cfg["regimes"] == ["ac", "uniform"]
+    assert cfg["state_budget"] == 100 and cfg["regimes"] == ["ac", "uniform"]
+    assert dl.with_budget(cfg, None)["state_budget"] == 100
     with pytest.raises(ValueError, match="not frozen"):
-        dl.with_budget(cfg, None)
+        dl.with_budget({**cfg, "state_budget": None}, None)
     assert dl.with_budget(cfg, 500)["state_budget"] == 500
 
 

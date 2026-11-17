@@ -86,3 +86,21 @@ def test_the_prereg_is_derived_from_the_runs():
     cur = json.loads(co.REGISTRY.read_text())
     assert [c["per_size"] for c in reg["cohorts"]] == [c["per_size"] for c in cur["cohorts"]]
     assert [c["max_candidates_per_size"] for c in reg["cohorts"]] == [c["max_candidates_per_size"] for c in cur["cohorts"]]
+
+
+def test_the_frozen_state_budget_is_the_budget_pilots_rule_value():
+    """§20: the value is filled mechanically: the run's proposal (smallest candidate meeting the target in both
+    regimes) must be the config's state_budget, and the run must have used the prereg's candidates and target."""
+    raw_cfg = json.loads((ROOT / "configs" / "labels" / "d28.json").read_text())
+    run = ROOT / raw_cfg["_state_budget_source"]
+    if not (run / "raw.json.gz").exists():
+        pytest.skip("budget pilot run not in this checkout")
+    from ahg import runlog
+    prov = json.loads((run / "provenance.json").read_text())
+    s = runlog.load_raw(run)["summary"]
+    sb = PREREG["state_budget"]
+    assert not prov["git_dirty"] and (s["candidates"], s["target"], s["cap"]) == (sb["candidates"], sb["target"], sb["cap"])
+    assert set(s["by_regime"]) == {"ac", "uniform"}
+    assert s["proposed_state_budget"] == LABELS["state_budget"]
+    passing = [b for b in s["candidates"] if all(v["coverage"][str(b)] >= s["target"] for v in s["by_regime"].values())]
+    assert LABELS["state_budget"] == min(passing)

@@ -1,7 +1,11 @@
 {
- "_note": "D28 exact labels (Round 9). state_budget is null until the training-only budget pilot proposes it and Devansh freezes it (before any validation or test label); the same budget applies to s0 (OQ-P7-7). oracle_all_max_n >= every cohort size: every label is oracle-checked, none sampled (Round 9). The other values are the D19 ones.",
- "regimes": ["ac", "uniform"],
- "state_budget": null,
+ "_note": "D28 exact labels (Round 9). state_budget frozen 17 Nov 2026 by the OQ-P7-8 rule recorded in configs/d28_prereg.json (decisions.md §20): the smallest candidate under which >= 99% of the budget pilot's sampled training states certify in both regimes, filled mechanically from the run in _state_budget_source; it also applies to s0 (OQ-P7-7) and to validation and test. oracle_all_max_n >= every cohort size: every label is oracle-checked, none sampled (Round 9). The other values are the D19 ones.",
+ "_state_budget_source": "results/d28_pipe/budget/2026-11-17T130839Z-c3a7657",
+ "regimes": [
+  "ac",
+  "uniform"
+ ],
+ "state_budget": 100,
  "walk_cap": 100,
  "walks_per_sample": 10,
  "successor_cap": 200,
