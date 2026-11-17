@@ -151,3 +151,31 @@ def restrict(units: list[Unit], master: dict[str, dict], cohort: str, excluded: 
 def cve_set_sha256(cves) -> str:
     """SHA-256 of a CVE set: its IDs in numeric order, one per line, each line ending in a newline."""
     return hashlib.sha256("".join(f"{c}\n" for c in sorted(cves, key=cve_key)).encode()).hexdigest()
+
+
+def cve_holdout(units: list[Unit], share: float, seed: str) -> tuple[list[str], dict]:
+    """The unseen-CVE holdout (Round 10; decisions.md §18 item 6, 17 Nov 2026): every CVE with an AC:H pool
+    unit, plus AC:L-only CVEs drawn at random until the holdout is `share` of the pool's CVE IDs.
+
+    Grouped by canonical CVE ID: a CVE is one item whatever its number of product units, and a CVE with any
+    AC:H unit counts as AC:H. The target size is round_half_up(share * IDs) (halves up, as OQ-P6-1). The
+    AC:L draw is random.Random(seed).sample over the AC:L-only IDs in numeric order, so it depends on the
+    seed and the pool only. Raises if the AC:H CVEs alone exceed the target (the rule cannot hold).
+    Returns (held-out IDs in numeric order, counts)."""
+    import math
+    import random
+
+    acs: dict[str, set[str]] = {}
+    for u in units:
+        acs.setdefault(u.cve_id, set()).add(u.ac)
+    ids = sorted(acs, key=cve_key)
+    high = [c for c in ids if "H" in acs[c]]
+    low = [c for c in ids if acs[c] == {"L"}]
+    target = math.floor(share * len(ids) + 0.5)
+    if len(high) > target:
+        raise ValueError(f"{len(high)} AC:H CVEs exceed the {share:.0%} target of {target} of {len(ids)} CVE IDs")
+    drawn = random.Random(seed).sample(low, target - len(high))
+    held = sorted(set(high) | set(drawn), key=cve_key)
+    return held, {"pool_cve_ids": len(ids), "target": target, "ac_h_cves": len(high),
+                  "ac_h_cves_with_an_ac_l_unit": sum(acs[c] == {"H", "L"} for c in high),
+                  "ac_l_only_cves": len(low), "ac_l_drawn": len(drawn)}
