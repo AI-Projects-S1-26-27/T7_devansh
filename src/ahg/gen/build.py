@@ -150,6 +150,19 @@ def principal_of(table: dict, product: str, family: str, cve: str | None = None)
     return entry["principal"]
 
 
+def principal_classes(principals: list[str], admin_principals: set[str]) -> list[str]:
+    """Planner-visible class of each principal index (§18 P6e, OQ-P7c-1): `attacker` for p0, `admin` if the
+    cited identity is an admin principal (the same set that grants admin(h) in build_task), `UNKNOWN` if no
+    identity is cited, else `service`. Account names never leave the metadata block."""
+    def cls(i: int, p: str) -> str:
+        if i == 0:
+            return "attacker"
+        if p == UNKNOWN:
+            return "UNKNOWN"
+        return "admin" if p in admin_principals else "service"
+    return [cls(i, p) for i, p in enumerate(principals)]
+
+
 def build_task(lay: Layout, hosts: dict[int, HostConfig], firewall: dict, matches: list[dict], table: dict,
                admin_principals: set[str], goal_host: int) -> Built:
     """Facts, merged actions and the goal fact for one configured network."""

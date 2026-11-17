@@ -85,6 +85,15 @@ def check_params(os_mix: dict[str, float], p: float, cfg: dict) -> None:
         raise ValueError(f"p must be one of {cfg['p_values']}, not {p}")
 
 
+def os_view(host: hosts_mod.HostConfig) -> dict:
+    """Planner-visible OS of a host (§18 P6e): its family and, on Windows, the Server version drawn for it
+    (e.g. "Windows Server 2019"; never the build, rollup or KBs, which are fixture data). Linux hosts draw no
+    OS version, only a kernel fixture whose version is CPE data, so their version is null (OQ-P6-28)."""
+    if host.os == "windows":
+        return {"family": "windows", "version": next(c.product for c in host.components if c.family == "os")}
+    return {"family": host.os, "version": None}
+
+
 def generate(ctx: Context, archetype: str, seed: str, n: int, cohort: str = "core",
              os_mix: dict[str, float] | None = None, p: float = 1.0, excluded: frozenset[str] = frozenset(),
              excluded_cves: frozenset[str] = frozenset()) -> dict:
@@ -122,9 +131,13 @@ def generate(ctx: Context, archetype: str, seed: str, n: int, cohort: str = "cor
                    # CVE IDs stay in the metadata block; the planner-visible part carries only their hash
                    "excluded_cves": {"count": len(excluded_cves), "sha256": pool.cve_set_sha256(excluded_cves)}},
         "network": {
-            "hosts": [{"id": 0, "zone": "internet", "subnet": 0, "families": []}]
-                     + [{"id": h, "zone": zone[h], "subnet": lay.subnet_of()[h], "families": configs[h].families}
+            # §18 P6e (OQ-P7c-1): the host OS (family and version) and the principal classes are the only
+            # metadata facts the planner-visible part carries; the internet host has no OS
+            "hosts": [{"id": 0, "zone": "internet", "subnet": 0, "families": [], "os": None}]
+                     + [{"id": h, "zone": zone[h], "subnet": lay.subnet_of()[h], "families": configs[h].families,
+                         "os": os_view(configs[h])}
                         for h in sorted(configs)],
+            "principal_classes": build.principal_classes(built.principals, set(cfg["admin_principals"])),
             "subnets": [{"name": s.name, "zone": s.zone, "hosts": s.hosts} for s in lay.subnets],
             "links": [list(l) for l in lay.links],
             "firewall": [{"from": a, "to": b, "allow": fams} for (a, b), fams in sorted(firewall.items())]},

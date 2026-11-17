@@ -490,7 +490,45 @@ def test_reference_solver_agrees_with_the_planner_on_small_tasks(regime):
 # ---------------------------------------------------------------- leakage and removed knobs
 
 def _planner_text(d):
-    return json.dumps({"task": d["task"], "network": d["network"]})
+    """The planner-visible blocks, minus network.hosts[].os: §18 P6e exposes the OS family and Windows Server
+    version there by decision; test_planner_visible_os_and_principal_classes_follow_p6e checks that field
+    exactly. Everything else stays under the scan."""
+    net = {**d["network"], "hosts": [{k: v for k, v in h.items() if k != "os"} for h in d["network"]["hosts"]]}
+    return json.dumps({"task": d["task"], "network": net})
+
+
+def test_planner_visible_os_and_principal_classes_follow_p6e():
+    """§18 P6e (OQ-P7c-1): hosts[].os is {family, version} (null on the internet host; version = the drawn
+    Windows Server version, null on Linux, OQ-P6-28); principal_classes[k] is attacker / admin / UNKNOWN /
+    service by the cited table; no account name; nothing else from metadata enters the network block."""
+    c = ctx()
+    admin = set(c.cfg["admin_principals"])
+    for d in sample():
+        net, meta = d["network"], d["metadata"]
+        assert set(net) == {"hosts", "subnets", "links", "firewall", "principal_classes"}
+        assert all(set(h) == {"id", "zone", "subnet", "families", "os"} for h in net["hosts"])
+        assert net["hosts"][0]["os"] is None and net["hosts"][0]["zone"] == "internet"
+        mh = {h["id"]: h for h in meta["hosts"]}
+        for h in net["hosts"][1:]:
+            m = mh[h["id"]]
+            assert h["os"]["family"] == m["os"] and set(h["os"]) == {"family", "version"}
+            osc = next(x for x in m["components"] if x["family"] == "os")
+            if m["os"] == "windows":
+                assert h["os"]["version"] == osc["product"] and h["os"]["version"] in c.cfg["windows_versions"]
+                assert osc["version"] not in json.dumps(h["os"])  # the build/rollup stays in metadata
+            else:
+                assert h["os"]["version"] is None
+        ps, cls = meta["principals"], net["principal_classes"]
+        assert len(cls) == len(ps) and cls[0] == "attacker"
+        for p, k in zip(ps[1:], cls[1:]):
+            assert k == ("UNKNOWN" if p == build.UNKNOWN else "admin" if p in admin else "service")
+        names = set(ps) - {build.UNKNOWN, ps[0]}
+        assert not names & set(cls)  # classes only, never an account name
+
+
+def test_principal_classes_on_a_synthetic_list():
+    assert build.principal_classes(["attacker", "UNKNOWN", "exim", "root", "SYSTEM"], {"root", "SYSTEM"}) == [
+        "attacker", "UNKNOWN", "service", "admin", "admin"]
 
 
 def test_planner_visible_blocks_carry_no_cve_product_version_or_cpe():
