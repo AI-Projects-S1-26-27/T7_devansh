@@ -103,7 +103,8 @@ def doc_stats(doc: dict) -> dict[str, float]:
 
 
 def classify(rows: list[dict]) -> dict:
-    """rows: {"archetype", "n", **FEATURES}. Per size: fold balanced accuracies, their mean, PASS/FAIL."""
+    """rows: {"archetype", "n", **FEATURES}. Per size: fold balanced accuracies, their mean, the out-of-fold
+    confusion matrix, PASS/FAIL."""
     import numpy as np
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.metrics import balanced_accuracy_score
@@ -127,7 +128,10 @@ def classify(rows: list[dict]) -> dict:
             oof[test] = pred
             folds.append(float(balanced_accuracy_score(y[test], pred)))
         mean = sum(folds) / len(folds)
+        # Out-of-fold confusion matrix (P8b): each network counted once, by the fold that held it out.
+        matrix = [[int(((y == i) & (oof == j)).sum()) for j in range(len(labels))] for i in range(len(labels))]
         out[str(n)] = {"networks": {a: int((y == i).sum()) for i, a in enumerate(labels)}, "fold_balanced_accuracy": folds,
                        "mean_balanced_accuracy": mean, "pooled_oof_balanced_accuracy": float(balanced_accuracy_score(y, oof)),
+                       "confusion": {"labels": labels, "rows": "true", "columns": "predicted", "matrix": matrix},
                        "verdict": "PASS" if mean >= PASS_THRESHOLD else "FAIL"}
     return out

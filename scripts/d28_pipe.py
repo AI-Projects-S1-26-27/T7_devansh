@@ -108,9 +108,9 @@ def cmd_n4(a, reg, ctx) -> None:
     import gzip  # noqa: F401
     cfg = json.loads(co.REGISTRY.read_text())["n4"]
     per = cfg["smoke_per_family_size"] if a.smoke else cfg["per_family_size"]
-    why = [] if a.smoke else reg.problems(reg.training)
-    if why:
-        raise co.BlockedCohort("n4: " + "; ".join(why))
+    # P8 (DECIDED-BY-AGENT, OQ-P8-2): N4 generates no labels, so neither the registry freeze nor the hypotheses
+    # freeze (§13.1: before any label generation) gates it (Round 6: measured before training). It needs only
+    # training's exclusions; reg.excluded / reg.excluded_cves raise BlockedCohort while either set is unknown.
     from ahg.gen import generate as gen
     rows, unreachable = [], {}
     for n in cfg["sizes"]:
@@ -126,9 +126,17 @@ def cmd_n4(a, reg, ctx) -> None:
                 if rows[-1]["unreachable_frac"] > 0:
                     unreachable[f"{arch}|{n}"] = unreachable.get(f"{arch}|{n}", 0) + 1
     res = n4.classify(rows)
-    md = "# N4\n\n" + f"Networks with hosts unreachable from the internet (kept, OQ-P7-6): {unreachable}\n\n" + "\n".join(f"- n={n}: {v['verdict']} (mean balanced accuracy {v['mean_balanced_accuracy']})"
+    # Per family x size: each statistic's mean, median and IQR (inclusive quartiles, OQ-P7-9), descriptive.
+    summary = {}
+    for key in sorted({f"{r['archetype']}|{r['n']}" for r in rows}):
+        rs = [r for r in rows if f"{r['archetype']}|{r['n']}" == key]
+        summary[key] = {f: {"mean": sum(r[f] for r in rs) / len(rs), **pilots.quantiles([r[f] for r in rs])}
+                        for f in n4.FEATURES}
+    md = "# N4\n\n" + f"Networks with hosts unreachable from the internet (kept, OQ-P7-6): {unreachable}\n\n" + "\n".join(f"- n={n}: {v['verdict']} (mean balanced accuracy {v['mean_balanced_accuracy']}; confusion {v.get('confusion')})"
                                   for n, v in res.items()) + "\n"
-    print(runlog.write_run("n4", {"results": res, "rows": rows, "with_unreachable_hosts": unreachable}, md, [], {"per_family_size": per, "smoke": a.smoke}, root=RUNS))
+    print(runlog.write_run("n4", {"results": res, "rows": rows, "with_unreachable_hosts": unreachable,
+                                  "feature_summary": summary}, md, [cfg["smoke_namespace" if a.smoke else "namespace"]],
+                           {"per_family_size": per, "smoke": a.smoke}, root=RUNS))
 
 
 def cmd_landscape(a, reg, ctx) -> None:

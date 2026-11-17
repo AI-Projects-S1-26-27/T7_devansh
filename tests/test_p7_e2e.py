@@ -131,8 +131,10 @@ def test_report_regenerates_from_a_results_directory(env):
 def test_real_cohorts_refuse_to_build_while_the_registry_is_unfrozen(env):
     pipe = env["pipe"]
     before = co.TEST_ACCESS_LOG.read_bytes() if co.TEST_ACCESS_LOG.exists() else b""
+    # The label-generating pilots (budget, landscape) stay refused until the freeze (§13.1, OQ-P8-1). N4 generates no
+    # labels and runs unfrozen since P8 (OQ-P8-2; tests/test_p8_pilots.py checks it uses training's exclusions).
     for argv in (["build", "d28_val"], ["build", "d28_test_id"], ["label", "d28_test_id", "--state-budget", "9"],
-                 ["n4"], ["budget"]):
+                 ["budget"], ["landscape"]):
         with pytest.raises(co.BlockedCohort):
             pipe.main(argv)
     after = co.TEST_ACCESS_LOG.read_bytes() if co.TEST_ACCESS_LOG.exists() else b""

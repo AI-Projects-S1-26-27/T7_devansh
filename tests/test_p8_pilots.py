@@ -1,4 +1,6 @@
-"""P8 pilots on the merged tree: the training-size pilot config (P8a)."""
+"""P8 pilots on the merged tree: the training-size pilot config (P8a) and N4 before the freeze (P8b).
+
+The N4 test generates networks and needs the pinned generator inputs (skipped without them)."""
 
 import importlib.util
 import json
@@ -7,9 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from ahg import cohorts as co
+from ahg import cohorts as co, n4
 
 ROOT = Path(__file__).resolve().parents[1]
+GCFG = json.loads((ROOT / "configs" / "gen" / "p6.json").read_text())
+HAVE = all((ROOT / p).exists() for p in (GCFG["master"]["path"], GCFG["catalogue"]["path"]))
 CFG8 = json.loads((ROOT / "configs" / "gen" / "p8_pilot.json").read_text())
 REG = co.load_registry()
 
@@ -64,3 +68,47 @@ def test_training_and_validation_caps_and_report_on_synthetic_rows():
     text = pilot.report({"summary": s, "config": cfg, "holdout": {"count": 89, "sha256": "x"}})
     assert text.startswith("# P8a training-size pilot (seed namespace p8-pilot)")
     assert "validation candidate budget" in text and "| total | 462 |" in text and "fixed test cohort" not in text
+
+
+def test_n4_reports_the_out_of_fold_confusion_matrix():
+    rows = [{"archetype": a, "n": 12, **{f: (i if a == "tree" else -i) + 0.0 for f in n4.FEATURES}}
+            for a in ("chain", "tree") for i in range(1, 11)]
+    cm = n4.classify(rows)["12"]["confusion"]  # separable by sign: every network classified right
+    assert cm == {"labels": ["chain", "tree"], "rows": "true", "columns": "predicted", "matrix": [[10, 0], [0, 10]]}
+    rows[0] = {**rows[0], **{f: 5.0 for f in n4.FEATURES}}  # one chain network looks like a tree
+    res = n4.classify(rows)["12"]
+    m = res["confusion"]["matrix"]
+    assert [sum(r) for r in m] == [10, 10]  # every network once, by the fold that held it out
+    assert m != [[10, 0], [0, 10]]
+    assert res["pooled_oof_balanced_accuracy"] == pytest.approx((m[0][0] / 10 + m[1][1] / 10) / 2)
+
+
+@pytest.mark.skipif(not HAVE, reason="pinned generator inputs not in this checkout")
+def test_n4_runs_before_the_freeze_on_training_seeds_with_trainings_exclusions(tmp_path, monkeypatch):
+    """P8 (DECIDED-BY-AGENT, OQ-P8-2): N4 generates no labels, so neither the registry freeze nor the hypotheses
+    freeze (§13.1: before any label generation) gates it; it runs on the training-style N4 seeds with training's
+    exclusions (exim and, since M4, the CVE holdout)."""
+    from ahg.gen import generate as gen
+    pipe = load("d28_pipe")
+    pipe.RUNS = tmp_path / "runs"
+    reg_cfg = json.loads(co.REGISTRY.read_text())
+    reg_cfg["n4"] = {**reg_cfg["n4"], "sizes": [12], "per_family_size": 5}
+    small = tmp_path / "d28_cohorts.json"
+    small.write_text(json.dumps(reg_cfg))
+    monkeypatch.setattr(co, "REGISTRY", small)
+    assert not REG.frozen and REG.problems(REG.training)  # unfrozen: nothing else may build
+    seen = []
+
+    def spy(*a, _real=gen.generate, **k):
+        seen.append((a[2], k["excluded"], k["excluded_cves"]))
+        return _real(*a, **k)
+
+    monkeypatch.setattr(gen, "generate", spy)
+    pipe.cmd_n4(type("A", (), {"smoke": False})(), REG, gen.Context.load())
+    assert len(seen) == 10 and all(s.startswith("d28.train.n4/n12/") for s, _, _ in seen)
+    assert all(e == {"exim:exim"} and c == frozenset(REG.heldout_cves) for _, e, c in seen)
+    from ahg import runlog
+    raw = runlog.load_raw(next((pipe.RUNS / "n4").iterdir()))
+    assert raw["results"]["12"]["verdict"] in ("PASS", "FAIL") and raw["results"]["12"]["confusion"]["labels"] == ["chain", "tree"]
+    assert set(raw["feature_summary"]) == {"chain|12", "tree|12"}
+    assert set(raw["feature_summary"]["tree|12"]) == set(n4.FEATURES)
