@@ -13,9 +13,16 @@ REG = co.load_registry()
 TESTS = [c for c in REG.cohorts.values() if c.is_test and not c.smoke]
 
 
-def test_registry_loads_and_is_unfrozen_with_no_heldout_set():
-    assert not REG.frozen and REG.heldout_products is None
+def test_registry_loads_unfrozen_with_the_decided_sets_and_sizes():
+    # decided 17 Nov 2026 (decisions.md §19): exim held out; held-out CVEs not drawn yet; training 1,500 and
+    # validation 200 solvable per size; test sizes and the generation limit null until the P6 pilot rates.
+    assert not REG.frozen and REG.heldout_products == ("exim:exim",)
+    assert REG.heldout_cves is None and REG.heldout_cve_roles == ("training", "validation")
     assert REG.training.name == "d28_train" and REG.training.per_size * len(REG.training.sizes) == 3000
+    assert REG.training.per_size == 1500 and REG.training.max_candidates_per_size is None
+    v = REG["d28_val"]
+    assert (v.selection, v.per_size, v.sizes, v.max_candidates_per_size) == ("solvable_quota", 200, (12, 20), None)
+    assert all(c.per_size is None for c in TESTS)
 
 
 def test_every_required_cohort_exists_with_its_factor():
@@ -26,7 +33,8 @@ def test_every_required_cohort_exists_with_its_factor():
     assert c["d28_test_temporal"].gen_cohort == "temporal" and c["d28_train"].archetype == "tree"
     assert (c["d28_test_os25"].os_linux, c["d28_test_os75"].os_linux) == (0.25, 0.75)
     assert [c[f"d28_test_p{x}"].p for x in ("075", "050", "025")] == [0.75, 0.5, 0.25]
-    assert c["d28_test_product"].exclude == "none" and c["d28_test_ac"].analysis == "proposed"
+    assert c["d28_test_product"].exclude == "none" and "d28_test_ac" not in c  # no AC-shift cohort (OQ-P7-3)
+    assert c["d28_test_cve"].analysis == "primary" and c["d28_test_cve"].blocked_by
 
 
 def test_one_factor_at_a_time_against_in_distribution():
@@ -34,7 +42,7 @@ def test_one_factor_at_a_time_against_in_distribution():
     expect = {"d28_test_size30": {"sizes"}, "d28_test_size60": {"sizes"}, "d28_test_structure": {"archetype"},
               "d28_test_temporal": {"gen_cohort"}, "d28_test_product": {"exclude"}, "d28_test_cve": set(),
               "d28_test_os25": {"os_linux"}, "d28_test_os75": {"os_linux"}, "d28_test_p075": {"p"},
-              "d28_test_p050": {"p"}, "d28_test_p025": {"p"}, "d28_test_ac": set()}
+              "d28_test_p050": {"p"}, "d28_test_p025": {"p"}}
     for name, factors in expect.items():
         diff = {k for k, v in REG[name].factors().items() if v != base[k]}
         assert diff == factors, name
@@ -44,7 +52,7 @@ def test_seed_namespaces_are_disjoint_and_never_integers():
     seen = set()
     for c in REG.cohorts.values():
         for n in c.sizes:
-            for k in sorted({0, 1, c.per_size - 1}):
+            for k in sorted({0, 1, (c.per_size or 2) - 1}):
                 s = c.seed(n, k)
                 assert s not in seen and not s.isdigit()
                 seen.add(s)
@@ -63,7 +71,16 @@ def test_validation_rejects_shared_namespaces_and_bad_quotas():
         co.validate([replace(REG.training, sizes=(12, 30), per_size=1500)] + [c for c in cs if c.name != "d28_train"], 3000,
                     [1.0, .75, .5, .25])
     with pytest.raises(ValueError, match="no solvability filtering"):
-        co.validate([replace(REG["d28_val"], selection="solvable_quota")] + [c for c in cs if c.name != "d28_val"], 3000,
+        co.validate([replace(REG["d28_test_id"], selection="solvable_quota")] + [c for c in cs if c.name != "d28_test_id"],
+                    3000, [1.0, .75, .5, .25])
+    with pytest.raises(ValueError, match="validation selects solvable"):
+        co.validate([replace(REG["d28_val"], selection="fixed")] + [c for c in cs if c.name != "d28_val"], 3000,
+                    [1.0, .75, .5, .25])
+    with pytest.raises(ValueError, match="positive per_size"):  # only a test cohort's size may be null
+        co.validate([replace(REG["d28_val"], per_size=None)] + [c for c in cs if c.name != "d28_val"], 3000,
+                    [1.0, .75, .5, .25])
+    with pytest.raises(ValueError, match="generation limit"):
+        co.validate([replace(REG.training, max_candidates_per_size=10)] + [c for c in cs if c.name != "d28_train"], 3000,
                     [1.0, .75, .5, .25])
 
 
@@ -71,11 +88,18 @@ def test_nothing_builds_while_unfrozen(tmp_path):
     for c in REG.cohorts.values():
         if not c.smoke:
             assert REG.problems(c, tmp_path / "d28_prereg.json")
-    assert any("held-out" in w for w in REG.problems(REG["d28_val"]))
-    assert any("OQ-P6-8" in w for w in REG.problems(REG["d28_test_product"]))
-    with pytest.raises(co.BlockedCohort):
-        REG.excluded(REG["d28_val"])
+    assert any("held-out CVEs" in w for w in REG.problems(REG["d28_val"]))
+    assert any("held-out CVEs" in w for w in REG.problems(REG.training))
+    assert any("generation limit" in w for w in REG.problems(REG.training))
+    assert any("OQ-P7-1" in w for w in REG.problems(REG["d28_test_id"]))
+    assert not any("held-out CVEs" in w for w in REG.problems(REG["d28_test_id"]))
+    assert any("excluded-CVEs" in w for w in REG.problems(REG["d28_test_cve"]))
+    assert REG.excluded(REG["d28_val"]) == frozenset({"exim:exim"})
     assert REG.excluded(REG["d28_test_product"]) == frozenset()
+    unchosen = replace(REG, heldout_products=None)
+    with pytest.raises(co.BlockedCohort):
+        unchosen.excluded(REG["d28_val"])
+    assert any("OQ-P6-8" in w for w in unchosen.problems(REG["d28_val"]))
     assert not REG.problems(REG["p7_smoke_train"])
 
 

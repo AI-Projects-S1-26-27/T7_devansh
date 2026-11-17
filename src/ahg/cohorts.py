@@ -9,10 +9,11 @@ generator seeds "archetype:seed"). They are new strings, so they cannot collide 
 old study (Round 10).
 
 Selection.
-- training ("solvable_quota", Round 9): candidates k = 0, 1, ... per size, until the size's quota of solvable
-  networks is reached or the generation limit is hit; every candidate is logged with its seed, archetype,
-  size, OS mix, p, solvability and reason. A shortfall is reported, never reallocated to another size.
-- every evaluation cohort ("fixed", Round 9): exactly per_size networks k = 0 .. per_size-1 per size, with
+- training and validation ("solvable_quota", Round 9; validation decided 17 Nov 2026, OQ-P7-1): candidates
+  k = 0, 1, ... per size, until the size's quota of solvable networks is reached or the generation limit is
+  hit; every candidate is logged with its seed, archetype, size, OS mix, p, solvability and reason. A
+  shortfall is reported, never reallocated to another size.
+- every test cohort ("fixed", Round 9): exactly per_size networks k = 0 .. per_size-1 per size, with
   no solvability filtering; unsolvable ones stay in and are counted with their reason (Round 7). A cell the
   inventory cannot realise (generator InfeasibleCell) stays in as a failed member, also counted.
 
@@ -77,7 +78,7 @@ class Cohort:
     p: float
     exclude: str
     selection: str
-    per_size: int
+    per_size: int | None  # null: not set yet (test cohorts until the P6 pilot rates, decided 17 Nov 2026)
     max_candidates_per_size: int | None
     requires: tuple[str, ...]
     blocked_by: tuple[str, ...]
@@ -109,6 +110,8 @@ class Registry:
     heldout_products: tuple[str, ...] | None
     training_total_solvable: int
     sha256: str
+    heldout_cves: tuple[str, ...] | None = None
+    heldout_cve_roles: tuple[str, ...] = ()
 
     def __getitem__(self, name: str) -> Cohort:
         return self.cohorts[name]
@@ -132,6 +135,15 @@ class Registry:
             return out
         if not self.frozen:
             out.append("the cohort registry is not frozen (configs/d28_cohorts.json 'frozen')")
+        if c.per_size is None:
+            out.append("the cohort size is not set (OQ-P7-1: after the P6 pilot solvability rates)")
+        if c.selection == "solvable_quota" and c.max_candidates_per_size is None:
+            out.append("the generation limit is not set (OQ-P7-2: after the P6 pilot solvability rates)")
+        if c.role in self.heldout_cve_roles:
+            # OQ-P7-4 (decided 17 Nov 2026): training and validation exclude the held-out CVEs, which reach the
+            # generator through its "excluded CVEs" parameter; that parameter is being added on d28-gen.
+            out.append("the held-out CVEs cannot be excluded yet: the generator's excluded-CVEs parameter "
+                       "(d28-gen) is not on this branch")
         if c.exclude == "heldout_products" and self.heldout_products is None:
             out.append("the held-out product set is not chosen (OQ-P6-8)")
         if not prereg_frozen(prereg):
@@ -172,18 +184,23 @@ def validate(cohorts: list[Cohort], total: int, p_values: list[float]) -> None:
             raise ValueError(f"{c.name}: unknown requirement {sorted(set(c.requires) - set(REQUIREMENTS))}")
         if c.p not in p_values or not 0 <= c.os_linux <= 1:
             raise ValueError(f"{c.name}: p {c.p} or OS mix {c.os_linux} outside the generator's values")
-        if not c.sizes or len(set(c.sizes)) != len(c.sizes) or not isinstance(c.per_size, int) or c.per_size < 1:
-            raise ValueError(f"{c.name}: sizes and a positive per_size are required")
-        if c.role == "training":
-            # Round 9: solvable training networks, n <= 20, equal quotas across size strata.
+        if not c.sizes or len(set(c.sizes)) != len(c.sizes):
+            raise ValueError(f"{c.name}: sizes are required")
+        # A test cohort's size may be null until set (OQ-P7-1); problems() then refuses to build it.
+        if not (c.per_size is None and c.role == "test") and (not isinstance(c.per_size, int) or c.per_size < 1):
+            raise ValueError(f"{c.name}: a positive per_size is required")
+        if c.role in ("training", "validation"):
+            # Round 9 (training) and OQ-P7-1 (validation, decided 17 Nov 2026): a quota of solvable networks per
+            # size, n <= 20. The generation limit may be null until set (OQ-P7-2); problems() then refuses.
             if c.selection != "solvable_quota" or max(c.sizes) > TRAINING_MAX_N:
-                raise ValueError(f"{c.name}: training selects solvable networks with n <= {TRAINING_MAX_N}")
-            if not isinstance(c.max_candidates_per_size, int) or c.max_candidates_per_size < c.per_size:
-                raise ValueError(f"{c.name}: training needs a generation limit >= its quota")
-            if not c.smoke and c.per_size * len(c.sizes) != total:
+                raise ValueError(f"{c.name}: {c.role} selects solvable networks with n <= {TRAINING_MAX_N}")
+            lim = c.max_candidates_per_size
+            if lim is not None and (not isinstance(lim, int) or lim < c.per_size):
+                raise ValueError(f"{c.name}: {c.role} needs a generation limit >= its quota")
+            if c.role == "training" and not c.smoke and c.per_size * len(c.sizes) != total:
                 raise ValueError(f"{c.name}: {len(c.sizes)} equal quotas of {c.per_size} != {total} networks")
         elif c.selection != "fixed" or c.max_candidates_per_size is not None:
-            raise ValueError(f"{c.name}: evaluation cohorts are fixed-size, with no solvability filtering")
+            raise ValueError(f"{c.name}: test cohorts are fixed-size, with no solvability filtering")
     real = [c for c in cohorts if not c.smoke]
     for role in ("training", "validation"):
         if sum(c.role == role for c in real) != 1:
@@ -198,8 +215,12 @@ def load_registry(path: Path = REGISTRY, gen_config: Path | None = None) -> Regi
     cohorts = [_cohort(d, False) for d in cfg["cohorts"]] + [_cohort(d, True) for d in cfg.get("smoke", [])]
     validate(cohorts, cfg["training_total_solvable"], p_values)
     held = cfg["heldout_products"]
+    cves = cfg["heldout_cves"]
+    if set(cves["excluded_from_roles"]) - set(ROLES):
+        raise ValueError(f"heldout_cves: unknown roles {cves['excluded_from_roles']}")
     return Registry({c.name: c for c in cohorts}, bool(cfg["frozen"]), None if held is None else tuple(held),
-                    cfg["training_total_solvable"], hashlib.sha256(raw).hexdigest())
+                    cfg["training_total_solvable"], hashlib.sha256(raw).hexdigest(),
+                    None if cves["ids"] is None else tuple(cves["ids"]), tuple(cves["excluded_from_roles"]))
 
 
 def prereg_frozen(path: Path = PREREG) -> bool:

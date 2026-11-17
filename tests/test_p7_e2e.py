@@ -41,7 +41,8 @@ def test_smoke_cohorts_build_deterministically_and_keep_unsolvable_tasks(env):
     again = co.build(ctx, reg, "p7_smoke_train", store=store)
     assert again["dataset_sha256"] == train["dataset_sha256"] and again["candidates"] == train["candidates"]
     val = co.build(ctx, reg, "p7_smoke_val", store=store)
-    assert len(val["members"]) == 4 and val["shortfall"] == {}  # fixed size, no solvability filter
+    # validation: a solvable quota per size, like training (decided 17 Nov 2026, OQ-P7-1)
+    assert all(m["solvable"] for m in val["members"]) and len(val["members"]) == 2 - val["shortfall"][12]
     assert all(m["seed"].startswith("p7-smoke.val/n12/") for m in val["members"])
     assert {m["seed"] for m in val["members"]}.isdisjoint({m["seed"] for m in train["members"]})
     env["train"], env["val"] = train, val
