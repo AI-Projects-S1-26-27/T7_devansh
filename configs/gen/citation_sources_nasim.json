@@ -1,0 +1,14 @@
+{
+  "decision": "decisions.md §18 (17 Nov 2026, Devansh; OQ-P6-18): the firewall applies NASim's scenario-generator rule (at least one family running on the far subnet allowed per link and direction); cite the NASim scenario-generation documentation verbatim (URL, retrieval date, SHA-256). Fetched sequentially and paced into data/raw/nasim/<date>/.",
+  "pace_seconds": 4.0,
+  "pages": [
+    {"name": "nasim_generator_2191a3a.py", "url": "https://raw.githubusercontent.com/Jjschwartz/NetworkAttackSimulator/2191a3a7f15a178bd00a6321151f3492ce118046/nasim/scenarios/generator.py",
+     "note": "ScenarioGenerator source at the last commit touching it (GitHub API, 17 Nov 2026); _generate_firewall docstring and code"},
+    {"name": "nasim_docs_reference_generator.html", "url": "https://networkattacksimulator.readthedocs.io/en/latest/reference/scenarios/generator.html",
+     "note": "rendered API reference of ScenarioGenerator (restrictiveness parameter)"},
+    {"name": "nasim_docs_tutorial_scenarios.html", "url": "https://networkattacksimulator.readthedocs.io/en/latest/tutorials/scenarios.html",
+     "note": "scenario tutorial: firewall between subnets"},
+    {"name": "nasim_docs_tutorial_creating_scenarios.html", "url": "https://networkattacksimulator.readthedocs.io/en/latest/tutorials/creating_scenarios.html",
+     "note": "scenario file format: firewall rules per direction"}
+  ]
+}

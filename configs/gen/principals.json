@@ -1,0 +1,193 @@
+{
+ "decision": "P6 (decided 16 Nov 2026 by Devansh): the documented run-as identity of the vulnerable process, cited (URL, retrieval date, SHA-256), else UNKNOWN; never inferred. Keys are '<pool product>|<family>'. Quotes are verbatim from the raw page with whitespace collapsed (HTML pages: tags removed, entities decoded). Admin-level principals (root, SYSTEM) give admin on the target; none is cited here. P6b (16-17 Nov 2026): vendor documentation searched again for every UNKNOWN entry; an entry may carry CVE-specific statements under 'cves' (a vendor advisory naming the process a given CVE runs in), which take precedence for that CVE; root or SYSTEM only where the page says so.",
+ "entries": {
+  "Exchange|mail": {
+   "principal": "UNKNOWN",
+   "reason": "Microsoft's statements that Exchange application pools run as LocalSystem found by search cover Exchange 2007 only, not the 2013-SE builds in the catalogue; P6b: a further search found no current Microsoft page stating this service's logon account, and the MSRC FAQs of the pool CVEs state none"
+  },
+  "IIS|ftp": {
+   "principal": "UNKNOWN",
+   "reason": "no fetched Microsoft document states the FTP service's run-as identity; P6b: a further search found no current Microsoft page stating this service's logon account, and the MSRC FAQs of the pool CVEs state none"
+  },
+  "IIS|http": {
+   "evidence": {
+    "quotes": [
+     "For every application pool you create, the Identity property of the new application pool is set to ApplicationPoolIdentity by default."
+    ],
+    "raw": "data/raw/principals/2026-11-16/iis_application_pool_identities.html",
+    "retrieved_utc": "2026-11-16T17:58:21+00:00",
+    "sha256": "e9143cb743b3faf5b00403f53a72dfd31c4230aed202fa09c70ac861fbaff045",
+    "url": "https://learn.microsoft.com/en-us/iis/manage/configuring-security/application-pool-identities"
+   },
+   "principal": "ApplicationPoolIdentity",
+   "process": "IIS worker process (w3wp.exe)"
+  },
+  "OpenSSH for Windows|ssh": {
+   "principal": "UNKNOWN",
+   "reason": "the fetched OpenSSH for Windows pages describe file ACLs for SYSTEM, not the identity sshd runs as (openssh_windows_*.html fetched); P6b: a further search found no current Microsoft page stating this service's logon account, and the MSRC FAQs of the pool CVEs state none"
+  },
+  "Remote Desktop Services|rdp": {
+   "principal": "UNKNOWN",
+   "reason": "the NETWORK SERVICE statement found by search covers Windows Server 2008 only; no document for 2012 R2-2022 fetched; P6b: a further search found no current Microsoft page stating this service's logon account, and the MSRC FAQs of the pool CVEs state none"
+  },
+  "SQL Server|sql": {
+   "evidence": {
+    "quotes": [
+     "Default instance of the Database Engine service NT SERVICE\\MSSQLSERVER"
+    ],
+    "raw": "data/raw/principals/2026-11-16/sql_service_accounts.html",
+    "retrieved_utc": "2026-11-16T17:58:24+00:00",
+    "sha256": "ef074a4dc7666bec681f15f353194237fc075e759f33ca4cca1acd5cf55c0b9f",
+    "url": "https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/configure-windows-service-accounts-and-permissions"
+   },
+   "principal": "NT SERVICE\\MSSQLSERVER",
+   "process": "SQL Server Database Engine service, default instance"
+  },
+  "Windows DNS Server|dns": {
+   "principal": "UNKNOWN",
+   "reason": "no current Microsoft document fetched states the DNS Server service logon account; P6b: a further search found no current Microsoft page stating this service's logon account, and the MSRC FAQs of the pool CVEs state none"
+  },
+  "Windows SMB server|smb": {
+   "principal": "UNKNOWN",
+   "reason": "no fetched Microsoft document states the SMB server's run-as identity; P6b: a further search found no current Microsoft page stating this service's logon account, and the MSRC FAQs of the pool CVEs state none"
+  },
+  "apache:http_server|http": {
+   "evidence": {
+    "quotes": [
+     "The User directive sets the user ID as which the server will answer requests.",
+     "Default: User #-1"
+    ],
+    "raw": "data/raw/principals/2026-11-16/httpd_mod_unixd.html",
+    "retrieved_utc": "2026-11-16T17:58:03+00:00",
+    "sha256": "552ac6aa15c023f9e34eb6dffd3e3a461cb955162aa6643f8e664314e8f8a35c",
+    "url": "https://httpd.apache.org/docs/2.4/mod/mod_unixd.html"
+   },
+   "principal": "#-1",
+   "process": "httpd processes that answer requests"
+  },
+  "apache:tomcat|http": {
+   "principal": "UNKNOWN",
+   "reason": "Tomcat runs as whatever account starts it; the security how-to only recommends a dedicated non-root user (tomcat_security_howto.html fetched); P6b: no vendor statement of an identity exists for a default install"
+  },
+  "crushftp:crushftp|ftp": {
+   "principal": "UNKNOWN",
+   "reason": "no vendor documentation of the service account found; P6b: none found again"
+  },
+  "dovecot:dovecot|mail": {
+   "principal": "UNKNOWN",
+   "reason": "Dovecot runs many processes under different users; the vulnerable process of a CVE cannot be pinned (dovecot_service_configuration.html fetched); P6b: no Dovecot advisory naming the process of CVE-2019-11500 fetched"
+  },
+  "exim:exim|mail": {
+   "cves": {
+    "CVE-2019-13917": {
+     "evidence": {
+      "quotes": [
+       "Issue: A local or remote attacker can execute programs with root privileges - if you've an unusual configuration."
+      ],
+      "raw": "data/raw/principals/2026-11-17/exim_CVE-2019-13917.txt",
+      "retrieved_utc": "2026-11-16T18:41:35+00:00",
+      "sha256": "d9e04dc3d394741f96b0021fa34cb0d09c386af3b2e86b998a79c4bf070e475c",
+      "url": "https://www.exim.org/static/doc/security/CVE-2019-13917.txt"
+     },
+     "principal": "root",
+     "process": "Exim (${sort } expansion)"
+    },
+    "CVE-2019-15846": {
+     "evidence": {
+      "quotes": [
+       "Issue: A local or remote attacker can execute programs with root privileges."
+      ],
+      "raw": "data/raw/principals/2026-11-17/exim_CVE-2019-15846.txt",
+      "retrieved_utc": "2026-11-16T18:41:39+00:00",
+      "sha256": "702f8072fd9efd8ff7fabd4f25814057c8f346251b283b9c4014d0271e86d0ec",
+      "url": "https://www.exim.org/static/doc/security/CVE-2019-15846.txt"
+     },
+     "principal": "root",
+     "process": "Exim (TLS SNI handling)"
+    },
+    "CVE-2020-28020": {
+     "evidence": {
+      "quotes": [
+       "CVE-2020-28020 (unauthenticated RCE as \"exim\", in Exim < 4.92)"
+      ],
+      "raw": "data/raw/principals/2026-11-17/exim_CVE-2020-qualys_21nails.txt",
+      "retrieved_utc": "2026-11-16T18:41:47+00:00",
+      "sha256": "f2a9655fc2dd6197771dbfad7ebf325bdb91548548ca8b15366df3d764323490",
+      "url": "https://www.exim.org/static/doc/security/CVE-2020-qualys/21nails.txt"
+     },
+     "principal": "exim",
+     "process": "Exim receive_msg()"
+    }
+   },
+   "principal": "UNKNOWN",
+   "reason": "the Exim specification gives several identities (setuid-root binary, Exim user for reception); the process differs per CVE (exim_security.html, 2026-11-16); CVE-specific Exim advisories below; CVE-2017-16943 advisory 404, CVE-2018-6789, CVE-2019-16928 ('already dropped its privileges', identity not named), CVE-2020-28024, CVE-2020-28026, CVE-2023-42115 state no identity, CVE-2026-45185 has no fetched advisory"
+  },
+  "neutrinolabs:xrdp|rdp": {
+   "principal": "UNKNOWN",
+   "reason": "the vendor advisory for CVE-2025-68670 (GHSA-rwvg-gp87-gh6f, xrdp_security_advisories.json) and the README state no run-as identity"
+  },
+  "nlnetlabs:unbound|dns": {
+   "evidence": {
+    "quotes": [
+     "If given, after binding the port the user privileges are dropped.",
+     "Default: unbound"
+    ],
+    "raw": "data/raw/principals/2026-11-16/unbound.conf.html",
+    "retrieved_utc": "2026-11-16T17:58:02+00:00",
+    "sha256": "59b7f5e19dd746e20846116de10dd70d66fca17dcf91a78d01c20d4978097b38",
+    "url": "https://unbound.docs.nlnetlabs.nl/en/latest/manpages/unbound.conf.html"
+   },
+   "principal": "unbound",
+   "process": "unbound (the daemon after binding its port)"
+  },
+  "openbsd:openssh|ssh": {
+   "cves": {
+    "CVE-2024-6387": {
+     "evidence": {
+      "cve_link": "the release notes do not name the CVE; NVD's record of CVE-2024-6387 lists https://www.openssh.com/txt/release-9.8 as a reference, and it is the only critical sshd(8) item in that release",
+      "quotes": [
+       "A critical vulnerability in sshd(8) was present in Portable OpenSSH versions between 8.5p1 and 9.7p1 (inclusive) that may allow arbitrary code execution with root privileges."
+      ],
+      "raw": "data/raw/principals/2026-11-17/openssh_release-9.8.txt",
+      "retrieved_utc": "2026-11-16T18:41:17+00:00",
+      "sha256": "88033a755cd66705c50106b5caa4f030915ffe57a921b28fd07cbcca6004cdfa",
+      "url": "https://www.openssh.com/txt/release-9.8"
+     },
+     "principal": "root",
+     "process": "sshd(8) (signal handler race condition)"
+    }
+   },
+   "principal": "UNKNOWN",
+   "reason": "sshd(8) does not state the identity of the process a remote CVE hits in general (openbsd_sshd.8.html, 2026-11-16); CVE-specific vendor statements below"
+  },
+  "proftpd:proftpd|ftp": {
+   "principal": "UNKNOWN",
+   "reason": "the User directive page answered 404 (2026-11-16) and refused the connection over https (2026-11-17)"
+  },
+  "samba:samba|smb": {
+   "principal": "UNKNOWN",
+   "reason": "the Samba wiki states only that the main smbd process runs as root and forks one smbd per connection (samba_wiki_smbd.html); the per-connection process a remote CVE hits is not documented; the CVE-2017-7494 and CVE-2017-14746 advisories state no identity"
+  },
+  "thekelleys:dnsmasq|dns": {
+   "evidence": {
+    "quotes": [
+     "Normally this user is \"nobody\" but that can be over-ridden with this switch."
+    ],
+    "raw": "data/raw/principals/2026-11-16/dnsmasq-man.html",
+    "retrieved_utc": "2026-11-16T17:58:02+00:00",
+    "sha256": "47fc5ec399e0865215f2f3a27f7e275bc3cb6aafa897b5385d5d007f2cd79569",
+    "url": "https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html"
+   },
+   "principal": "nobody",
+   "process": "dnsmasq (the daemon after startup)"
+  },
+  "wftpserver:wing_ftp_server|ftp": {
+   "principal": "UNKNOWN",
+   "reason": "the v7.4.4 release notes state 'a possible remote code execution vulnerability with logged-in session as Root/SYSTEM' (wftpserver_history.html) but name no CVE, and NVD's record of CVE-2025-47812 links only the vendor home page, so tying that line to the CVE would be inferred"
+  }
+ },
+ "raw_manifests": {
+  "data/raw/principals/2026-11-16/manifest.json": "5c630c457c9db290f902e9d17d8b8fc918aea68aae7bdf80f4c066c7d0505a49",
+  "data/raw/principals/2026-11-17/manifest.json": "a3b0efebd561ebf2633e0ad818668887787b154341a65bebda9787376aac62ef"
+ }
+}

@@ -1,0 +1,203 @@
+"""D28 generator entry point (P6): one seeded call gives one task document, byte-identical across runs.
+
+    ctx = Context.load()                      # pinned inputs, SHA-256-checked
+    doc = generate(ctx, "tree", "p6-smoke-0", 12, cohort="core", os_mix={"linux": .5, "windows": .5}, p=1.0)
+    text = dumps(doc)                         # canonical JSON (sorted keys, no spaces)
+
+Seeding: one rng stream "archetype:seed" draws the host configurations and then the firewall, in a fixed
+order; the goal host (if the sensitive zone has several) comes from its own stream "goal:archetype:seed".
+Training uses "tree"; "chain" is the held-out structure (Round 10).
+
+The document has a planner-visible part ("task", "network") and a "metadata" block (CVEs, products,
+versions, CPE names, match records, principals by name) that the planner and the features never read.
+Unsolvable tasks are returned like any other, flagged with their reason; solvability is never forced.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import random
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from ahg import pddl, refsolver
+from ahg.cost import check_regime
+from ahg.gen import build, hosts as hosts_mod, inventory, pool, topology
+from ahg.task import Action, Task, to_mask
+
+CONFIG = pool.ROOT / "configs" / "gen" / "p6.json"
+
+
+def dumps(doc: dict) -> str:
+    """Canonical JSON: the byte-identity the determinism tests compare."""
+    return json.dumps(doc, sort_keys=True, separators=(",", ":"))
+
+
+@dataclass
+class Context:
+    """Pinned inputs, loaded once; inventories are cached per (cohort, p, excluded products, excluded CVEs)."""
+
+    cfg: dict
+    units: list[pool.Unit]
+    funnel: dict
+    master: dict[str, dict]
+    catalogue: dict
+    principals: dict
+    input_hashes: dict
+    _inv: dict = field(default_factory=dict)
+    match_cache: dict = field(default_factory=dict)  # evaluator results; valid only for this context's inputs
+
+    @classmethod
+    def load(cls, config: Path = CONFIG, root: Path = pool.ROOT) -> "Context":
+        cfg = json.loads(config.read_text())
+        units, funnel, master = pool.load_pool(cfg, root)
+        cat = inventory.load_catalogue(cfg, root)
+        ppath = root / cfg["principals"]
+        table = json.loads(ppath.read_text())
+        hashes = {"config": pool.sha256_file(config), "master": cfg["master"]["sha256"],
+                  "catalogue": cfg["catalogue"]["sha256"], "labels": cfg["labels"],
+                  "principals": pool.sha256_file(ppath)}
+        return cls(cfg, units, funnel, master, cat, table, hashes)
+
+    def run_units(self, cohort: str, excluded: frozenset[str],
+                  excluded_cves: frozenset[str] = frozenset()) -> list[pool.Unit]:
+        return pool.restrict(self.units, self.master, cohort, excluded, excluded_cves)
+
+    def inventory(self, cohort: str, p: float, excluded: frozenset[str],
+                  excluded_cves: frozenset[str] = frozenset()) -> inventory.Inventory:
+        key = (cohort, p, excluded, excluded_cves)
+        if key not in self._inv:
+            # Fixture statuses come from the run's own units, so with excluded CVEs a fixture vulnerable only
+            # to excluded CVEs counts as unaffected in this run, exactly as with excluded products.
+            self._inv[key] = inventory.build_inventory(self.cfg, self.catalogue,
+                                                       self.run_units(cohort, excluded, excluded_cves),
+                                                       self.master, cohort, p, excluded)
+            self._inv[key].report["excluded_cves"] = len(excluded_cves)
+        return self._inv[key]
+
+
+def check_params(os_mix: dict[str, float], p: float, cfg: dict) -> None:
+    if set(os_mix) != {"linux", "windows"} or abs(sum(os_mix.values()) - 1) > 1e-9 or min(os_mix.values()) < 0:
+        raise ValueError(f"os_mix must give linux and windows probabilities summing to 1, not {os_mix}")
+    if p not in cfg["p_values"]:
+        raise ValueError(f"p must be one of {cfg['p_values']}, not {p}")
+
+
+def os_view(host: hosts_mod.HostConfig) -> dict:
+    """Planner-visible OS of a host (§18 P6e): its family and, on Windows, the Server version drawn for it
+    (e.g. "Windows Server 2019"; never the build, rollup or KBs, which are fixture data). Linux hosts draw no
+    OS version, only a kernel fixture whose version is CPE data, so their version is null (OQ-P6-28)."""
+    if host.os == "windows":
+        return {"family": "windows", "version": next(c.product for c in host.components if c.family == "os")}
+    return {"family": host.os, "version": None}
+
+
+def generate(ctx: Context, archetype: str, seed: str, n: int, cohort: str = "core",
+             os_mix: dict[str, float] | None = None, p: float = 1.0, excluded: frozenset[str] = frozenset(),
+             excluded_cves: frozenset[str] = frozenset()) -> dict:
+    """One task. `excluded` holds products (every CVE touching one is dropped; held-out-product split);
+    `excluded_cves` holds canonical CVE IDs that never become an action (unseen-CVE split, Round 10)."""
+    cfg = ctx.cfg
+    os_mix = dict(os_mix or cfg["os_mix_default"])
+    check_params(os_mix, p, cfg)
+    excluded, excluded_cves = frozenset(excluded), frozenset(excluded_cves)
+    lay = topology.layout(archetype, n, cfg["topology"])
+    rng = random.Random(f"{archetype}:{seed}")
+    inv = ctx.inventory(cohort, p, excluded, excluded_cves)
+    units = ctx.run_units(cohort, excluded, excluded_cves)
+    roles = [(h, s.zone) for s in lay.subnets if s.zone != "internet" for h in s.hosts]
+    configs = hosts_mod.configure(rng, inv, roles, cfg["roles"], os_mix, tuple(cfg["families_per_host"]),
+                                  cfg["reuse_alpha"])
+    families_of = {0: []} | {h: c.families for h, c in configs.items()}
+    firewall = topology.draw_firewall(lay, families_of, rng, cfg["topology"]["firewall_allow_probability"])
+    matches = build.match_records(configs, units, ctx.master, ctx.catalogue["windows"],
+                                  tuple(cfg["rollup_lines"]), ctx.match_cache)
+    sensitive = sorted(h for s in lay.subnets if s.zone == "sensitive" for h in s.hosts)
+    goal_host = sensitive[0] if len(sensitive) == 1 else random.Random(f"goal:{archetype}:{seed}").choice(sensitive)
+    built = build.build_task(lay, configs, firewall, matches, ctx.principals, set(cfg["admin_principals"]), goal_host)
+    held = build.reachable_facts(len(built.facts), built.actions, [0])
+    reason = build.unsolvable_reason(built, goal_host, held)
+    zone = lay.zone_of()
+    remote_m = [m for m in matches if m["kind"] == "remote"]
+    unknown = sum(build.principal_of(ctx.principals, m["unit_product"], m["family"], m["cve"]) == build.UNKNOWN
+                  for m in remote_m)
+    unverified = any(x.fixture.unverified for c in configs.values() for x in c.components)
+    return {
+        "schema": cfg["schema"],
+        "params": {"archetype": archetype, "seed": seed, "n": n, "cohort": cohort, "os_mix": os_mix, "p": p,
+                   "excluded": sorted(excluded),
+                   # CVE IDs stay in the metadata block; the planner-visible part carries only their hash
+                   "excluded_cves": {"count": len(excluded_cves), "sha256": pool.cve_set_sha256(excluded_cves)}},
+        "network": {
+            # §18 P6e (OQ-P7c-1): the host OS (family and version) and the principal classes are the only
+            # metadata facts the planner-visible part carries; the internet host has no OS
+            "hosts": [{"id": 0, "zone": "internet", "subnet": 0, "families": [], "os": None}]
+                     + [{"id": h, "zone": zone[h], "subnet": lay.subnet_of()[h], "families": configs[h].families,
+                         "os": os_view(configs[h])}
+                        for h in sorted(configs)],
+            "principal_classes": build.principal_classes(built.principals, set(cfg["admin_principals"])),
+            "subnets": [{"name": s.name, "zone": s.zone, "hosts": s.hosts} for s in lay.subnets],
+            "links": [list(l) for l in lay.links],
+            "firewall": [{"from": a, "to": b, "allow": fams} for (a, b), fams in sorted(firewall.items())]},
+        "task": {"facts": built.facts, "init": [0], "goal": [built.goal_fact], "actions": built.actions},
+        "solvable": reason is None,
+        "unsolvable_reason": reason,
+        "flags": {"unverified_release": unverified},
+        "stats": {"hosts_per_zone": dict(sorted(Counter(zone[h] for h in configs).items())),
+                  "actions": len(built.actions),
+                  "remote_actions": sum(a["name"].startswith("remote ") for a in built.actions),
+                  "local_actions": sum(a["name"].startswith("local ") for a in built.actions),
+                  "merged_transitions": built.merges, "matches": len(matches),
+                  "remote_matches": len(remote_m), "remote_matches_unknown_principal": unknown,
+                  "reused_configs": sum(c.copied_from is not None for c in configs.values())},
+        "metadata": {
+            "inputs": ctx.input_hashes,
+            "excluded_cves": sorted(excluded_cves, key=pool.cve_key),
+            "goal_host": goal_host,
+            "principals": built.principals,
+            "hosts": [{"id": h, "os": c.os, "copied_from": c.copied_from,
+                       "components": [{"family": x.family, "product": x.product, "version": x.fixture.version,
+                                       "release_line": x.fixture.release_line, "kbs": list(x.fixture.kbs),
+                                       "cpe_names": list(x.fixture.cpe_names),
+                                       "status": x.status, "unverified_release": x.fixture.unverified,
+                                       "builtin": x.builtin} for x in c.components]}
+                      for h, c in sorted(configs.items())],
+            "matches": matches,
+            "actions": [{**m, "matches": [list(t) for t in m["matches"]]} for m in built.action_meta]},
+    }
+
+
+# ---------------------------------------------------------------- views of a finished document
+
+def to_task(doc: dict, regime: str) -> Task:
+    """The planner's Task under one cost regime (reads only the planner-visible "task" block)."""
+    check_regime(regime)
+    t = doc["task"]
+    acts = [Action(a["name"], tuple(a["pre"]), tuple(a["add"]), a["cost"][regime]) for a in t["actions"]]
+    return Task(list(t["facts"]), acts, to_mask(t["init"]), tuple(t["goal"]))
+
+
+def neutral(doc: dict, regime: str) -> dict:
+    """The reference solver's neutral format, built from the document directly (no task.py involved)."""
+    t = doc["task"]
+    f = t["facts"]
+    return {"facts": list(f), "init": [f[i] for i in t["init"]], "goal": [f[i] for i in t["goal"]],
+            "actions": [{"name": a["name"], "pre": [f[i] for i in a["pre"]], "add": [f[i] for i in a["add"]],
+                         "cost": a["cost"][regime]} for a in t["actions"]]}
+
+
+def export_pddl(doc: dict, regime: str) -> tuple[str, str]:
+    """(domain, problem) PDDL of the finished task under one regime."""
+    task = to_task(doc, regime)
+    return pddl.domain_pddl(task), pddl.problem_pddl(task)
+
+
+def doc_digest(doc: dict) -> str:
+    return hashlib.sha256(dumps(doc).encode()).hexdigest()
+
+
+def reference_cost(doc: dict, regime: str) -> float:
+    """Optimal cost by the independent exhaustive reference solver (small tasks only)."""
+    return refsolver.solve(neutral(doc, regime))[0]
