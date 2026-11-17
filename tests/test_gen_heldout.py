@@ -42,3 +42,24 @@ def test_holdout_refuses_when_ac_h_alone_exceeds_the_share():
 def test_cve_set_hash_is_order_free_and_numeric():
     assert pool.cve_set_sha256(["CVE-2020-10", "CVE-2020-9"]) == pool.cve_set_sha256(("CVE-2020-9", "CVE-2020-10"))
     assert pool.cve_set_sha256(["CVE-2020-9"]) != pool.cve_set_sha256(["CVE-2020-10"])
+
+
+def test_stored_cve_holdout_matches_its_hash_and_the_rule():
+    """configs/gen/cve_holdout.json: the IDs hash to the stored SHA-256 and are exactly what the rule gives on
+    the training cohort's pool (core, no CVE touching a held-out product)."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    cfg = json.loads((root / "configs" / "gen" / "cve_holdout.json").read_text())
+    assert cfg["seed"] == "cve-holdout" and cfg["share"] == 0.3 and cfg["heldout_products"] == ["exim:exim"]
+    assert pool.cve_set_sha256(cfg["cves"]) == cfg["sha256"] and cfg["cves"] == sorted(cfg["cves"], key=pool.cve_key)
+    if not (root / "data" / "d28" / "master").exists():
+        pytest.skip("pinned P6 inputs not in this checkout")
+    from ahg.gen import generate as gen
+
+    ctx = gen.Context.load()
+    units = ctx.run_units(cfg["cohort"], frozenset(cfg["heldout_products"]))
+    held, counts = pool.cve_holdout(units, cfg["share"], cfg["seed"])
+    assert held == cfg["cves"] and counts == cfg["counts"]
+    assert {u.cve_id for u in units if u.ac == "H"} <= set(held)
