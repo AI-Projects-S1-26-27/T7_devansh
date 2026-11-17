@@ -1,0 +1,126 @@
+{
+ "schema": "d28-prereg/1",
+ "freeze": "decisions.md §13.1 (P0c timing, P0d record): the commit of this file freezes docs/d28/hypotheses.md before any label generation, the landscape and budget pilots included. Approved by Devansh 17 Nov 2026 (OQ-P8-1 option (a)). The git commit timestamp is authoritative.",
+ "freeze_date": "2026-11-17",
+ "commit_time_utc": "2026-11-17T13:03:20+00:00",
+ "hypotheses": {
+  "path": "docs/d28/hypotheses.md",
+  "sha256": "be2e927f9a63e38fcb51d714bba184343da91e892ffc9f9055aab830b96fb38c",
+  "status": "FROZEN",
+  "note": "local file (never committed); any later change is a dated amendment outside it"
+ },
+ "test_cohort_sizes": {
+  "source_run": "results/d28_gen/p6_pilot/2026-11-17T082305Z-b79a752",
+  "source_commit": "b79a752384b8dd434c6cc4d636f931d44e2d50a4",
+  "rule": "fixed size per test cohort and size = ceil(200 / r), r the pilot cell's solvable rate (expected solvable 200) (frozen proposal of decisions.md §18 P6d item 4); d28_test_cve uses the cve_all cell",
+  "per_size": {
+   "d28_test_id": {
+    "12": 650,
+    "20": 674
+   },
+   "d28_test_size30": {
+    "30": 664
+   },
+   "d28_test_size60": {
+    "60": 539
+   },
+   "d28_test_structure": {
+    "12": 1674,
+    "20": 1469
+   },
+   "d28_test_temporal": {
+    "12": 223,
+    "20": 220
+   },
+   "d28_test_product": {
+    "12": 576,
+    "20": 576
+   },
+   "d28_test_cve": {
+    "12": 500,
+    "20": 479
+   },
+   "d28_test_os25": {
+    "12": 692,
+    "20": 708
+   },
+   "d28_test_os75": {
+    "12": 655,
+    "20": 609
+   },
+   "d28_test_p075": {
+    "12": 1617,
+    "20": 1380
+   },
+   "d28_test_p050": {
+    "12": 4140,
+    "20": 4900
+   },
+   "d28_test_p025": {
+    "12": 24010,
+    "20": 43655
+   }
+  }
+ },
+ "generation_caps": {
+  "source_run": "results/d28_gen/p8_pilot/2026-11-17T114431Z-513aff5",
+  "source_commit": "513aff5df656e9d8d60749d93d272b914e84355e",
+  "training": {
+   "quota_per_size": 231,
+   "max_candidates_per_size": {
+    "8": 1025,
+    "9": 974,
+    "10": 1091,
+    "11": 1002,
+    "12": 1026,
+    "13": 968,
+    "14": 1025,
+    "15": 988,
+    "16": 1023,
+    "17": 984,
+    "18": 1014,
+    "19": 988,
+    "20": 957
+   },
+   "total": 13065,
+   "rule": "cap per size = smallest N with P(Binomial(N, r_low) >= 231) >= 0.999, r_low the size's Wilson 95% lower bound; 231 per size x 13 sizes = 3,003 (OQ-P7d-1); frozen with the all-sizes guarantee (P(shortfall) <= 0.001 / 13 per size, union bound over the 13 sizes), decided 17 Nov 2026 by Devansh"
+  },
+  "validation": {
+   "quota_per_size": 31,
+   "max_candidates_per_size": {
+    "8": 191,
+    "9": 181,
+    "10": 204,
+    "11": 186,
+    "12": 191,
+    "13": 180,
+    "14": 191,
+    "15": 184,
+    "16": 190,
+    "17": 183,
+    "18": 189,
+    "19": 184,
+    "20": 178
+   },
+   "total": 2432,
+   "rule": "same rule with quota 31 per size x 13 sizes = 403 (OQ-P7d-1); validation draws the training cell under its own seeds (d28.val); frozen with the all-sizes guarantee (P(shortfall) <= 0.001 / 13 per size, union bound over the 13 sizes), decided 17 Nov 2026 by Devansh"
+  }
+ },
+ "state_budget": {
+  "rule": "OQ-P7-8 (accepted 17 Nov 2026, decisions.md §19): the smallest candidate budget under which at least `target` of the sampled training states certify (A*+LM-cut within the budget) in both regimes; it also applies to s0 (OQ-P7-7)",
+  "candidates": [
+   100,
+   300,
+   1000,
+   3000,
+   10000,
+   20000
+  ],
+  "target": 0.99,
+  "cap": 20000,
+  "sample": "the budget pilot's stratified sample of the frozen training cohort (every training size)",
+  "value": null,
+  "value_from": "filled mechanically from the budget pilot run into configs/labels/d28.json state_budget; no choice is made; if no candidate meets the target the value stays null and the item is BLOCKED (Round 9)"
+ },
+ "labels_config_state_budget_at_freeze": null
+}

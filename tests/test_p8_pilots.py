@@ -96,7 +96,9 @@ def test_n4_runs_before_the_freeze_on_training_seeds_with_trainings_exclusions(t
     small = tmp_path / "d28_cohorts.json"
     small.write_text(json.dumps(reg_cfg))
     monkeypatch.setattr(co, "REGISTRY", small)
-    assert not REG.frozen and REG.problems(REG.training)  # unfrozen: nothing else may build
+    from dataclasses import replace
+    unfrozen = replace(REG, frozen=False)  # as it ran in P8b, before the freeze
+    assert unfrozen.problems(unfrozen.training)  # unfrozen: nothing else may build
     seen = []
 
     def spy(*a, _real=gen.generate, **k):
@@ -104,7 +106,7 @@ def test_n4_runs_before_the_freeze_on_training_seeds_with_trainings_exclusions(t
         return _real(*a, **k)
 
     monkeypatch.setattr(gen, "generate", spy)
-    pipe.cmd_n4(type("A", (), {"smoke": False})(), REG, gen.Context.load())
+    pipe.cmd_n4(type("A", (), {"smoke": False})(), unfrozen, gen.Context.load())
     assert len(seen) == 10 and all(s.startswith("d28.train.n4/n12/") for s, _, _ in seen)
     assert all(e == {"exim:exim"} and c == frozenset(REG.heldout_cves) for _, e, c in seen)
     from ahg import runlog

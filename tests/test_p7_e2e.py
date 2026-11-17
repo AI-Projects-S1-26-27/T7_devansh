@@ -128,7 +128,12 @@ def test_report_regenerates_from_a_results_directory(env):
     assert "p7_smoke_test|GNN vs BASE" in text
 
 
-def test_real_cohorts_refuse_to_build_while_the_registry_is_unfrozen(env):
+def test_real_cohorts_refuse_to_build_while_the_registry_is_unfrozen(env, monkeypatch):
+    # The real registry is frozen since P8 (17 Nov 2026); the CLI sees it as it stood before, so this gate test can
+    # never build a real cohort or log a real test read.
+    from dataclasses import replace
+    real = co.load_registry
+    monkeypatch.setattr(co, "load_registry", lambda *a, **k: replace(real(*a, **k), frozen=False))
     pipe = env["pipe"]
     before = co.TEST_ACCESS_LOG.read_bytes() if co.TEST_ACCESS_LOG.exists() else b""
     # The label-generating pilots (budget, landscape) stay refused until the freeze (§13.1, OQ-P8-1). N4 generates no

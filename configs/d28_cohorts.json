@@ -1,8 +1,8 @@
 {
  "task": "P7",
  "decisions": "decisions.md Rounds 6, 9, 10, 11, 18; P7 task text (17 Nov 2026); P7 decisions of 17 Nov 2026 (OQ-P7-1 to -10); OQ-P7-* in open_questions.md; P7d decisions of 17 Nov 2026 (training sizes n = 8..20)",
- "frozen": false,
- "frozen_note": "No cohort except a smoke cohort is built while frozen is false. Freezing is a commit that sets it true after Devansh approves the remaining sizes (test cohorts) and the generation limit, both null until the P6 pilot solvability rates arrive (OQ-P7-1, OQ-P7-2, decided 17 Nov 2026).",
+ "frozen": true,
+ "frozen_note": "Frozen 17 Nov 2026 with configs/d28_prereg.json (Devansh, OQ-P8-1 option (a)): test cohort sizes per n from the P6d pilot (§18 P6d item 4), training and validation generation caps per size from the P8a pilot with the all-13-sizes guarantee. Supersedes: \"No cohort except a smoke cohort is built while frozen is false. Freezing is a commit that sets it true after Devansh approves the remaining sizes (test cohorts) and the generation limit, both null until the P6 pilot solvability rates arrive (OQ-P7-1, OQ-P7-2, decided 17 Nov 2026).\"",
  "heldout_products": [
   "exim:exim"
  ],
@@ -50,7 +50,21 @@
    "exclude": "heldout_products",
    "selection": "solvable_quota",
    "per_size": 231,
-   "max_candidates_per_size": null,
+   "max_candidates_per_size": {
+    "8": 1025,
+    "9": 974,
+    "10": 1091,
+    "11": 1002,
+    "12": 1026,
+    "13": 968,
+    "14": 1025,
+    "15": 988,
+    "16": 1023,
+    "17": 984,
+    "18": 1014,
+    "19": 988,
+    "20": 957
+   },
    "requires": [],
    "blocked_by": []
   },
@@ -82,7 +96,21 @@
    "exclude": "heldout_products",
    "selection": "solvable_quota",
    "per_size": 31,
-   "max_candidates_per_size": null,
+   "max_candidates_per_size": {
+    "8": 191,
+    "9": 181,
+    "10": 204,
+    "11": 186,
+    "12": 191,
+    "13": 180,
+    "14": 191,
+    "15": 184,
+    "16": 190,
+    "17": 183,
+    "18": 189,
+    "19": 184,
+    "20": 178
+   },
    "requires": [],
    "blocked_by": []
   },
@@ -102,7 +130,10 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 650,
+    "20": 674
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -122,7 +153,9 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "30": 664
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -142,7 +175,9 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "60": 539
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -163,7 +198,10 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 1674,
+    "20": 1469
+   },
    "max_candidates_per_size": null,
    "requires": [
     "n4_pass"
@@ -186,7 +224,10 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 223,
+    "20": 220
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -207,7 +248,10 @@
    "p": 1.0,
    "exclude": "none",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 576,
+    "20": 576
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -228,7 +272,10 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 500,
+    "20": 479
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -249,7 +296,10 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 692,
+    "20": 708
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -270,7 +320,10 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 655,
+    "20": 609
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -291,7 +344,10 @@
    "p": 0.75,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 1617,
+    "20": 1380
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -312,7 +368,10 @@
    "p": 0.5,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 4140,
+    "20": 4900
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -333,7 +392,10 @@
    "p": 0.25,
    "exclude": "heldout_products",
    "selection": "fixed",
-   "per_size": null,
+   "per_size": {
+    "12": 24010,
+    "20": 43655
+   },
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
