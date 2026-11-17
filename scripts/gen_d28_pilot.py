@@ -1,7 +1,13 @@
 """P6 development pilot (decisions.md §18 item 5, 17 Nov 2026): solvable rate of every cohort cell and the
 generator's throughput, under the seed namespace "p6-pilot", which no split uses.
 
-Usage: uv run python scripts/gen_d28_pilot.py [--config configs/gen/p6_pilot.json] [--tasks N]
+Usage: uv run python scripts/gen_d28_pilot.py [--config configs/gen/p6_pilot_v2.json] [--tasks N]
+
+Configs: p6_pilot.json (P6c, CVE holdout v1; run 2026-11-17T073113Z-024d17d) and p6_pilot_v2.json (§18 P6d
+item 4: CVE holdout v2). A config may name a "carried" earlier run and the cells whose pool the change left
+untouched: those cells are not regenerated; their logged candidates are read from that run, after checking
+that the run had the same generator inputs, tasks per cell and cell spec, and that each carried cell's units
+are identical under the old and the new exclusions. Throughput counts the new candidates only.
 
 Every candidate is generated in seed order (k = 0, 1, ...) and logged: seed, cell, size, solvability and
 reason (or the infeasibility), generation seconds, actions, document digest. Cells and their exclusions
@@ -33,7 +39,7 @@ from ahg import runlog
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "results" / "d28_gen"
-CONFIG = ROOT / "configs" / "gen" / "p6_pilot.json"
+CONFIG = ROOT / "configs" / "gen" / "p6_pilot_v2.json"
 Z95 = 1.959963984540054
 
 
@@ -118,10 +124,14 @@ def _run(job: tuple) -> dict:
                   "actions": doc["stats"]["actions"], "digest": gen.doc_digest(doc)}
 
 
-def summarise(rows: list[dict], cfg: dict, wall: float, workers: int) -> dict:
+def summarise(rows: list[dict], cfg: dict, wall: float, workers: int, carried: list[dict] = (),
+              previous: dict | None = None) -> dict:
+    """Per-cell rates over the new rows plus the carried ones (marked with their source run), the proposals,
+    and throughput over the new rows only. `previous`: an earlier run's cell summaries, shown beside each rate."""
     by = defaultdict(list)
-    for r in rows:
+    for r in [*rows, *carried]:
         by[(r["cell"], r["n"])].append(r)
+    carried_keys = {(r["cell"], r["n"]) for r in carried}
     cells = {}
     for (cell, n), rs in sorted(by.items()):
         x = sum(r.get("solvable", False) for r in rs)
@@ -133,7 +143,9 @@ def summarise(rows: list[dict], cfg: dict, wall: float, workers: int) -> dict:
             "infeasible": sum("infeasible" in r for r in rs),
             "reasons": dict(Counter(r["reason"] for r in rs if r.get("solvable") is False)),
             "seconds_mean": sum(secs) / len(secs), "seconds_max": max(secs),
-            "actions_median": sorted(r["actions"] for r in rs if "actions" in r)[len(rs) // 2] if rs else None}
+            "actions_median": sorted(r["actions"] for r in rs if "actions" in r)[len(rs) // 2] if rs else None,
+            "source": cfg["carried"]["run"] if (cell, n) in carried_keys else "this run",
+            "previous_rate": ((previous or {}).get(f"{cell}|n={n}") or {}).get("rate")}
     tr = cfg["training"]
     train = {}
     for key, c in cells.items():
@@ -175,12 +187,17 @@ def report(raw: dict) -> str:
          f"Held-out products {cfg['heldout_products']}; unseen-CVE holdout {raw['holdout']['count']} IDs, "
          f"SHA-256 {raw['holdout']['sha256']}.", "",
          "## Solvable rate per cell", "",
-         "| cell | n | tasks | solvable | rate | Wilson 95% | max half-width | infeasible | unsolvable reasons | s/task mean (max) | actions median |",
-         "|---|---|---|---|---|---|---|---|---|---|---|"]
+         "| cell | n | tasks | solvable | rate | Wilson 95% | max half-width | infeasible | unsolvable reasons | s/task mean (max) | actions median | source | previous rate |",
+         "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for c in s["cells"].values():
         L.append(f"| {c['cell']} | {c['n']} | {c['tasks']} | {c['solvable']} | {fmt(c['rate'])} | "
                  f"{fmt(c['wilson_low'])}-{fmt(c['wilson_high'])} | {fmt(c['half_width_max'], 4)} | {c['infeasible']} | "
-                 f"{c['reasons']} | {fmt(c['seconds_mean'], 4)} ({fmt(c['seconds_max'], 3)}) | {c['actions_median']} |")
+                 f"{c['reasons']} | {fmt(c['seconds_mean'], 4)} ({fmt(c['seconds_max'], 3)}) | {c['actions_median']} | "
+                 f"{c.get('source', 'this run')} | {fmt(c.get('previous_rate'))} |")
+    if raw.get("carried"):
+        cr = raw["carried"]
+        L += ["", f"Carried cells {cr['cells']} from run {cr['run']} (not regenerated; checks: {cr['checks']}). "
+              f"Previous rates are from that run."]
     L += ["", "Cells: " + "; ".join(f"{c['name']} = {', '.join(c['cohorts'])} ({c['archetype']}, {c['cohort']}, "
                                    f"Linux {c['os_linux']}, p {c['p']}, products {c['products']}, CVEs {c['cves']}"
                                    + (f"; {c['variant']}" if c.get('variant') else "") + ")" for c in cfg["cells"]), "",
@@ -204,13 +221,69 @@ def report(raw: dict) -> str:
 
 def jobs(cfg: dict, tasks: int, holdout: list[str], training_cves: list[str]) -> list[tuple]:
     out = []
+    skip = set(cfg.get("carried", {}).get("cells", ()))
     for cell in cfg["cells"]:
+        if cell["name"] in skip:  # read from the carried run instead (load_carried)
+            continue
         prods, cves = exclusions(cell, cfg, holdout, training_cves)
         for n in cell["sizes"]:
             for k in range(tasks):  # seed order
                 out.append((cell["name"], cell["archetype"], n, k, seed_of(cfg["namespace"], cell["name"], n, k),
                             cell["cohort"], cell["os_linux"], cell["p"], prods, cves))
     return out
+
+
+def holdout_sets(cfg: dict, ctx, root: Path = ROOT) -> tuple[list[str], list[str]]:
+    """(the config's CVE holdout, the training CVEs = training pool minus it), the holdout checked against its SHA-256."""
+    from ahg.gen import pool
+
+    ho = json.loads((root / cfg["cve_holdout"]).read_text())
+    if pool.cve_set_sha256(ho["cves"]) != ho["sha256"]:
+        raise SystemExit(f"{cfg['cve_holdout']}: IDs do not match their SHA-256")
+    pool_ids = {u.cve_id for u in ctx.run_units("core", frozenset(cfg["heldout_products"]))}
+    return ho["cves"], sorted(pool_ids - set(ho["cves"]), key=pool.cve_key)
+
+
+def load_carried(cfg: dict, ctx, tasks: int, holdout: list[str], training_cves: list[str],
+                 root: Path = ROOT) -> tuple[list[dict], dict, dict]:
+    """Candidates of the carried cells, read from the earlier run (§18 P6d item 4: only cells whose pool changed
+    are regenerated). Refuses unless that run had the same generator inputs, tasks per cell and cell spec, its
+    own holdout file still hashes as it recorded, and each carried cell's units are identical under the old and
+    the new exclusions (so its candidates would be generated again unchanged).
+    Returns (rows, that run's cell summaries, the checks made)."""
+    import gzip
+
+    from ahg.gen import pool
+
+    spec = cfg.get("carried")
+    if not spec:
+        return [], {}, {}
+    old = json.loads(gzip.decompress((root / spec["run"] / "raw.json.gz").read_bytes()))
+    if old["inputs"] != ctx.input_hashes:
+        raise SystemExit(f"carried run {spec['run']}: generator inputs differ")
+    if old["tasks_per_cell"] != tasks:
+        raise SystemExit(f"carried run {spec['run']}: {old['tasks_per_cell']} tasks per cell, not {tasks}")
+    ocfg = old["config"]
+    old_ho, old_tr = holdout_sets(ocfg, ctx, root)
+    if pool.cve_set_sha256(old_ho) != old["holdout"]["sha256"] or pool.cve_set_sha256(old_tr) != old["training_cves"]["sha256"]:
+        raise SystemExit(f"carried run {spec['run']}: its holdout no longer hashes as recorded")
+    new_cells, old_cells = {c["name"]: c for c in cfg["cells"]}, {c["name"]: c for c in ocfg["cells"]}
+    rows = []
+    for name in spec["cells"]:
+        cell = new_cells[name]
+        if old_cells.get(name) != cell:
+            raise SystemExit(f"carried cell {name}: spec differs from run {spec['run']}")
+        before = ctx.run_units(cell["cohort"], *exclusions(cell, ocfg, old_ho, old_tr))
+        after = ctx.run_units(cell["cohort"], *exclusions(cell, cfg, holdout, training_cves))
+        if before != after:
+            raise SystemExit(f"carried cell {name}: its pool changed; it must be regenerated")
+        rs = [r for r in old["candidates"] if r["cell"] == name]
+        if len(rs) != tasks * len(cell["sizes"]):
+            raise SystemExit(f"carried cell {name}: {len(rs)} candidates in run {spec['run']}")
+        rows += rs
+    checks = {"same_inputs": True, "same_tasks_per_cell": tasks, "same_cell_specs": True,
+              "same_units_under_old_and_new_exclusions": True, "old_holdout_sha256": old["holdout"]["sha256"]}
+    return rows, old["summary"]["cells"], checks
 
 
 def main() -> None:
@@ -220,24 +293,22 @@ def main() -> None:
     a = ap.parse_args()
     cfg = json.loads(a.config.read_text())
     tasks = a.tasks or cfg["tasks_per_cell"]
-    ho = json.loads((ROOT / cfg["cve_holdout"]).read_text())
     from ahg.gen import generate as gen
     from ahg.gen import pool
 
     ctx = gen.Context.load()
-    if pool.cve_set_sha256(ho["cves"]) != ho["sha256"]:
-        raise SystemExit("cve_holdout.json: IDs do not match their SHA-256")
-    pool_ids = {u.cve_id for u in ctx.run_units("core", frozenset(cfg["heldout_products"]))}
-    training_cves = sorted(pool_ids - set(ho["cves"]), key=pool.cve_key)
-    js = jobs(cfg, tasks, ho["cves"], training_cves)
+    holdout, training_cves = holdout_sets(cfg, ctx)
+    carried, previous, checks = load_carried(cfg, ctx, tasks, holdout, training_cves)
+    js = jobs(cfg, tasks, holdout, training_cves)
     t0 = time.perf_counter()
     with ProcessPoolExecutor(max_workers=cfg["workers"], initializer=_init) as ex:
         rows = list(ex.map(_run, js, chunksize=64))
     wall = time.perf_counter() - t0
     raw = {"config": cfg, "tasks_per_cell": tasks, "inputs": ctx.input_hashes,
-           "holdout": {"count": len(ho["cves"]), "sha256": ho["sha256"]},
+           "holdout": {"count": len(holdout), "sha256": pool.cve_set_sha256(holdout), "path": cfg["cve_holdout"]},
            "training_cves": {"count": len(training_cves), "sha256": pool.cve_set_sha256(training_cves)},
-           "candidates": rows, "summary": summarise(rows, cfg, wall, cfg["workers"])}
+           "carried": cfg.get("carried", {}) | {"checks": checks} if carried else None,
+           "candidates": rows, "summary": summarise(rows, cfg, wall, cfg["workers"], carried, previous)}
     seeds = [cfg["namespace"]]
     run = runlog.write_run("p6_pilot", raw, report(raw), seeds, cfg, root=OUT)
     print(run)
