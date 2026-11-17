@@ -3,6 +3,10 @@ generator's throughput, under the seed namespace "p6-pilot", which no split uses
 
 Usage: uv run python scripts/gen_d28_pilot.py [--config configs/gen/p6_pilot_v2.json] [--tasks N]
 
+P8a (training-size pilot, §19 P7d): configs/gen/p8_pilot.json runs the training cell at every size n = 8..20 under
+the seed namespace "p8-pilot" and proposes the training and the validation cap per size (quotas 231 and 31); the
+config's "run_name" and "title" name its run folder (results/d28_gen/p8_pilot/) and report.
+
 Configs: p6_pilot.json (P6c, CVE holdout v1; run 2026-11-17T073113Z-024d17d) and p6_pilot_v2.json (§18 P6d
 item 4: CVE holdout v2). A config may name a "carried" earlier run and the cells whose pool the change left
 untouched: those cells are not regenerated; their logged candidates are read from that run, after checking
@@ -146,13 +150,21 @@ def summarise(rows: list[dict], cfg: dict, wall: float, workers: int, carried: l
             "actions_median": sorted(r["actions"] for r in rs if "actions" in r)[len(rs) // 2] if rs else None,
             "source": cfg["carried"]["run"] if (cell, n) in carried_keys else "this run",
             "previous_rate": ((previous or {}).get(f"{cell}|n={n}") or {}).get("rate")}
-    tr = cfg["training"]
-    train = {}
-    for key, c in cells.items():
-        if c["cell"] == tr["cell"]:
-            train[key] = {"quota": tr["solvable_per_size"], "rate": c["rate"], "rate_low": c["wilson_low"],
-                          "expected_candidates": math.ceil(tr["solvable_per_size"] / c["rate"]) if c["rate"] else None,
-                          "budget": budget(tr["solvable_per_size"], c["wilson_low"], tr["shortfall_probability"])}
+    def caps(spec: dict) -> dict:
+        """Per size of the spec's cell: the cap at the spec's per-size shortfall probability, and (P8a) the cap
+        at that probability divided by the number of sizes, so that by the union bound no size falls short with
+        probability >= 1 - eps over all sizes together."""
+        keys = [k for k, c in cells.items() if c["cell"] == spec["cell"]]
+        out = {}
+        for key in keys:
+            c, q, eps = cells[key], spec["solvable_per_size"], spec["shortfall_probability"]
+            out[key] = {"quota": q, "rate": c["rate"], "rate_low": c["wilson_low"],
+                        "expected_candidates": math.ceil(q / c["rate"]) if c["rate"] else None,
+                        "budget": budget(q, c["wilson_low"], eps),
+                        "budget_all_sizes": budget(q, c["wilson_low"], eps / len(keys))}
+        return out
+
+    train = caps(cfg["training"])
     want = cfg["test_expected_solvable"]
     tests = {}
     for spec in cfg["cells"]:
@@ -168,7 +180,8 @@ def summarise(rows: list[dict], cfg: dict, wall: float, workers: int, carried: l
                     "expected_solvable_low": size * c["wilson_low"] if size else 0,
                     "expected_solvable_high": size * c["wilson_high"] if size else 0}
     secs = [r["seconds"] for r in rows]
-    return {"cells": cells, "training_budget": train, "test_sizes": tests,
+    extra = {"validation_budget": caps(cfg["validation"])} if "validation" in cfg else {}
+    return {"cells": cells, "training_budget": train, **extra, "test_sizes": tests,
             "throughput": {"tasks": len(rows), "workers": workers, "wall_seconds": round(wall, 1),
                            "tasks_per_second_wall": len(rows) / wall if wall else None,
                            "worker_seconds_total": round(sum(secs), 1),
@@ -182,7 +195,7 @@ def fmt(x, d=3):
 def report(raw: dict) -> str:
     s, cfg = raw["summary"], raw["config"]
     t = s["throughput"]
-    L = ["# P6 development pilot (seed namespace p6-pilot)", "",
+    L = [f"# {cfg.get('title', 'P6 development pilot')} (seed namespace {cfg['namespace']})", "",
          "Diagnostics on development seeds, not results. Every number below is read from raw.json.gz of this run.",
          f"Held-out products {cfg['heldout_products']}; unseen-CVE holdout {raw['holdout']['count']} IDs, "
          f"SHA-256 {raw['holdout']['sha256']}.", "",
@@ -205,12 +218,22 @@ def report(raw: dict) -> str:
           f"- {t['tasks']} candidates in {t['wall_seconds']} s wall on {t['workers']} worker processes: "
           f"{fmt(t['tasks_per_second_wall'], 1)} tasks/s wall; {fmt(t['tasks_per_worker_second'], 1)} tasks per worker-second "
           f"({t['worker_seconds_total']} worker-seconds, generation only).", "",
-          "## Proposal: training candidate budget (rejection sampling in seed order, every candidate logged)", "",
-          f"Rule: {cfg['training']['rule']}.", "",
-          "| cell | quota | rate | Wilson low | expected candidates (quota / rate) | proposed cap |", "|---|---|---|---|---|---|"]
-    for k, v in s["training_budget"].items():
-        L.append(f"| {k} | {v['quota']} | {fmt(v['rate'])} | {fmt(v['rate_low'])} | {v['expected_candidates']} | {v['budget']} |")
-    L += ["", "## Proposal: fixed test cohort sizes (about 200 expected solvable per size)", "",
+          ]
+    for role, key in (("training", "training_budget"), ("validation", "validation_budget")):
+        if key not in s:
+            continue
+        L += [f"## Proposal: {role} candidate budget (rejection sampling in seed order, every candidate logged)", "",
+              f"Rule: {cfg[role]['rule']}.", "",
+              "| cell | quota | rate | Wilson low | expected candidates (quota / rate) | proposed cap | cap, all sizes together |",
+              "|---|---|---|---|---|---|---|"]
+        for k, v in s[key].items():
+            L.append(f"| {k} | {v['quota']} | {fmt(v['rate'])} | {fmt(v['rate_low'])} | {v['expected_candidates']} | "
+                     f"{v['budget']} | {v['budget_all_sizes']} |")
+        tot = [sum(v[f] for v in s[key].values()) for f in ("quota", "expected_candidates", "budget", "budget_all_sizes")]
+        L += [f"| total | {tot[0]} | | | {tot[1]} | {tot[2]} | {tot[3]} |", ""]
+    if not s["test_sizes"]:
+        return "\n".join(L) + "\n"
+    L += ["## Proposal: fixed test cohort sizes (about 200 expected solvable per size)", "",
           f"Rule: {cfg['test_rule']}.", "",
           "| cohort | cell | n | rate | fixed size | expected solvable (Wilson range) |", "|---|---|---|---|---|---|"]
     for v in s["test_sizes"].values():
@@ -310,7 +333,7 @@ def main() -> None:
            "carried": cfg.get("carried", {}) | {"checks": checks} if carried else None,
            "candidates": rows, "summary": summarise(rows, cfg, wall, cfg["workers"], carried, previous)}
     seeds = [cfg["namespace"]]
-    run = runlog.write_run("p6_pilot", raw, report(raw), seeds, cfg, root=OUT)
+    run = runlog.write_run(cfg.get("run_name", "p6_pilot"), raw, report(raw), seeds, cfg, root=OUT)
     print(run)
 
 

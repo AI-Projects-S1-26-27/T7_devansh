@@ -1,0 +1,68 @@
+{
+ "task": "P8a",
+ "title": "P8a training-size pilot",
+ "run_name": "p8_pilot",
+ "decision": "decisions.md §19 P7d (17 Nov 2026, Devansh): training draws every size n = 8..20, 3,000 solvable networks in equal quotas per size; validation 400 solvable, same size mix; the training and validation generation caps per size come from a pilot on the merged generator (null until then). Method of §18 P6c item 5 / P6d item 4 (accepted): rates within +-2 percentage points, cap = smallest N with P(Binomial(N, Wilson low) >= quota) >= 1 - eps.",
+ "namespace": "p8-pilot",
+ "seed_format": "p8-pilot/<cell>/n<n>/<k>",
+ "registry": "the training cell mirrors configs/d28_cohorts.json d28_train and d28_val (tree, core, Linux 0.5, p 1, held-out product exim and the CVE holdout v2 excluded, n = 8..20); a test checks it against the registry",
+ "cve_holdout": "configs/gen/cve_holdout_v2.json",
+ "heldout_products": [
+  "exim:exim"
+ ],
+ "exclusion_modes": {
+  "products": {
+   "heldout": "exclude the held-out products (Round 10)"
+  },
+  "cves": {
+   "holdout": "exclude the unseen-CVE holdout (Round 10, OQ-P7b-2)"
+  }
+ },
+ "cells": [
+  {
+   "name": "train",
+   "cohorts": [
+    "d28_train",
+    "d28_val"
+   ],
+   "archetype": "tree",
+   "cohort": "core",
+   "os_linux": 0.5,
+   "p": 1.0,
+   "products": "heldout",
+   "cves": "holdout",
+   "sizes": [
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20
+   ]
+  }
+ ],
+ "tasks_per_cell": 2401,
+ "tasks_rule": "worst case p = 0.5: 1.96 * sqrt(0.25 / 2401) = 0.0200, so every size's 95% interval half-width is at most 2 percentage points whatever its rate",
+ "training": {
+  "cell": "train",
+  "solvable_per_size": 231,
+  "shortfall_probability": 0.001,
+  "rule": "cap per size = smallest N with P(Binomial(N, r_low) >= 231) >= 0.999, r_low the size's Wilson 95% lower bound; 231 per size x 13 sizes = 3,003 (OQ-P7d-1)"
+ },
+ "validation": {
+  "cell": "train",
+  "solvable_per_size": 31,
+  "shortfall_probability": 0.001,
+  "rule": "same rule with quota 31 per size x 13 sizes = 403 (OQ-P7d-1); validation draws the training cell under its own seeds (d28.val)"
+ },
+ "test_expected_solvable": 200,
+ "test_rule": "no test cohort in this pilot (test sizes: P6d pilot run 2026-11-17T082305Z-b79a752)",
+ "workers": 8
+}
