@@ -14,15 +14,28 @@ TESTS = [c for c in REG.cohorts.values() if c.is_test and not c.smoke]
 
 
 def test_registry_loads_unfrozen_with_the_decided_sets_and_sizes():
-    # decided 17 Nov 2026 (decisions.md §19): exim held out; held-out CVEs not drawn yet; training 1,500 and
-    # validation 200 solvable per size; test sizes and the generation limit null until the P6 pilot rates.
+    # decided 17 Nov 2026 (decisions.md §19): exim held out; held-out CVEs not drawn yet; test sizes null until
+    # the P6 pilot rates. P7d: training every size n = 8..20, 3,000 solvable networks in equal quotas per size;
+    # validation 400, same size mix; generation limits null until a pilot on the merged generator.
     assert not REG.frozen and REG.heldout_products == ("exim:exim",)
     assert REG.heldout_cves is None and REG.heldout_cves_kept_by == ("d28_test_cve",)
-    assert REG.training.name == "d28_train" and REG.training.per_size * len(REG.training.sizes) == 3000
-    assert REG.training.per_size == 1500 and REG.training.max_candidates_per_size is None
-    v = REG["d28_val"]
-    assert (v.selection, v.per_size, v.sizes, v.max_candidates_per_size) == ("solvable_quota", 200, (12, 20), None)
+    assert REG.totals == {"training": 3000, "validation": 400}
+    t, v = REG.training, REG["d28_val"]
+    assert t.name == "d28_train" and t.sizes == tuple(range(8, 21)) == v.sizes
+    assert (t.selection, t.per_size, t.max_candidates_per_size) == ("solvable_quota", 231, None)
+    assert (v.selection, v.per_size, v.max_candidates_per_size) == ("solvable_quota", 31, None)
+    assert REG.quota_rounding(t) == {"target": 3000, "sizes": 13, "per_size": 231, "total": 3003, "difference": 3,
+                                     "rule": "round half up of target / sizes"}
+    assert REG.quota_rounding(v)["total"] == 403 and REG.quota_rounding(v)["difference"] == 3
+    assert REG.quota_rounding(REG["d28_test_id"]) is None and REG.quota_rounding(REG["p7_smoke_train"]) is None
     assert all(c.per_size is None for c in TESTS)
+    # in-distribution tests stay at n = 12 and 20, size shift n = 30 (60 exploratory)
+    assert REG["d28_test_id"].sizes == (12, 20) and REG["d28_test_size30"].sizes == (30,)
+
+
+def test_equal_quotas_round_half_up():
+    assert [co.equal_quota(t, k) for t, k in ((3000, 13), (400, 13), (3000, 2), (5, 2), (7, 4), (6, 4))] == \
+        [231, 31, 1500, 3, 2, 2]
 
 
 def test_every_required_cohort_exists_with_its_factor():
@@ -78,27 +91,36 @@ def test_seed_namespaces_are_disjoint_and_never_integers():
     assert all(c.namespace.startswith("p7-smoke") == c.smoke for c in REG.cohorts.values())
 
 
+TOTALS = {"training": 3000, "validation": 400}
+
+
 def test_validation_rejects_shared_namespaces_and_bad_quotas():
     cs = list(REG.cohorts.values())
+    with pytest.raises(ValueError, match="differ from training"):  # P7d: validation has the training size mix
+        co.validate([replace(REG["d28_val"], sizes=(12, 20), per_size=200)] + [c for c in cs if c.name != "d28_val"],
+                    TOTALS, [1.0, .75, .5, .25])
+    with pytest.raises(ValueError, match="equal quotas"):
+        co.validate([replace(REG["d28_val"], per_size=30)] + [c for c in cs if c.name != "d28_val"], TOTALS,
+                    [1.0, .75, .5, .25])
     a, b = cs[1], cs[2]
     with pytest.raises(ValueError, match="unique"):
-        co.validate([a, replace(b, namespace=a.namespace)] + cs[3:], 3000, [1.0, .75, .5, .25])
+        co.validate([a, replace(b, namespace=a.namespace)] + cs[3:], TOTALS, [1.0, .75, .5, .25])
     with pytest.raises(ValueError, match="equal quotas"):
-        co.validate([replace(REG.training, per_size=1400)] + [c for c in cs if c.name != "d28_train"], 3000, [1.0, .75, .5, .25])
+        co.validate([replace(REG.training, per_size=230)] + [c for c in cs if c.name != "d28_train"], TOTALS, [1.0, .75, .5, .25])
     with pytest.raises(ValueError, match="n <= 20"):
-        co.validate([replace(REG.training, sizes=(12, 30), per_size=1500)] + [c for c in cs if c.name != "d28_train"], 3000,
+        co.validate([replace(REG.training, sizes=(12, 30), per_size=1500)] + [c for c in cs if c.name != "d28_train"], TOTALS,
                     [1.0, .75, .5, .25])
     with pytest.raises(ValueError, match="no solvability filtering"):
         co.validate([replace(REG["d28_test_id"], selection="solvable_quota")] + [c for c in cs if c.name != "d28_test_id"],
-                    3000, [1.0, .75, .5, .25])
+                    TOTALS, [1.0, .75, .5, .25])
     with pytest.raises(ValueError, match="validation selects solvable"):
-        co.validate([replace(REG["d28_val"], selection="fixed")] + [c for c in cs if c.name != "d28_val"], 3000,
+        co.validate([replace(REG["d28_val"], selection="fixed")] + [c for c in cs if c.name != "d28_val"], TOTALS,
                     [1.0, .75, .5, .25])
     with pytest.raises(ValueError, match="positive per_size"):  # only a test cohort's size may be null
-        co.validate([replace(REG["d28_val"], per_size=None)] + [c for c in cs if c.name != "d28_val"], 3000,
+        co.validate([replace(REG["d28_val"], per_size=None)] + [c for c in cs if c.name != "d28_val"], TOTALS,
                     [1.0, .75, .5, .25])
     with pytest.raises(ValueError, match="generation limit"):
-        co.validate([replace(REG.training, max_candidates_per_size=10)] + [c for c in cs if c.name != "d28_train"], 3000,
+        co.validate([replace(REG.training, max_candidates_per_size=10)] + [c for c in cs if c.name != "d28_train"], TOTALS,
                     [1.0, .75, .5, .25])
 
 

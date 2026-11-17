@@ -49,6 +49,7 @@ EXCLUDES = ("heldout_products", "none")
 REQUIREMENTS = ("n4_pass",)
 GEN_COHORTS = ("core", "temporal")
 TRAINING_MAX_N = 20  # Round 9: training networks have n <= 20
+QUOTA_ROLES = ("training", "validation")  # solvable totals split into equal quotas per size (P7d)
 SMOKE_PREFIX = "p7-smoke"
 TEST_LOG_SCHEMA = "d28-test-access/1"
 D_ENTRY = re.compile(r"^D\d+\b")  # a named D-entry, e.g. "D29 §2"
@@ -108,7 +109,7 @@ class Registry:
     cohorts: dict[str, Cohort]
     frozen: bool
     heldout_products: tuple[str, ...] | None
-    training_total_solvable: int
+    totals: dict[str, int]  # role -> target solvable networks (training 3,000, validation 400; P7d)
     sha256: str
     heldout_cves: tuple[str, ...] | None = None
     heldout_cves_kept_by: tuple[str, ...] = ()  # the cohorts that keep the held-out CVEs (the unseen-CVE split)
@@ -119,6 +120,15 @@ class Registry:
     @property
     def training(self) -> Cohort:
         return next(c for c in self.cohorts.values() if c.role == "training" and not c.smoke)
+
+    def quota_rounding(self, c: Cohort) -> dict | None:
+        """How a real training or validation cohort's target total became equal per-size quotas (P7d: the
+        rounding is logged); None for test and smoke cohorts."""
+        if c.smoke or c.role not in QUOTA_ROLES:
+            return None
+        target = self.totals[c.role]
+        return {"target": target, "sizes": len(c.sizes), "per_size": c.per_size, "total": c.per_size * len(c.sizes),
+                "difference": c.per_size * len(c.sizes) - target, "rule": "round half up of target / sizes"}
 
     def excluded(self, c: Cohort) -> frozenset[str]:
         """Products whose CVEs the generator must leave out for cohort c (Rounds 10, 11)."""
@@ -170,7 +180,12 @@ def _cohort(d: dict, smoke: bool) -> Cohort:
                      "blocked_by": tuple(d["blocked_by"])}, smoke=smoke)
 
 
-def validate(cohorts: list[Cohort], total: int, p_values: list[float]) -> None:
+def equal_quota(total: int, n_sizes: int) -> int:
+    """The equal per-size quota of a target total (P7d, OQ-P7d-1): total / sizes rounded half up."""
+    return (2 * total + n_sizes) // (2 * n_sizes)  # floor(total / n + 1/2) in integers
+
+
+def validate(cohorts: list[Cohort], totals: dict[str, int], p_values: list[float]) -> None:
     """Structural rules of the registry; raises ValueError on the first violation."""
     names = [c.name for c in cohorts]
     if len(set(names)) != len(names):
@@ -207,14 +222,18 @@ def validate(cohorts: list[Cohort], total: int, p_values: list[float]) -> None:
             lim = c.max_candidates_per_size
             if lim is not None and (not isinstance(lim, int) or lim < c.per_size):
                 raise ValueError(f"{c.name}: {c.role} needs a generation limit >= its quota")
-            if c.role == "training" and not c.smoke and c.per_size * len(c.sizes) != total:
-                raise ValueError(f"{c.name}: {len(c.sizes)} equal quotas of {c.per_size} != {total} networks")
+            if not c.smoke and c.per_size != equal_quota(totals[c.role], len(c.sizes)):
+                raise ValueError(f"{c.name}: {len(c.sizes)} equal quotas of {c.per_size} are not {totals[c.role]} "
+                                 f"networks rounded half up per size ({equal_quota(totals[c.role], len(c.sizes))})")
         elif c.selection != "fixed" or c.max_candidates_per_size is not None:
             raise ValueError(f"{c.name}: test cohorts are fixed-size, with no solvability filtering")
     real = [c for c in cohorts if not c.smoke]
     for role in ("training", "validation"):
         if sum(c.role == role for c in real) != 1:
             raise ValueError(f"exactly one {role} cohort is required")
+    train, val = (next(c for c in real if c.role == r) for r in ("training", "validation"))
+    if val.sizes != train.sizes:  # P7d: validation has the training size mix
+        raise ValueError(f"{val.name}: validation sizes {val.sizes} differ from training's {train.sizes}")
 
 
 def load_registry(path: Path = REGISTRY, gen_config: Path | None = None) -> Registry:
@@ -223,7 +242,8 @@ def load_registry(path: Path = REGISTRY, gen_config: Path | None = None) -> Regi
     from .gen.generate import CONFIG as GEN_CONFIG  # the generator's own p values (read-only use of its config)
     p_values = json.loads((gen_config or GEN_CONFIG).read_text())["p_values"]
     cohorts = [_cohort(d, False) for d in cfg["cohorts"]] + [_cohort(d, True) for d in cfg.get("smoke", [])]
-    validate(cohorts, cfg["training_total_solvable"], p_values)
+    totals = {"training": cfg["training_total_solvable"], "validation": cfg["validation_total_solvable"]}
+    validate(cohorts, totals, p_values)
     held = cfg["heldout_products"]
     cves = cfg["heldout_cves"]
     by_name = {c.name: c for c in cohorts}
@@ -231,7 +251,7 @@ def load_registry(path: Path = REGISTRY, gen_config: Path | None = None) -> Regi
     if not kept or any(k not in by_name or not by_name[k].is_test or by_name[k].smoke for k in kept):
         raise ValueError(f"heldout_cves: kept_by {list(kept)} must name real test cohorts")
     return Registry(by_name, bool(cfg["frozen"]), None if held is None else tuple(held),
-                    cfg["training_total_solvable"], hashlib.sha256(raw).hexdigest(),
+                    totals, hashlib.sha256(raw).hexdigest(),
                     None if cves["ids"] is None else tuple(cves["ids"]), kept)
 
 
@@ -389,6 +409,7 @@ def build(ctx, registry: Registry, name: str, *, store: Path = TASK_STORE, acces
     return {"cohort": name, "spec": {**c.__dict__, "sizes": list(c.sizes), "requires": list(c.requires),
                                      "blocked_by": list(c.blocked_by)},
             "registry_sha256": registry.sha256, "inputs": ctx.input_hashes, "excluded": sorted(excluded),
+            "quota_rounding": registry.quota_rounding(c),
             "sizes_run": sizes, "sizes_not_run_n4": not_run, "candidates": candidates,
             "members": [{"digest": m["digest"], "seed": m["seed"], "n": m["n"], "solvable": m["solvable"],
                          "reason": m["reason"]} for m in members],

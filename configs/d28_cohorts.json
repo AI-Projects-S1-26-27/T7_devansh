@@ -1,6 +1,6 @@
 {
  "task": "P7",
- "decisions": "decisions.md Rounds 6, 9, 10, 11, 18; P7 task text (17 Nov 2026); P7 decisions of 17 Nov 2026 (OQ-P7-1 to -10); OQ-P7-* in open_questions.md",
+ "decisions": "decisions.md Rounds 6, 9, 10, 11, 18; P7 task text (17 Nov 2026); P7 decisions of 17 Nov 2026 (OQ-P7-1 to -10); OQ-P7-* in open_questions.md; P7d decisions of 17 Nov 2026 (training sizes n = 8..20)",
  "frozen": false,
  "frozen_note": "No cohort except a smoke cohort is built while frozen is false. Freezing is a commit that sets it true after Devansh approves the remaining sizes (test cohorts) and the generation limit, both null until the P6 pilot solvability rates arrive (OQ-P7-1, OQ-P7-2, decided 17 Nov 2026).",
  "heldout_products": [
@@ -16,6 +16,8 @@
  },
  "seed_format": "{namespace}/n{n}/{index}",
  "training_total_solvable": 3000,
+ "validation_total_solvable": 400,
+ "quota_note": "P7d (decided 17 Nov 2026 by Devansh): training draws every size n = 8..20, 3,000 solvable networks with equal quotas per size; validation 400 solvable networks, same size mix. Equal quota per size = round half up of total / number of sizes (DECIDED-BY-AGENT, OQ-P7d-1): 3000 / 13 -> 231 per size (3,003 in total, +3); 400 / 13 -> 31 per size (403, +3). The rounding is recorded in every built cohort record (quota_rounding). Training and validation generation limits stay null until a pilot on the merged generator (d28-gen into d28-pipe).",
  "cohorts": [
   {
    "name": "d28_train",
@@ -25,7 +27,18 @@
    "namespace": "d28.train",
    "archetype": "tree",
    "sizes": [
+    8,
+    9,
+    10,
+    11,
     12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
     20
    ],
    "gen_cohort": "core",
@@ -33,7 +46,7 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "solvable_quota",
-   "per_size": 1500,
+   "per_size": 231,
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
@@ -46,7 +59,18 @@
    "namespace": "d28.val",
    "archetype": "tree",
    "sizes": [
+    8,
+    9,
+    10,
+    11,
     12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
     20
    ],
    "gen_cohort": "core",
@@ -54,7 +78,7 @@
    "p": 1.0,
    "exclude": "heldout_products",
    "selection": "solvable_quota",
-   "per_size": 200,
+   "per_size": 31,
    "max_candidates_per_size": null,
    "requires": [],
    "blocked_by": []
