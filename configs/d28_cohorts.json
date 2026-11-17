@@ -8,11 +8,14 @@
  ],
  "heldout_note": "Held-out product set (Round 10): exim (decided 17 Nov 2026 by Devansh, OQ-P7-5). Every cohort with exclude 'heldout_products' leaves out every CVE touching it; d28_test_product draws from the whole pool.",
  "heldout_cves": {
-  "ids": null,
+  "source": "configs/gen/cve_holdout_v2.json",
+  "version": "v2",
+  "set_sha256": "fbab7f28173838a9c28bcee406e160ec4fb8f36a5bc0fb18ce9cc5c0f90b8c24",
+  "count": 89,
   "kept_by": [
    "d28_test_cve"
   ],
-  "note": "Unseen-CVE split (decided 17 Nov 2026 by Devansh, OQ-P7-3/4): the held-out set is every AC:H pool unit plus random AC:L units until it holds 30% of the pool's CVE IDs. Every cohort except the one(s) in kept_by excludes it, training and validation included (decided 17 Nov 2026, OQ-P7b-2: one factor at a time, Round 10); d28_test_cve draws from the held-out CVEs plus the rest of the pool. Drawn through the generator's 'excluded CVEs' parameter (on d28-gen); ids stay null and every excluding cohort stays blocked until that parameter is on this branch."
+  "note": "Unseen-CVE split (decided 17 Nov 2026 by Devansh; OQ-P7-3/4, OQ-P6-26): the held-out set is configs/gen/cve_holdout_v2.json from d28-gen: a random half of the core pool's AC:H CVEs (25 of 49) plus random AC:L CVEs until it holds 30% of the pool's CVE IDs (89 of 298). The registry reads its IDs from that file, checking version and set SHA-256 (ahg.gen.pool.cve_set_sha256: IDs in numeric order, one per line); the file is not on this branch until d28-gen is merged, so until then the IDs are unknown and every excluding cohort stays blocked. Every cohort except the one(s) in kept_by excludes the set, training and validation included (OQ-P7b-2: one factor at a time, Round 10); d28_test_cve draws from the held-out CVEs plus the rest of the pool."
  },
  "seed_format": "{namespace}/n{n}/{index}",
  "training_total_solvable": 3000,

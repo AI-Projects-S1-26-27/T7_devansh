@@ -228,3 +228,29 @@ def test_every_test_cohort_is_gated():
     with pytest.raises(co.TestAccessError):
         for c in TESTS:
             co.check_access(c, None, (LABEL_GENERATION,))
+
+
+def test_the_registry_reads_the_heldout_cves_from_the_pinned_v2_file(tmp_path):
+    # P7e (OQ-P6-26): the set is configs/gen/cve_holdout_v2.json from d28-gen; absent here until the merge.
+    spec = json.loads(co.REGISTRY.read_text())["heldout_cves"]
+    assert spec["source"] == "configs/gen/cve_holdout_v2.json" and spec["version"] == "v2" and spec["count"] == 89
+    assert REG.heldout_cves is None or len(REG.heldout_cves) == 89
+    import hashlib
+    ids = [f"CVE-2020-{k}" for k in range(1, 90)]
+    good = {"version": "v2", "heldout_products": ["exim:exim"], "cves": ids[::-1],
+            "sha256": hashlib.sha256("".join(f"{c}\n" for c in ids).encode()).hexdigest()}
+    (tmp_path / "configs" / "gen").mkdir(parents=True)
+    src = tmp_path / spec["source"]
+    pin = {**spec, "set_sha256": good["sha256"]}
+    assert co.load_heldout_cves(pin, ("exim:exim",), tmp_path) is None  # no file yet: unknown, still blocked
+    src.write_text(json.dumps(good))
+    assert co.load_heldout_cves(pin, ("exim:exim",), tmp_path) == tuple(ids)  # numeric order
+    for bad in ({"version": "v1"}, {"cves": ids[:-1]}, {"sha256": "0" * 64}):
+        src.write_text(json.dumps(good | bad))
+        with pytest.raises(ValueError, match="pin"):
+            co.load_heldout_cves(pin, ("exim:exim",), tmp_path)
+    src.write_text(json.dumps(good | {"heldout_products": []}))
+    with pytest.raises(ValueError, match="drawn without"):
+        co.load_heldout_cves(pin, ("exim:exim",), tmp_path)
+    with pytest.raises(ValueError, match="keys"):
+        co.load_heldout_cves({**pin, "ids": None}, ("exim:exim",), tmp_path)

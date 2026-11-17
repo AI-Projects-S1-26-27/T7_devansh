@@ -236,7 +236,29 @@ def validate(cohorts: list[Cohort], totals: dict[str, int], p_values: list[float
         raise ValueError(f"{val.name}: validation sizes {val.sizes} differ from training's {train.sizes}")
 
 
-def load_registry(path: Path = REGISTRY, gen_config: Path | None = None) -> Registry:
+def load_heldout_cves(spec: dict, heldout_products: tuple[str, ...] | None, root: Path = ROOT) -> tuple[str, ...] | None:
+    """The held-out CVE IDs from the holdout file the registry names (P7e: configs/gen/cve_holdout_v2.json, written on
+    d28-gen); None while that file is not in this checkout (it arrives with the merge). A file that is there must
+    have the pinned version, ID count and set SHA-256, and must have been drawn without the held-out products."""
+    if set(spec) != {"source", "version", "set_sha256", "count", "kept_by", "note"}:
+        raise ValueError(f"heldout_cves: keys {sorted(spec)} are not source, version, set_sha256, count, kept_by, note")
+    path = root / spec["source"]
+    if not path.exists():
+        return None
+    from .gen.pool import cve_key
+    d = json.loads(path.read_text())
+    ids = sorted(d["cves"], key=cve_key)
+    got = hashlib.sha256("".join(f"{c}\n" for c in ids).encode()).hexdigest()  # = d28-gen pool.cve_set_sha256
+    if (d["version"], len(set(ids)), got, d["sha256"]) != (spec["version"], spec["count"], spec["set_sha256"],
+                                                          spec["set_sha256"]):
+        raise ValueError(f"{path}: version {d['version']}, {len(set(ids))} IDs, set SHA-256 {got[:12]} (file says "
+                         f"{d['sha256'][:12]}) do not match the registry's pin")
+    if heldout_products is not None and tuple(d["heldout_products"]) != heldout_products:
+        raise ValueError(f"{path}: drawn without {d['heldout_products']}, not the registry's {list(heldout_products)}")
+    return tuple(ids)
+
+
+def load_registry(path: Path = REGISTRY, gen_config: Path | None = None, root: Path = ROOT) -> Registry:
     raw = path.read_bytes()
     cfg = json.loads(raw)
     from .gen.generate import CONFIG as GEN_CONFIG  # the generator's own p values (read-only use of its config)
@@ -246,13 +268,14 @@ def load_registry(path: Path = REGISTRY, gen_config: Path | None = None) -> Regi
     validate(cohorts, totals, p_values)
     held = cfg["heldout_products"]
     cves = cfg["heldout_cves"]
+    heldout_ids = load_heldout_cves(cves, None if held is None else tuple(held), root)
     by_name = {c.name: c for c in cohorts}
     kept = tuple(cves["kept_by"])
     if not kept or any(k not in by_name or not by_name[k].is_test or by_name[k].smoke for k in kept):
         raise ValueError(f"heldout_cves: kept_by {list(kept)} must name real test cohorts")
     return Registry(by_name, bool(cfg["frozen"]), None if held is None else tuple(held),
                     totals, hashlib.sha256(raw).hexdigest(),
-                    None if cves["ids"] is None else tuple(cves["ids"]), kept)
+                    heldout_ids, kept)
 
 
 def prereg_frozen(path: Path = PREREG) -> bool:
