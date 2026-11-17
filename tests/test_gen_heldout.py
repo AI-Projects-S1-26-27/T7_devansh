@@ -154,3 +154,28 @@ def test_lost_groups_and_ac_h_shares():
     sh = m.ac_h_shares(mix["heldout"], mix["pool"])
     assert sh["share_of_pool_ac_h_cves"] == 1.0 and sh["ac_h_share_of_side_cves"] == 1 / 3
     assert m.ac_h_shares(mix["training"], mix["pool"])["share_of_pool_ac_h_units"] == 0.0
+
+
+def test_stored_cve_holdout_v2_matches_its_hash_and_the_p6d_rule():
+    """configs/gen/cve_holdout_v2.json (§18 P6d item 1): the IDs hash to the stored SHA-256 and are exactly what
+    the rule gives on the training cohort's pool; half the AC:H IDs (round half up) are held out, so training
+    keeps the other half."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    cfg = json.loads((root / "configs" / "gen" / "cve_holdout_v2.json").read_text())
+    assert (cfg["version"], cfg["seed"], cfg["share"], cfg["ach_share"], cfg["ach_seed"]) == (
+        "v2", "cve-holdout", 0.3, 0.5, "cve-holdout-ach") and cfg["heldout_products"] == ["exim:exim"]
+    assert pool.cve_set_sha256(cfg["cves"]) == cfg["sha256"] and cfg["cves"] == sorted(cfg["cves"], key=pool.cve_key)
+    assert cfg["sha256"] != json.loads((root / "configs" / "gen" / "cve_holdout.json").read_text())["sha256"]
+    if not (root / "data" / "d28" / "master").exists():
+        pytest.skip("pinned P6 inputs not in this checkout")
+    from ahg.gen import generate as gen
+
+    ctx = gen.Context.load()
+    units = ctx.run_units(cfg["cohort"], frozenset(cfg["heldout_products"]))
+    held, counts = pool.cve_holdout(units, cfg["share"], cfg["seed"], cfg["ach_share"], cfg["ach_seed"])
+    assert held == cfg["cves"] and counts == cfg["counts"]
+    high = {u.cve_id for u in units if u.ac == "H"}
+    assert len(high & set(held)) == counts["ac_h_drawn"] == (len(high) + 1) // 2 and high - set(held)
