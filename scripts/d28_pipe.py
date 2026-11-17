@@ -7,10 +7,14 @@
   landscape [--smoke]                               landscape pilot (training tasks, certified ac labels)
   budget    [--smoke]                               budget feasibility pilot; proposes the frozen budget
   ac-counts                                         eligible AC:L / AC:H counts per cohort (environment check)
+  evaluate  <cohort> --state-budget B --search-budget S --checkpoint P [...] [--eval-root R] [--permitted-by D]
+                                                    every baseline and model, both regimes and tie rules, FD
   report    --eval-root R --out O --primary a,b --val-split v   regenerate every table and figure
 
 Cohort records live in data/d28/cohorts/<name>.json (untracked); runs go through runlog under results/d28_pipe/.
-Test cohorts: build and label first log a "label generation" read in results/test_access_log.jsonl.
+Test cohorts: build and label first log a "label generation" read in results/test_access_log.jsonl;
+evaluate logs the single "evaluation" read (Round 10) after every check that needs no test data has passed.
+Evaluation runs go to results/d28_eval/<cohort>.<regime>.<tie>/ (ahg.d28eval), which `report` reads.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from ahg import cohorts as co, d28labels, n4, pilots, runlog  # noqa: E402
-from ahg.splits import LABEL_GENERATION  # noqa: E402
+from ahg.splits import EVALUATION, LABEL_GENERATION  # noqa: E402
 
 RUNS = ROOT / "results" / "d28_pipe"
 RECORDS = ROOT / "data" / "d28" / "cohorts"
@@ -158,6 +162,30 @@ def cmd_ac_counts(a, reg, ctx) -> None:
     print(json.dumps({"|".join(k): v for k, v in sorted(cnt.items())}, indent=1))
 
 
+def cmd_evaluate(a, reg, ctx) -> None:
+    from ahg import d28eval
+    c = reg[a.cohort]
+    require_buildable(reg, c)
+    rec = load_record(c, RECORDS)
+    cfg = d28eval.with_budget(d28eval.load_config(), a.search_budget)
+    cfg |= {k: getattr(a, k) for k in ("repeats", "warmup") if getattr(a, k) is not None}
+    lcfg = d28labels.with_budget(d28labels.load_config(), a.state_budget)
+    ckpts = d28eval.load_checkpoints(a.checkpoint)
+    # Looked up at call time (not import time), so tests can point them at a temporary directory.
+    labels_root, store, log = d28labels.LABEL_ROOT, co.TASK_STORE, co.TEST_ACCESS_LOG
+    d28eval.preflight(c, rec, cfg, ckpts, lcfg, labels_root)  # before a test read is logged
+    access = None
+    if c.is_test:
+        access = co.record_test_read(reg, c.name, EVALUATION, commit(), dataset_sha256=rec["dataset_sha256"],
+                                     eval_config_sha256=d28eval.config_sha(cfg),
+                                     checkpoint_sha256=d28eval.checkpoint_hashes(ckpts),
+                                     permitted_by=a.permitted_by, log=log)
+    raws = d28eval.evaluate_cohort(rec, reg, cfg, ckpts, lcfg, labels_root=labels_root, store=store, access=access,
+                                   log=log)
+    for d in d28eval.write_runs(raws, Path(a.eval_root) if a.eval_root else d28eval.EVAL_ROOT):
+        print(d)
+
+
 def cmd_report(a, reg, ctx) -> None:
     from ahg import report
     print(report.build_report(Path(a.eval_root), Path(a.out), primary=set(a.primary.split(",")),
@@ -183,6 +211,15 @@ def main(argv=None) -> None:
             p.add_argument("--state-budget", type=int)
             p.add_argument("--search-budget", type=int, default=200_000)
     sub.add_parser("ac-counts")
+    p = sub.add_parser("evaluate")
+    p.add_argument("cohort")
+    p.add_argument("--state-budget", type=int, help="the label config's per-state budget (finds the label records)")
+    p.add_argument("--search-budget", type=int, help="per-task A* expansion budget, until frozen in configs/eval/d28.json")
+    p.add_argument("--checkpoint", action="append", default=[], help="a trained checkpoint; repeat for each")
+    p.add_argument("--repeats", type=int, help="timed repeats (smoke cohorts only; others must use 5)")
+    p.add_argument("--warmup", type=int, help="discarded warm-up runs (smoke cohorts only; others must use 1)")
+    p.add_argument("--eval-root")
+    p.add_argument("--permitted-by", help="the D-entry permitting a second evaluation read of a test cohort")
     p = sub.add_parser("report")
     p.add_argument("--eval-root", required=True)
     p.add_argument("--out", required=True)
@@ -192,11 +229,11 @@ def main(argv=None) -> None:
     a = ap.parse_args(argv)
     reg = co.load_registry()
     ctx = None
-    if a.cmd != "report":
+    if a.cmd not in ("report", "evaluate"):
         from ahg.gen.generate import Context
         ctx = Context.load()
     {"build": cmd_build, "label": cmd_label, "n4": cmd_n4, "landscape": cmd_landscape, "budget": cmd_budget,
-     "ac-counts": cmd_ac_counts, "report": cmd_report}[a.cmd](a, reg, ctx)
+     "ac-counts": cmd_ac_counts, "evaluate": cmd_evaluate, "report": cmd_report}[a.cmd](a, reg, ctx)
 
 
 if __name__ == "__main__":

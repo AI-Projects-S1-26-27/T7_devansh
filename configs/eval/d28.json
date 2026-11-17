@@ -1,0 +1,10 @@
+{
+ "_note": "D28 evaluation runner (P7b, OQ-P7-11; Rounds 7, 10, 12). search_budget is the per-task A* expansion budget: null until it is set from validation and frozen before any test read (Round 12); until then a run passes it explicitly and records it. repeats and warmup are the M1 timing protocol (5 timed after 1 discarded); only smoke cohorts may use fewer. fast_downward: the compiled A*+LM-cut and A*+h_max baselines (Round 7). overestimation_tolerance: h(s) > h*(s) + this counts as an overestimate (float model outputs).",
+ "regimes": ["ac", "uniform"],
+ "tie_rules": ["fifo", "lifo"],
+ "search_budget": null,
+ "repeats": 5,
+ "warmup": 1,
+ "fast_downward": ["lmcut", "hmax"],
+ "overestimation_tolerance": 1e-9
+}

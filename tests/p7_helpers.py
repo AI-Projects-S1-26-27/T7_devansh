@@ -35,3 +35,23 @@ def record(i, n=12, g=10, base=20, mlp=15, wl=18, solvable=True, certified=True)
     return {"task": f"d{i}", "network": f"net{i // 2}", "n": n, "solvable": solvable,
             "unsolvable_reason": None if solvable else "no_foothold_on_goal_host_reachable",
             "certified": certified, "hstar": 10 if solvable else None, "runs": runs if solvable else {}}
+
+
+def checkpoint(path, kind, seed, regime, hidden=8):
+    """An untrained, seeded checkpoint of a confirmatory model (gnn, mlp, wl) for pipeline tests; regime None
+    writes a pre-D28 config without cost_regime. Returns the path. Never a trained model."""
+    import torch
+    from ahg.learning import train
+    from ahg.learning.models import MLP, WLLinear
+    from ahg.learning.runs import make_config
+    torch.manual_seed(seed)
+    over = {} if regime is None else {"cost_regime": regime}
+    cfg = make_config(kind=kind, seed=seed, hidden=hidden, layers=2, **over)
+    if kind == "gnn":
+        model = train.new_gnn(cfg, 4.0, 4.0)
+    elif kind == "mlp":
+        model = MLP(7, hidden, torch.zeros(7), torch.ones(7), 4.0)  # 7 = len(dataset.mlp_features)
+    else:
+        model = WLLinear({}, torch.zeros(0), 1.0, 4.0)
+    train.save(model, cfg, path)
+    return path

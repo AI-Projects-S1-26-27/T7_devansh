@@ -46,7 +46,7 @@ def test_fd_run_discards_warmup(monkeypatch, tmp_path):
 
     def fake(args, cwd):
         calls.append(args)
-        return 0, LOG, 1000 + len(calls)
+        return 0, LOG, 1000 + len(calls), 2048 * len(calls)  # (code, log, wall ns, peak RSS bytes)
 
     monkeypatch.setattr(fd_timing, "_run", fake)
     monkeypatch.setattr(fd_timing, "fd_version", lambda fd_dir=None: fd_timing.FD_VERSION)
@@ -56,5 +56,7 @@ def test_fd_run_discards_warmup(monkeypatch, tmp_path):
     assert len(calls) == 3 * 6  # (end-to-end, translate, search) x (1 warm-up + 5 timed)
     assert r["repeats"] == 5 and r["warmup"] == 1 and len(r["fd_reported"]) == 5
     assert r["wall"]["end_to_end"]["ns"] == [1004, 1007, 1010, 1013, 1016]  # warm-up call 1 not recorded
+    assert r["peak_rss_bytes"]["end_to_end"] == [2048 * k for k in (4, 7, 10, 13, 16)]  # per timed repeat
+    assert r["peak_rss_bytes"]["search"] == [2048 * k for k in (6, 9, 12, 15, 18)]
     with pytest.raises(ValueError):
         fd_timing.run(tmp_path / "d.pddl", tmp_path / "p.pddl", "lmcut", warmup=-1)

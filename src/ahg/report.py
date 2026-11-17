@@ -1,14 +1,20 @@
 """D28 report builder (P7): every table and figure from the results directories (Round 12, §13.1).
 
-Input: evaluation runs under results/d28_eval/<split>/<run>/raw.json.gz written by runlog.write_run. raw is
-{"split", "regime", "tie_break", "records": [...]}, one record per task:
+Input: evaluation runs under results/d28_eval/<split>.<regime>.<tie>/<run>/raw.json.gz, written by
+d28eval.write_runs (any <dir>/<run>/raw.json.gz is read). raw is {"split", "regime", "tie_break", "records": [...]},
+one record per task (d28eval has the full record):
 
     {"task": digest, "network": id, "n": int, "solvable": bool, "unsolvable_reason": str|None,
      "certified": bool, "hstar": number|None,
      "runs": {method: {"expanded": int|None, "cost": number|None, "budget_hit": bool,
                        "python_time": Timing record|None, "fd_time": Timing record|None,
+                       "peak_open": int|None, "peak_closed": int|None,
                        "peak_memory_bytes": int|None,
                        "overestimation": {"states": int, "violations": int}|None}}}
+
+peak_open / peak_closed: the Python A* list sizes (Round 7); peak_memory_bytes and fd_time: the Fast Downward
+run of the same heuristic (Round 12 secondary outcomes), present for LM-cut and h_max only. The tables show the
+maxima of the three over the solved tasks.
 
 Learned methods run once per D23 seed and are named "<model>@<seed>" (gnn@0, mlp@1, wl@2); every classical
 method has one run. build_report() reads nothing else, so one command regenerates all of it.
@@ -76,6 +82,8 @@ def split_table(raw: dict) -> list[dict]:
         py = [_ns(x.get("python_time")) for _, x in solved]
         fd = [_ns(x.get("fd_time")) for _, x in solved]
         mem = [x["peak_memory_bytes"] for _, x in solved if x.get("peak_memory_bytes") is not None]
+        p_open = [x["peak_open"] for _, x in solved if x.get("peak_open") is not None]
+        p_closed = [x["peak_closed"] for _, x in solved if x.get("peak_closed") is not None]
         over = [x["overestimation"] for _, x in runs if x.get("overestimation")]
         states = sum(o["states"] for o in over)
         rows.append({
@@ -88,6 +96,7 @@ def split_table(raw: dict) -> list[dict]:
             "python_ms": statistics.median(py) / 1e6 if py and None not in py else None,
             "fd_ms": statistics.median(fd) / 1e6 if fd and None not in fd else None,
             "peak_mem_mb": max(mem) / 2**20 if mem else None,
+            "peak_open": max(p_open) if p_open else None, "peak_closed": max(p_closed) if p_closed else None,
             "overestimation_rate": sum(o["violations"] for o in over) / states if states else None})
     return rows
 
@@ -254,10 +263,12 @@ def build_report(eval_root: Path, out_dir: Path, *, primary: set[str], val_split
                   f" ({cert['certified']}/{cert['solvable']})", ""]
             rows = [[r["method"], r["solved"], _fmt(r["coverage"], ".3f"), _fmt(r["geo_expansions"]),
                      _fmt(r["cost_ratio"], ".4f") + f" ({r['cost_ratio_tasks']})", _fmt(r["python_ms"]),
-                     _fmt(r["fd_ms"]), _fmt(r["peak_mem_mb"]), _fmt(r["overestimation_rate"], ".3f")]
+                     _fmt(r["fd_ms"]), _fmt(r["peak_mem_mb"]), _fmt(r["peak_open"], "d"), _fmt(r["peak_closed"], "d"),
+                     _fmt(r["overestimation_rate"], ".3f")]
                     for r in split_table(raw)]
             L += [_md_table(["method", "solved", "coverage", "geo expansions", "cost / optimum (certified tasks)",
-                             "Python ms", "FD ms", "peak MB", "overestimation rate"], rows), ""]
+                             "Python ms", "FD ms", "FD peak MB", "peak open", "peak closed",
+                             "overestimation rate"], rows), ""]
             png = f"sizes_{split}_{regime}_{tie}.png"
             if plot_sizes(size_curves({split: raw}), out_dir / png, f"{split} ({regime}, {tie})"):
                 L += [f"![{split}]({png})", ""]
