@@ -135,3 +135,24 @@ def test_citation_sources_configs_are_well_formed_and_the_fetch_script_takes_a_s
         assert all(re.fullmatch(r"https://[^\s]+", p["url"]) and "/" not in p["name"] for p in cfg["pages"])
     script = (ROOT / "scripts" / "fetch_principals.py").read_text()
     assert '"--source"' in script and '"data" / "raw" / a.source / a.date' in script
+
+
+def test_firewall_rule_citation_is_verbatim_in_its_hashed_nasim_pages():
+    """OQ-P6-18 (§18, 17 Nov 2026): NASim's at-least-one firewall guarantee, and the NASim parts not taken."""
+    import hashlib
+
+    import pytest
+
+    cite = json.loads((ROOT / "configs" / "gen" / "p6.json").read_text())["firewall_rule"]
+    assert "2191a3a7f15a178bd00a6321151f3492ce118046" in cite["url"]
+    pages = [(cite, False), (cite["not_taken"]["restrictiveness"], True)]
+    for c, is_html in pages:
+        assert re.fullmatch(r"[0-9a-f]{64}", c["sha256"])
+        raw_path = ROOT / c["raw"]
+        if not raw_path.exists():
+            pytest.skip("NASim raw snapshot not in this checkout")
+        raw = raw_path.read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == c["sha256"]
+        assert c["quote"] in page_text(raw, html_page=is_html)
+    src = page_text((ROOT / cite["not_taken"]["vulnerable_only"]["raw"]).read_bytes(), html_page=False)
+    assert cite["not_taken"]["vulnerable_only"]["quote"] in src

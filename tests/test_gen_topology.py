@@ -70,13 +70,63 @@ def test_firewall_allows_only_far_side_families_and_nothing_to_the_internet():
         assert set(allow) <= far and allow == sorted(allow)
         if b == 0:
             assert allow == []
-    # each direction drawn independently: over many draws every family is sometimes allowed, sometimes not
+    # each direction drawn independently: over many draws every family of a far side running two or more is
+    # sometimes allowed, sometimes not; a far side running one family always allows it (NASim rule, OQ-P6-18)
     seen = {}
     for s in range(200):
         for k, allow in topology.draw_firewall(lay, fams, random.Random(s), 0.5).items():
-            for f in {f for h in lay.subnets[k[1]].hosts for f in fams[h]}:
-                seen.setdefault((k, f), set()).add(f in allow)
-    assert all(v == {True, False} for v in seen.values())
+            far = {f for h in lay.subnets[k[1]].hosts for f in fams[h]}
+            for f in far:
+                seen.setdefault((k, f, len(far) >= 2), set()).add(f in allow)
+    assert any(multi for _, _, multi in seen)
+    assert all(v == ({True, False} if multi else {True}) for (_, _, multi), v in seen.items())
+
+
+def test_firewall_allows_at_least_one_running_family_per_direction():
+    """§18, 17 Nov 2026 (OQ-P6-18): NASim's guarantee. Every direction towards a subnet that runs something
+    allows at least one of its families; the internet direction stays empty."""
+    for arch, n in (("tree", 12), ("tree", 30), ("chain", 20)):
+        lay = topology.layout(arch, n, CFG)
+        for s in range(100):
+            rng = random.Random(s)
+            fams = {0: []} | {h: rng.sample(["http", "smb", "ssh", "dns", "sql"], rng.randint(1, 3))
+                              for sn in lay.subnets[1:] for h in sn.hosts}
+            for (a, b), allow in topology.draw_firewall(lay, fams, random.Random(1000 + s), 0.5).items():
+                far = {f for h in lay.subnets[b].hosts for f in fams[h]}
+                assert bool(allow) == bool(far) and set(allow) <= far
+
+
+def test_firewall_independent_draw_is_kept_and_fallback_is_uniform():
+    """The 0.5 draws are those of the old rule (same stream, same order); only a direction whose draws allowed
+    nothing gets one extra draw: a uniform choice among the families running on the far side."""
+    lay = topology.layout("chain", 12, CFG)
+    fams = {0: []} | {h: ["dns", "http", "smb"] for sn in lay.subnets[1:] for h in sn.hosts}
+    forced = {}
+    for s in range(3000):
+        rng, ref = random.Random(s), random.Random(s)
+        fw = topology.draw_firewall(lay, fams, rng, 0.5)
+        for a, b in lay.links:  # replay the documented draw order with the reference stream
+            for src, dst in ((a, b), (b, a)):
+                far = sorted({f for h in lay.subnets[dst].hosts for f in fams[h]})
+                first = [f for f in far if ref.random() < 0.5]
+                if first:
+                    assert fw[(src, dst)] == first
+                elif far:
+                    pick = ref.choice(far)
+                    assert fw[(src, dst)] == [pick]
+                    forced[pick] = forced.get(pick, 0) + 1
+                else:
+                    assert fw[(src, dst)] == []
+    # 3 families, each forced pick about a third of the time (P(empty) = 1/8 per direction)
+    total = sum(forced.values())
+    assert set(forced) == {"dns", "http", "smb"} and all(abs(v / total - 1 / 3) < 0.05 for v in forced.values())
+
+
+def test_firewall_never_sees_vulnerabilities():
+    """The rule's only inputs are the layout, the families each host runs, the stream and the probability."""
+    import inspect
+
+    assert list(inspect.signature(topology.draw_firewall).parameters) == ["lay", "families_of", "rng", "prob"]
 
 
 def test_can_reach_same_subnet_or_one_allowing_link_only():

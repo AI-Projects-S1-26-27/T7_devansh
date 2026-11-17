@@ -15,11 +15,22 @@ Two archetypes, both from published benchmark generators:
 
 n counts the internal hosts (the internet host is extra). round() rounds halves up (OQ-P6-1).
 
-Firewall (Speicher et al.'s "fraction of ports"): traffic inside a subnet is open. Every link between two
-subnets has two directions; each direction allows each service family present on its far side
-independently with probability 0.5, drawn once per link and direction. Routing is not transitive: a host
-reaches a service only in its own subnet or across one link that allows the service's family (OQ-P6-2).
-The internet host runs nothing, so nothing is drawn towards it. Solvability is never forced.
+Firewall (Speicher et al.'s "fraction of ports", with NASim's at-least-one rule; decisions.md §18, 17 Nov
+2026, OQ-P6-18): traffic inside a subnet is open. Every link between two subnets has two directions; each
+direction allows each service family present on its far side independently with probability 0.5, drawn
+once per link and direction. If that draw allows none, one family running on the far side is allowed,
+chosen uniformly. The rule never looks at vulnerabilities: "running" means a family some far-side host
+runs, vulnerable or not. Routing is not transitive: a host reaches a service only in its own subnet or
+across one link that allows the service's family (OQ-P6-2). The internet host runs nothing, so nothing is
+drawn towards it. Solvability is never forced.
+
+The at-least-one rule is NASim's scenario generator (Schwartz and Kurniawati, NetworkAttackSimulator,
+nasim/scenarios/generator.py at commit 2191a3a, ScenarioGenerator._generate_firewall docstring, fetched
+2026-11-17, data/raw/nasim/2026-11-17, SHA-256 70e68002...; full citation in configs/gen/p6.json
+"firewall_rule"): "Traffic from at least one service running on each subnet will be allowed between each
+zone." Only that guarantee is taken. NASim differs elsewhere and those parts are not used: it counts only
+services that some exploit makes vulnerable, caps allowed services at its `restrictiveness` parameter
+instead of drawing each with probability 0.5, and opens every service between user subnets.
 
 Every number above is a fixed declared parameter (configs/gen/p6.json), never swept.
 """
@@ -113,14 +124,21 @@ def draw_firewall(lay: Layout, families_of: dict[int, list[str]], rng: random.Ra
                   ) -> dict[tuple[int, int], list[str]]:
     """Allowed families per directed subnet pair (src_subnet, dst_subnet), drawn once per link and direction.
 
-    Draw order is fixed: links in sorted order, direction a->b then b->a, families sorted. A direction whose
-    far side runs nothing (the internet) consumes no draws.
+    Draw order is fixed: links in sorted order, direction a->b then b->a, families sorted; one extra draw
+    (the uniform choice) only in a direction whose independent draws allowed nothing. A direction whose far
+    side runs nothing (the internet) consumes no draws and stays empty.
     """
     out = {}
     for a, b in lay.links:
         for src, dst in ((a, b), (b, a)):
             far = sorted({f for h in lay.subnets[dst].hosts for f in families_of[h]})
-            out[(src, dst)] = [f for f in far if rng.random() < prob]
+            allow = [f for f in far if rng.random() < prob]
+            if not allow and far:
+                # NASim's guarantee: at least one family running on the far subnet passes (OQ-P6-18). It is
+                # drawn uniformly among all of them, never by vulnerability, so the firewall does not peek
+                # at which services are exploitable.
+                allow = [rng.choice(far)]
+            out[(src, dst)] = allow
     return out
 
 
