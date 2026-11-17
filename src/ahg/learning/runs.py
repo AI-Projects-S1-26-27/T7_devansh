@@ -20,7 +20,9 @@ DEFAULTS = json.loads((ROOT / "configs" / "training" / "d21.json").read_text())
 
 
 OPTIONAL = {"pre_agg", "readout",  # GNN aggregator grid cell (D28 Round 11); absent = the D21 mean / mean
-            "cost_regime"}  # D28 Round 5 "ac" or "uniform"; absent only in pre-D28 configs
+            "cost_regime",  # D28 Round 5 "ac" or "uniform"; absent only in pre-D28 configs
+            "features"}  # "d28": the D28 encoder (ahg.learning.d28encode, P7c); absent = the D19 encoder
+FEATURE_SETS = ("d28",)
 
 
 def make_config(**over) -> dict:
@@ -28,6 +30,8 @@ def make_config(**over) -> dict:
     unknown = set(over) - set(DEFAULTS) - OPTIONAL
     if unknown:
         raise ValueError(f"unknown training config keys {sorted(unknown)}")
+    if "features" in over and over["features"] not in FEATURE_SETS:
+        raise ValueError(f"features must be one of {FEATURE_SETS} (absent = the D19 encoder), not {over['features']!r}")
     return cfg
 
 

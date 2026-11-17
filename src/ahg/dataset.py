@@ -116,7 +116,11 @@ def action_features(inst: Instance) -> list[list[float]]:
 
 def static_graph(inst: Instance, device="cpu") -> dict[str, torch.Tensor]:
     """The state-independent GNN input: precondition and add edges, degrees, action features, goal facts."""
-    task = inst.task
+    return graph_of(inst.task, action_features(inst), device)
+
+
+def graph_of(task: Task, act_x: list[list[float]], device="cpu") -> dict[str, torch.Tensor]:
+    """The GNN's graph for a task with the given action rows (D19 action_features, or the D28 encoder's)."""
     pre = [(f, i) for i, a in enumerate(task.actions) for f in a.pre]
     add = [(i, f) for i, a in enumerate(task.actions) for f in a.add]
     t = lambda xs, dt=torch.long: torch.tensor(xs, dtype=dt, device=device)
@@ -126,7 +130,7 @@ def static_graph(inst: Instance, device="cpu") -> dict[str, torch.Tensor]:
             "add_src": t([i for i, _ in add]), "add_dst": t([f for _, f in add]),
             "inv_deg_pre": t([[1 / max(1, deg_pre[i])] for i in range(len(task.actions))], torch.float32),
             "inv_deg_add": t([[1 / max(1, deg_add[f])] for f in range(len(task.facts))], torch.float32),
-            "act_x": t(action_features(inst), torch.float32), "goal": t(list(task.goal))}
+            "act_x": t(act_x, torch.float32), "goal": t(list(task.goal))}
 
 
 def fact_features(task: Task, state: int) -> torch.Tensor:
@@ -142,17 +146,19 @@ def mlp_features(task: Task, state: int) -> list[float]:
             len(costs), sum(costs) / len(costs) if costs else 0.0, min(costs, default=0.0)]
 
 
-def wl_colours(task: Task, state: int, iterations: int = WL_ITERATIONS) -> Counter:
+def wl_colours(task: Task, state: int, iterations: int = WL_ITERATIONS, action_labels=None) -> Counter:
     """Histogram of WL colours over all refinement rounds, on the fact-action graph.
 
-    Initial colours: a fact is (held, goal); an action is (kind, cost). Each round
+    Initial colours: a fact is (held, goal); an action is (kind, cost), or its entry of action_labels when
+    given (the D28 encoder's categorical values and cost, ahg.learning.d28encode). Each round
     a node's colour becomes a hash of its colour and the sorted colours of its
     neighbours, by edge type (precondition in, add out). Colours are short
     SHA-256 prefixes, so they are the same in every process.
     """
     h = lambda x: hashlib.sha256(repr(x).encode()).hexdigest()[:16]
     fc = [h(("f", state >> f & 1, f in task.goal)) for f in range(len(task.facts))]
-    ac = [h(("a", _action_kind(a.name), a.cost)) for a in task.actions]
+    ac = [h(("a", _action_kind(a.name), a.cost)) for a in task.actions] if action_labels is None else \
+        [h(("a",) + tuple(lab)) for lab in action_labels]
     hist = Counter(fc) + Counter(ac)
     adders = task.achievers
     for _ in range(iterations):

@@ -15,7 +15,7 @@ def header(path: Path) -> dict[str, str]:
 
 
 def test_every_job_script_is_checked():
-    assert {f.name for f in FILES} == {"labels.sbatch", "smoke.sbatch", "train.sbatch"}
+    assert {f.name for f in FILES} == {"d28_labels.sbatch", "labels.sbatch", "smoke.sbatch", "train.sbatch"}
 
 
 @pytest.mark.parametrize("path", FILES, ids=lambda p: p.name)

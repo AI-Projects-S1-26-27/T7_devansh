@@ -14,6 +14,11 @@ temporary directory. FD's own reported times (translator "Done! [.. wall-clock]"
 process start-up, ours do not. Python-loop timings and these compiled timings
 are always reported separately (D28 Rounds 7 and 12).
 
+Memory: per process, the peak resident set size from wait4(2) on the driver. A process's rusage covers the
+children it waited for, so this is the peak RSS of the largest process of that FD run (the Python driver, the
+translator or the search binary). It is measured by us, not parsed from FD's "Peak memory" line, which reports
+virtual memory (VmPeak on Linux, the task's virtual size on macOS: hundreds of GB there).
+
 Each run starts with WARMUP discarded runs of the whole per-repeat sequence,
 then REPEATS timed ones, summarised by the median (decided 15 Nov 2026, M1).
 
@@ -24,6 +29,7 @@ anything else is refused.
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -40,6 +46,7 @@ SEARCHES = {"lmcut": "astar(lmcut())", "hmax": "astar(hmax())"}
 # FD driver exit codes (driver/returncodes.py): 0 plan found; 10 the translator proved the task unsolvable;
 # 11 the search proved it unsolvable; 12 the search ended without a plan and without a proof.
 STATUS = {0: "solved", 10: "unsolvable_translate", 11: "unsolvable_search", 12: "unsolved_incomplete"}
+RSS_UNIT = 1 if sys.platform == "darwin" else 1024  # ru_maxrss is in bytes on macOS, in KiB on Linux (getrusage(2))
 
 
 class FDError(RuntimeError):
@@ -67,14 +74,21 @@ def parse_log(text: str) -> dict:
             "total_s": _grab(r"\] Total time: ([\d.]+)s", text)}
 
 
-def _run(args: list[str], cwd: Path) -> tuple[int, str, int]:
-    """(exit code, stdout, wall ns) of one FD driver process."""
-    t0 = time.perf_counter_ns()
-    p = subprocess.run([sys.executable, *args], cwd=cwd, capture_output=True, text=True, check=False)
-    ns = time.perf_counter_ns() - t0
-    if p.returncode not in STATUS:
-        raise FDError(f"FD exit code {p.returncode}: {p.stderr[-2000:]}")
-    return p.returncode, p.stdout, ns
+def _run(args: list[str], cwd: Path) -> tuple[int, str, int, int]:
+    """(exit code, stdout, wall ns, peak RSS bytes) of one FD driver process.
+
+    The process is reaped with os.wait4, which returns its rusage; output goes to files in cwd, so no pipe can
+    fill up while we wait."""
+    out_path, err_path = cwd / "fd_stdout.txt", cwd / "fd_stderr.txt"
+    with out_path.open("w") as out, err_path.open("w") as err:
+        t0 = time.perf_counter_ns()
+        p = subprocess.Popen([sys.executable, *args], cwd=cwd, stdout=out, stderr=err, text=True)
+        _, status, usage = os.wait4(p.pid, 0)
+        ns = time.perf_counter_ns() - t0
+    p.returncode = code = os.waitstatus_to_exitcode(status)  # reaped here, so Popen must not wait again
+    if code not in STATUS:
+        raise FDError(f"FD exit code {code}: {err_path.read_text()[-2000:]}")
+    return code, out_path.read_text(), ns, usage.ru_maxrss * RSS_UNIT
 
 
 def run(domain: Path, problem: Path, heuristic: str, repeats: int = REPEATS, fd_dir: Path = FD_DIR, *,
@@ -96,16 +110,17 @@ def run(domain: Path, problem: Path, heuristic: str, repeats: int = REPEATS, fd_
     domain, problem = Path(domain).resolve(), Path(problem).resolve()
     search = SEARCHES[heuristic]
     ns = {"translate": [], "search": [], "end_to_end": []}
+    rss = {"translate": [], "search": [], "end_to_end": []}
     reports, outcomes = [], set()
     for i in range(warmup + repeats):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            code_e, log_e, t_e = _run([fd, "--plan-file", "e2e_plan", domain, problem, "--search", search], d)
-            code_t, log_t, t_t = _run([fd, "--sas-file", "task.sas", "--translate", domain, problem], d)
+            code_e, log_e, t_e, m_e = _run([fd, "--plan-file", "e2e_plan", domain, problem, "--search", search], d)
+            code_t, log_t, t_t, m_t = _run([fd, "--sas-file", "task.sas", "--translate", domain, problem], d)
             if code_t == 10:  # proved unsolvable in translation: there is no search phase to time
-                code_s, log_s, t_s = 10, "", None
+                code_s, log_s, t_s, m_s = 10, "", None, None
             else:
-                code_s, log_s, t_s = _run([fd, "--plan-file", "plan", "task.sas", "--search", search], d)
+                code_s, log_s, t_s, m_s = _run([fd, "--plan-file", "plan", "task.sas", "--search", search], d)
         if i < warmup:
             continue  # discarded warm-up run
         e2e, phase = parse_log(log_e), parse_log(log_t + log_s)
@@ -114,8 +129,11 @@ def run(domain: Path, problem: Path, heuristic: str, repeats: int = REPEATS, fd_
         outcomes.add((code_e, e2e["cost"], e2e["expanded"]))
         ns["end_to_end"].append(t_e)
         ns["translate"].append(t_t)
+        rss["end_to_end"].append(m_e)
+        rss["translate"].append(m_t)
         if t_s is not None:
             ns["search"].append(t_s)
+            rss["search"].append(m_s)
         reports.append({"end_to_end": e2e, "phases": phase})
     if len(outcomes) != 1:
         raise FDError(f"repeats disagree: {sorted(outcomes, key=str)}")
@@ -123,6 +141,7 @@ def run(domain: Path, problem: Path, heuristic: str, repeats: int = REPEATS, fd_
     return {"fd_version": version, "heuristic": heuristic, "search": search, "repeats": repeats, "warmup": warmup,
             "status": STATUS[code], "exit_code": code, "cost": cost, "expanded": expanded,
             "wall": {k: Timing(tuple(v)).record() if v else None for k, v in ns.items()},
+            "peak_rss_bytes": {k: v or None for k, v in rss.items()},
             "fd_reported": reports}
 
 

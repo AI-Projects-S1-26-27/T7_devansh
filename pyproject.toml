@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Learned heuristics for A* search over attack graphs"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "matplotlib>=3.11.2",
+    "scikit-learn>=1.9.1",
     "torch>=2.15.0",
 ]
 

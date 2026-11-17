@@ -53,6 +53,9 @@ def test_solved_task_times_each_phase_per_repeat(tmp_path, heuristic):
     assert r["status"] == "solved" and r["cost"] == opt == 4 and r["fd_version"] == "release-24.06.1"
     for phase in ("translate", "search", "end_to_end"):
         assert len(r["wall"][phase]["ns"]) == 2 and all(x > 0 for x in r["wall"][phase]["ns"])
+        # peak RSS of the FD process tree, measured by wait4: at least the Python driver's few MB, far below
+        # the hundreds of GB FD's own (virtual) "Peak memory" line reports on macOS
+        assert len(r["peak_rss_bytes"][phase]) == 2 and all(1 << 20 < x < 1 << 34 for x in r["peak_rss_bytes"][phase])
     assert all(rep["end_to_end"]["search_s"] is not None and rep["phases"]["translate_wall_s"] is not None
                for rep in r["fd_reported"])
 

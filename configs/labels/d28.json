@@ -1,0 +1,12 @@
+{
+ "_note": "D28 exact labels (Round 9). state_budget is null until the training-only budget pilot proposes it and Devansh freezes it (before any validation or test label); the same budget applies to s0 (OQ-P7-7). oracle_all_max_n >= every cohort size: every label is oracle-checked, none sampled (Round 9). The other values are the D19 ones.",
+ "regimes": ["ac", "uniform"],
+ "state_budget": null,
+ "walk_cap": 100,
+ "walks_per_sample": 10,
+ "successor_cap": 200,
+ "oracle_all_max_n": 60,
+ "oracle_states": 20,
+ "oracle_max_pops": 200000,
+ "enum_cap": 20000
+}
