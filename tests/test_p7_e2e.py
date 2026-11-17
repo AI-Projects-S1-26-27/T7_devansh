@@ -79,7 +79,8 @@ def test_cli_pilots_run_on_smoke_training_seeds(env):
     from ahg import runlog
     n4_raw = runlog.load_raw(next((pipe.RUNS / "n4").iterdir()))
     assert set(n4_raw["results"]) == {"12", "20"}
-    assert len(n4_raw["rows"]) + sum(n4_raw["disconnected"].values()) == 2 * 2 * 6  # sizes x archetypes x smoke networks
+    assert len(n4_raw["rows"]) == 2 * 2 * 6  # sizes x archetypes x smoke networks, none left out (OQ-P7-6)
+    assert sum(n4_raw["with_unreachable_hosts"].values()) == sum(r["unreachable_frac"] > 0 for r in n4_raw["rows"])
 
 
 def test_test_cohort_needs_the_access_log_and_second_read_is_refused(env):

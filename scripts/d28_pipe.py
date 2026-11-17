@@ -103,23 +103,21 @@ def cmd_n4(a, reg, ctx) -> None:
     if why:
         raise co.BlockedCohort("n4: " + "; ".join(why))
     from ahg.gen import generate as gen
-    rows, disconnected = [], {}
+    rows, unreachable = [], {}
     for n in cfg["sizes"]:
         for arch in cfg["archetypes"]:
             for k in range(per):
                 doc = gen.generate(ctx, arch, f"{cfg['smoke_namespace' if a.smoke else 'namespace']}/n{n}/{k}", n,
                                    cohort="core", os_mix=reg.training.os_mix, p=1.0, excluded=reg.excluded(reg.training)
                                    if not a.smoke else frozenset())
-                try:
-                    rows.append({"archetype": arch, "n": n, "seed": doc["params"]["seed"], **n4.doc_stats(doc)})
-                except n4.DisconnectedNetwork:
-                    # OQ-P7-6: the generator's random firewall can cut hosts off from the internet; Round 6 says
-                    # such a network "raises an error". The pilot counts and leaves it out instead of aborting.
-                    disconnected[f"{arch}|{n}"] = disconnected.get(f"{arch}|{n}", 0) + 1
+                rows.append({"archetype": arch, "n": n, "seed": doc["params"]["seed"], **n4.doc_stats(doc)})
+                # OQ-P7-6 (decided 17 Nov 2026): networks with hosts unreachable from the internet stay in; counted.
+                if rows[-1]["unreachable_frac"] > 0:
+                    unreachable[f"{arch}|{n}"] = unreachable.get(f"{arch}|{n}", 0) + 1
     res = n4.classify(rows)
-    md = "# N4\n\n" + f"Reach-disconnected networks left out (OQ-P7-6): {disconnected}\n\n" + "\n".join(f"- n={n}: {v['verdict']} (mean balanced accuracy {v['mean_balanced_accuracy']})"
+    md = "# N4\n\n" + f"Networks with hosts unreachable from the internet (kept, OQ-P7-6): {unreachable}\n\n" + "\n".join(f"- n={n}: {v['verdict']} (mean balanced accuracy {v['mean_balanced_accuracy']})"
                                   for n, v in res.items()) + "\n"
-    print(runlog.write_run("n4", {"results": res, "rows": rows, "disconnected": disconnected}, md, [], {"per_family_size": per, "smoke": a.smoke}, root=RUNS))
+    print(runlog.write_run("n4", {"results": res, "rows": rows, "with_unreachable_hosts": unreachable}, md, [], {"per_family_size": per, "smoke": a.smoke}, root=RUNS))
 
 
 def cmd_landscape(a, reg, ctx) -> None:

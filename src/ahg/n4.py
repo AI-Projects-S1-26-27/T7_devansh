@@ -8,10 +8,14 @@ read here from the finished document only). The internet runs nothing, so no edg
 Statistics (Round 6, P0c/P0d), in FEATURES order:
 - density |E| / (N (N - 1));
 - in- and out-degree mean, population variance and skewness m3 / m2^1.5 (0 when the variance is 0);
-- BFS hops from the internet node over directed edges, internet included at 0: mean, population variance, max;
-- on the undirected version: diameter, and the average local clustering coefficient (a node with fewer than
-  two neighbours counts 0).
-"Connected" = every host reachable from node 0 in the directed graph; otherwise DisconnectedNetwork (P0d).
+- BFS hops from the internet node over directed edges, internet included at 0: mean, population variance, max,
+  over the hosts reachable from the internet only;
+- the fraction of hosts (internet node excluded) unreachable from the internet in the directed graph;
+- on the undirected version: diameter (the longest finite shortest path, so a host in another component adds
+  no infinite distance), and the average local clustering coefficient (a node with fewer than two neighbours
+  counts 0).
+Networks with hosts unreachable from the internet are kept (decided 17 Nov 2026, OQ-P7-6): the generator's random
+firewall can cut hosts off, so P0d's "a disconnected network raises" no longer holds.
 
 Classifier (P0d): a random forest only (500 trees, random_state 0), 5-fold stratified CV per size; PASS if the
 mean out-of-fold balanced accuracy over the folds is >= 0.80. Fold assignment shuffles with random_state 0
@@ -23,13 +27,9 @@ from __future__ import annotations
 from collections import deque
 
 FEATURES = ("density", "in_mean", "in_var", "in_skew", "out_mean", "out_var", "out_skew",
-            "hops_mean", "hops_var", "hops_max", "diameter", "clustering")
+            "hops_mean", "hops_var", "hops_max", "unreachable_frac", "diameter", "clustering")
 PASS_THRESHOLD = 0.80
 TREES, RANDOM_STATE, FOLDS = 500, 0, 5
-
-
-class DisconnectedNetwork(ValueError):
-    """A host is not reachable from the internet node (Round 6: connectivity holds by construction)."""
 
 
 def reach_graph(doc: dict) -> tuple[list[int], set[tuple[int, int]]]:
@@ -75,13 +75,12 @@ def graph_stats(nodes: list[int], edges: set[tuple[int, int]], source: int = 0) 
         out[u].add(v)
         und[u].add(v)
         und[v].add(u)
-    hops = _bfs(out, source)
-    if len(hops) != n:
-        raise DisconnectedNetwork(f"hosts {sorted(set(nodes) - set(hops))} are unreachable from the internet")
+    hops = _bfs(out, source)  # only the reachable hosts get a hop count (OQ-P7-6)
     indeg = [sum((u, v) in edges for u in nodes) for v in nodes]
     outdeg = [len(out[u]) for u in nodes]
-    hm, hv, _ = moments([hops[u] for u in nodes])
-    diameter = max(max(_bfs(und, u).values()) for u in nodes)  # undirected and connected, so finite
+    hm, hv, _ = moments(list(hops.values()))
+    # _bfs returns finite distances only, so a host in another undirected component adds nothing infinite.
+    diameter = max(max(_bfs(und, u).values()) for u in nodes)
     clus = []
     for u in nodes:
         nb = sorted(und[u])
@@ -95,7 +94,8 @@ def graph_stats(nodes: list[int], edges: set[tuple[int, int]], source: int = 0) 
     om, ov, osk = moments(outdeg)
     return {"density": len(edges) / (n * (n - 1)), "in_mean": im, "in_var": iv, "in_skew": isk,
             "out_mean": om, "out_var": ov, "out_skew": osk, "hops_mean": hm, "hops_var": hv,
-            "hops_max": float(max(hops.values())), "diameter": float(diameter), "clustering": sum(clus) / n}
+            "hops_max": float(max(hops.values())), "unreachable_frac": (n - len(hops)) / (n - 1),
+            "diameter": float(diameter), "clustering": sum(clus) / n}
 
 
 def doc_stats(doc: dict) -> dict[str, float]:

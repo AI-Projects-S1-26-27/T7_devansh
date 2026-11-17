@@ -41,11 +41,15 @@ def test_nodes_below_two_neighbours_count_zero_in_clustering():
     assert s2["clustering"] == pytest.approx((1 / 3 + 1 + 1 + 0) / 4)
 
 
-def test_disconnected_network_raises():
-    with pytest.raises(n4.DisconnectedNetwork):
-        n4.graph_stats([0, 1, 2], {(0, 1)})
-    with pytest.raises(n4.DisconnectedNetwork):  # reachable only against the edge direction
-        n4.graph_stats([0, 1, 2], {(0, 1), (2, 1)})
+def test_unreachable_hosts_are_kept_hops_over_reachable_hosts_and_counted():
+    # OQ-P7-6 (decided 17 Nov 2026): no error; hops over the reachable hosts only, plus the unreachable fraction.
+    s = n4.graph_stats([0, 1, 2], {(0, 1)})
+    assert s["unreachable_frac"] == 0.5 and (s["hops_mean"], s["hops_var"], s["hops_max"]) == (0.5, 0.25, 1.0)
+    assert s["diameter"] == 1.0  # host 2 is isolated: no infinite distance enters the diameter
+    s = n4.graph_stats([0, 1, 2], {(0, 1), (2, 1)})  # 2 reaches 1, but nothing reaches 2 from the internet
+    assert s["unreachable_frac"] == 0.5 and s["hops_max"] == 1.0 and s["diameter"] == 2.0
+    full = n4.graph_stats([0, 1, 2], {(0, 1), (1, 2)})
+    assert full["unreachable_frac"] == 0.0
 
 
 def doc(hosts, firewall):
@@ -88,7 +92,7 @@ def test_classifier_is_deterministic():
 
 def test_threshold_and_protocol_constants_are_the_decided_ones():
     assert (n4.PASS_THRESHOLD, n4.TREES, n4.RANDOM_STATE, n4.FOLDS) == (0.80, 500, 0, 5)
-    assert len(n4.FEATURES) == 12 and math.isclose(n4.moments([0, 0, 3])[2], 0.7071067811865476)
+    assert len(n4.FEATURES) == 13 and "unreachable_frac" in n4.FEATURES and math.isclose(n4.moments([0, 0, 3])[2], 0.7071067811865476)
 
 
 def test_too_few_networks_per_class_is_not_assessable_rather_than_a_pass_or_fail():
