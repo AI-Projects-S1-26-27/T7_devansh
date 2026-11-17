@@ -14,6 +14,7 @@ import pytest
 from ahg import cohorts as co, d28eval as ev, d28labels as dl, fd_timing, runlog
 from ahg.gen import generate as gen
 from ahg.splits import LABEL_GENERATION
+from d28_context import generating_with_context
 from p7_helpers import checkpoint
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,9 @@ def env(tmp_path_factory):
     mp.setattr(co, "TASK_STORE", tmp / "tasks")
     mp.setattr(dl, "LABEL_ROOT", tmp / "labels")
     mp.setattr(co, "TEST_ACCESS_LOG", tmp / "test_log.jsonl")
+    # The D28 encoder reads the planner-visible host OS and principal classes, which the generator writes once the
+    # d28-gen change is merged (P7c, OQ-P7c-1); until then the documents get them from the test stand-in.
+    mp.setattr(gen, "generate", generating_with_context(gen.generate))
     reg, ctx = co.load_registry(), gen.Context.load()
     lcfg = dl.with_budget(dl.load_config(), STATE_BUDGET)
     (tmp / "records").mkdir()
@@ -84,6 +88,7 @@ def test_validation_and_test_cohorts_evaluate_once_then_the_report_regenerates(e
         raw = runlog.load_raw(path.parent)
         labels = dl.load_labels(env["docs"][raw["split"]], env["lcfg"], root=dl.LABEL_ROOT)
         assert len(raw["records"]) == len(json.loads((env["tmp"] / "records" / f"{raw['split']}.json").read_text())["members"])
+        assert raw["leakage_audit"]["ok"] and raw["leakage_audit"]["split"] == raw["split"]  # LRN6, P7c
         for r in raw["records"]:
             if not r["solvable"]:
                 assert r["runs"] == {} and r["unsolvable_reason"]

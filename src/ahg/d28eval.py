@@ -6,6 +6,10 @@ Per member task of the cohort and per cost regime:
 - the common exact reachability pre-check (Round 7): h_max(s0) finite must agree with the generator's flag.
   An unsolvable task, or a generator cell that failed, is kept with its reason and gets no search;
 - its label record (ahg.d28labels, which must exist): the certified h*(s0) when LABELLED, else uncertified;
+- the D28 learned inputs (ahg.learning.d28encode, P7c): the task's planner view encoded by the same functions
+  training uses, inside every timed repeat (like the static graph, it is the model's per-task set-up). Before
+  any learned model runs, the cohort's encoded tasks pass the LRN6 leakage audit, whose report goes into every
+  raw;
 - per tie rule, A* with h0, h_max, h_add, h_FF, LM-cut, h_sp and every learned checkpoint of that regime,
   all through evaluate._run: the same best_first_search, reopening (A* reopens, Round 7), per-task expansion
   budget, warm-up and timed repeats with a determinism check (Round 12, M1). Recorded: expansions, plan cost,
@@ -38,7 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import cohorts as co, d28labels, fd_timing, runlog
@@ -108,7 +112,9 @@ def load_checkpoints(paths: list[Path]) -> dict[str, list[Checkpoint]]:
     """regime -> its checkpoints, named from their own training config (kind, seed, cost_regime).
 
     Round 11: a model is used only in the regime it was trained in, so a checkpoint without a cost regime
-    (pre-D28) is refused, as is a second checkpoint with the same regime and name."""
+    (pre-D28) is refused, as is a second checkpoint with the same regime and name. D28 tasks are encoded only
+    by the D28 encoder, so a checkpoint trained on other features is refused too (P7c, OQ-P7b-1)."""
+    from .learning import d28encode
     from .learning.heuristic import Learned
     from .learning.train import load
     out: dict[str, list[Checkpoint]] = {}
@@ -121,6 +127,9 @@ def load_checkpoints(paths: list[Path]) -> dict[str, list[Checkpoint]]:
         check_regime(regime)
         if cfg["kind"] not in MODELS:
             raise ValueError(f"{p}: unknown model kind {cfg['kind']!r}")
+        if cfg.get("features") != d28encode.FEATURE_SET:
+            raise ValueError(f"{p}: the checkpoint was not trained on the D28 encoder (features "
+                             f"{cfg.get('features')!r}, not 'd28'); D28 tasks are encoded only by ahg.learning.d28encode")
         name = f"{cfg['kind']}@{cfg['seed']}"
         if any(c.name == name for c in out.get(regime, [])):
             raise ValueError(f"two checkpoints for {regime}/{name}")
@@ -131,17 +140,6 @@ def load_checkpoints(paths: list[Path]) -> dict[str, list[Checkpoint]]:
 
 def checkpoint_hashes(ckpts: dict[str, list[Checkpoint]]) -> dict[str, str]:
     return {f"{r}/{c.name}": c.sha256 for r in sorted(ckpts) for c in sorted(ckpts[r], key=lambda c: c.name)}
-
-
-@dataclass
-class GeneratedInstance:
-    """What Learned.bind needs from a generated task: the planner's Task.
-
-    `cves` is empty because D28 action names carry no CVE (Round 18: "remote <id>" / "local <id>"), so the
-    D19 action encoder (dataset.action_features) gives cost plus zero type and PR one-hots. The D28 learned
-    inputs (Round 11 LRN6) belong to the learning task; this view only passes the task through (OQ-P7b-1)."""
-    task: Task
-    cves: dict = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ checks before anything is read
@@ -239,7 +237,8 @@ def evaluate_task(doc: dict | None, member: dict, regime: str, label: dict | Non
         return {t: base for t in cfg["tie_rules"]}
     certified, hstar = label["certified"], label["hstar_init"]
     base |= {"solvable": True, "unsolvable_reason": None, "certified": certified, "hstar": hstar}
-    inst = GeneratedInstance(task)
+    from .learning import d28encode
+    inst = d28encode.instance(doc, regime) if ckpts else None  # untimed: the overestimation statistics only
     tol = cfg["overestimation_tolerance"]
     rows = label["rows"] if certified else []
     over = {name: _overestimation(h, task, rows, tol) for name, h in BASELINES.items()}
@@ -250,7 +249,8 @@ def evaluate_task(doc: dict | None, member: dict, regime: str, label: dict | Non
     out = {}
     for tie in cfg["tie_rules"]:
         makers = [(name, lambda h=h: h) for name, h in BASELINES.items()]
-        makers += [(c.name, lambda c=c: c.learned.bind(inst)) for c in ckpts]  # a fresh bind per repeat
+        # A fresh encoding and bind per repeat: the model's per-task set-up is inside every timed run (Round 12).
+        makers += [(c.name, lambda c=c: c.learned.bind(d28encode.instance(doc, regime))) for c in ckpts]
         runs = {}
         for name, make in makers:
             r = _run(task, make, cfg["search_budget"], cfg["repeats"], tie_break=tie, warmup=cfg["warmup"])
@@ -281,6 +281,10 @@ def evaluate_cohort(record: dict, registry: co.Registry, cfg: dict, ckpts: dict[
     purposes = (EVALUATION,) if c.is_test else (LABEL_GENERATION, EVALUATION)
     members = co.open_members(record, registry, store=store, access=access, purposes=purposes, log=log)
     docs = [d for _, d in members if d is not None]
+    audit = None
+    if any(ckpts.get(r) for r in cfg["regimes"]) and docs:
+        from .learning import d28encode  # LRN6: the encoded split passes the leakage audit before any model runs
+        audit = d28encode.audit_docs(docs, c.name)
     labels = d28labels.load_labels(docs, label_cfg, root=labels_root)
     raws = {}
     for regime in cfg["regimes"]:
@@ -296,7 +300,8 @@ def evaluate_cohort(record: dict, registry: co.Registry, cfg: dict, ckpts: dict[
                 "registry_sha256": registry.sha256, "config": cfg, "config_sha256": config_sha(cfg),
                 "label_config_sha256": d28labels.config_sha(label_cfg),
                 "checkpoints": {x.name: {"path": x.path, "sha256": x.sha256} for x in ckpts.get(regime, [])},
-                "test_access": access, "fd_version": fd_timing.FD_VERSION, "records": recs[t]}
+                "test_access": access, "fd_version": fd_timing.FD_VERSION, "leakage_audit": audit,
+                "records": recs[t]}
     return raws
 
 

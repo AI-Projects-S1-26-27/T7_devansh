@@ -128,6 +128,9 @@ def test_checkpoints_are_named_from_their_config_and_regime_is_required(tmp_path
         ev.load_checkpoints(paths[:1] + paths[:1])
     with pytest.raises(ValueError, match="no cost regime"):
         ev.load_checkpoints([checkpoint(tmp_path / "old.pt", "mlp", 0, None)])
+    for k in ev.MODELS:  # P7c: D28 tasks are encoded only by the D28 encoder
+        with pytest.raises(ValueError, match="D28 encoder"):
+            ev.load_checkpoints([checkpoint(tmp_path / f"d19{k}.pt", k, 0, "ac", features=None)])
 
 
 def full_checkpoints(tmp_path):
@@ -185,3 +188,19 @@ def test_cohort_runs_write_one_report_readable_run_per_regime_and_tie_rule(tmp_p
     text = report.build_report(tmp_path / "eval", tmp_path / "rep", primary=set(), val_split="p7_smoke_val",
                                n_boot=50).read_text()
     assert "peak open" in text and "### p7_smoke_val / tie rule lifo" in text
+    assert all(r["leakage_audit"]["ok"] for r in runs)  # LRN6 audit of the encoded split, kept in every raw (P7c)
+
+
+def test_a_leaking_encoding_stops_the_cohort_before_any_model_runs(tmp_path, fd_ok, monkeypatch):
+    # P7c (LRN6): an account name where the principal class belongs fails the audit; nothing is searched.
+    store, labels = tmp_path / "store", tmp_path / "labels"
+    doc = flags(tiny_doc("t/0"))
+    doc["network"]["principal_classes"][1] = "nobody"
+    record = {"cohort": "p7_smoke_val", "dataset_sha256": "d", "members": [member(doc) | {"digest": co.store_doc(doc, store)}]}
+    dl.label_docs([doc], LCFG, root=labels)
+    searched = []
+    monkeypatch.setattr(ev, "evaluate_task", lambda *a, **k: searched.append(1))
+    from ahg.learning.leakage import LeakageError
+    with pytest.raises(LeakageError):
+        ev.evaluate_cohort(record, REG, CFG, full_checkpoints(tmp_path), LCFG, labels_root=labels, store=store)
+    assert searched == []

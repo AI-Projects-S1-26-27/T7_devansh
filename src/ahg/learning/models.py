@@ -99,11 +99,13 @@ class GNN(nn.Module):
 
     fact_dim/global_dim > their defaults give the D22 residual model its h_max inputs (per-fact and
     global). forward returns the raw output; h = output_transform(raw, is_goal[, h_max]).
-    pre_agg / readout: one cell of AGGREGATOR_GRID.
+    pre_agg / readout: one cell of AGGREGATOR_GRID. action_dim: the width of act_x, the D19 encoder's
+    ACTION_DIM or the D28 encoder's (ahg.learning.d28encode.ACTION_DIM, cost first in both).
     """
 
     def __init__(self, hidden: int, layers: int, fact_dim: int = FACT_DIM, global_dim: int = 0,
-                 pre_agg: str = "mean", readout: str = "mean", *, label_scale: float, cost_scale: float):
+                 pre_agg: str = "mean", readout: str = "mean", *, label_scale: float, cost_scale: float,
+                 action_dim: int = ACTION_DIM):
         super().__init__()
         if (pre_agg, readout) not in AGGREGATOR_GRID:
             raise ValueError(f"(pre_agg, readout) = {(pre_agg, readout)} is not in the grid {AGGREGATOR_GRID}")
@@ -111,7 +113,7 @@ class GNN(nn.Module):
         self.register_buffer("label_scale", torch.tensor(float(label_scale)))
         self.register_buffer("cost_scale", torch.tensor(float(cost_scale)))
         self.enc_f = nn.Linear(fact_dim, hidden)
-        self.enc_a = nn.Linear(ACTION_DIM, hidden)
+        self.enc_a = nn.Linear(action_dim, hidden)
         self.up_a = nn.ModuleList(nn.Linear(2 * hidden, hidden) for _ in range(layers))
         self.up_f = nn.ModuleList(nn.Linear(2 * hidden, hidden) for _ in range(layers))
         self.head = nn.Sequential(nn.Linear(3 * hidden + global_dim, hidden), nn.ReLU(), nn.Linear(hidden, 1))

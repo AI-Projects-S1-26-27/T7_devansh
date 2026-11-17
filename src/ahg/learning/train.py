@@ -191,8 +191,12 @@ def new_gnn(cfg: dict, label_scale: float, cost_scale: float) -> GNN:
     """The GNN a config describes; the residual target (D22 a, d) adds the h_max inputs.
 
     pre_agg / readout pick the aggregator grid cell (D28 Round 11). A config without them is a pre-D28 one,
-    whose only architecture was mean / mean; that is what they mean when absent."""
+    whose only architecture was mean / mean; that is what they mean when absent. features "d28" gives the
+    D28 encoder's action rows (P7c); absent means the D19 encoder (dataset.action_features)."""
+    from . import d28encode
     agg = {"pre_agg": cfg.get("pre_agg", "mean"), "readout": cfg.get("readout", "mean")}
+    if cfg.get("features") == d28encode.FEATURE_SET:
+        agg["action_dim"] = d28encode.ACTION_DIM
     agg.update(label_scale=label_scale, cost_scale=cost_scale)
     if cfg.get("target", "hstar") == "residual":
         return GNN(cfg["hidden"], cfg["layers"], fact_dim=4, global_dim=1, **agg)
