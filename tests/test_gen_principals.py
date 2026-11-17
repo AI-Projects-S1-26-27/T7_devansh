@@ -145,7 +145,13 @@ def test_firewall_rule_citation_is_verbatim_in_its_hashed_nasim_pages():
 
     cite = json.loads((ROOT / "configs" / "gen" / "p6.json").read_text())["firewall_rule"]
     assert "2191a3a7f15a178bd00a6321151f3492ce118046" in cite["url"]
-    pages = [(cite, False), (cite["not_taken"]["restrictiveness"], True)]
+    # §18 P6d item 2: the rule's name and exactly three differences from NASim, each quoted verbatim
+    assert cite["name"] == "NASim-style (at least one running service allowed)"
+    assert cite["quote"] == "Traffic from at least one service running on each subnet will be allowed between each zone."
+    diffs = {d["id"]: d for d in cite["differences"]["items"]}
+    assert list(diffs) == ["vulnerable_only", "restrictiveness", "user_subnets_open"]
+    assert all(d["nasim"] and d["ours"] and d["quote"] for d in diffs.values())
+    pages = [(cite, False), (diffs["restrictiveness"], True)]
     for c, is_html in pages:
         assert re.fullmatch(r"[0-9a-f]{64}", c["sha256"])
         raw_path = ROOT / c["raw"]
@@ -154,5 +160,6 @@ def test_firewall_rule_citation_is_verbatim_in_its_hashed_nasim_pages():
         raw = raw_path.read_bytes()
         assert hashlib.sha256(raw).hexdigest() == c["sha256"]
         assert c["quote"] in page_text(raw, html_page=is_html)
-    src = page_text((ROOT / cite["not_taken"]["vulnerable_only"]["raw"]).read_bytes(), html_page=False)
-    assert cite["not_taken"]["vulnerable_only"]["quote"] in src
+    for key in ("vulnerable_only", "user_subnets_open"):
+        assert diffs[key]["raw"] == cite["raw"]  # the hashed generator.py checked above
+        assert diffs[key]["quote"] in page_text((ROOT / diffs[key]["raw"]).read_bytes(), html_page=False)

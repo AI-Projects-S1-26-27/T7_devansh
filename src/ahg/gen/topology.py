@@ -24,11 +24,12 @@ runs, vulnerable or not. Routing is not transitive: a host reaches a service onl
 across one link that allows the service's family (OQ-P6-2). The internet host runs nothing, so nothing is
 drawn towards it. Solvability is never forced.
 
-The at-least-one rule is NASim's scenario generator (Schwartz and Kurniawati, NetworkAttackSimulator,
+The rule is "NASim-style (at least one running service allowed)" (§18 P6d item 2). Its at-least-one
+guarantee is from NASim's scenario generator (Schwartz and Kurniawati, NetworkAttackSimulator,
 nasim/scenarios/generator.py at commit 2191a3a, ScenarioGenerator._generate_firewall docstring, fetched
 2026-11-17, data/raw/nasim/2026-11-17, SHA-256 70e68002...; full citation in configs/gen/p6.json
 "firewall_rule"): "Traffic from at least one service running on each subnet will be allowed between each
-zone." Only that guarantee is taken. NASim differs elsewhere and those parts are not used: it counts only
+zone." Only that guarantee is taken. Three differences (listed, quoted, in "firewall_rule.differences"): it counts only
 services that some exploit makes vulnerable, caps allowed services at its `restrictiveness` parameter
 instead of drawing each with probability 0.5, and opens every service between user subnets.
 
