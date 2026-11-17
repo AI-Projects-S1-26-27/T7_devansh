@@ -63,17 +63,32 @@ def test_labels_both_regimes_resume_and_match_reference_solver(env):
     env["labels_root"], env["cfg"] = root, cfg
 
 
-def test_cli_pilots_run_on_smoke_training_seeds(env):
+def test_cli_build_label_and_pilots_honour_a_redirected_task_store(env, monkeypatch):
+    # OQ-P7b-4 (P7c): build, label and the pilots look the task store and label root up when they run, so a
+    # redirect reaches every command and nothing goes to data/d28/tasks or data/labels/d28.
     pipe, reg, ctx = env["pipe"], env["reg"], env["ctx"]
+    store, labels = env["tmp"] / "cli_tasks", env["tmp"] / "cli_labels"
+    monkeypatch.setattr(co, "TASK_STORE", store)
+    monkeypatch.setattr(dl, "LABEL_ROOT", labels)
+    stores = []
+    for fn in ("build", "open_members"):
+        def spy(*a, _real=getattr(co, fn), **k):
+            stores.append(k.get("store"))
+            return _real(*a, **k)
+        monkeypatch.setattr(co, fn, spy)
     ns = lambda **k: type("A", (), k)()
-    pipe.co.TASK_STORE = env["store"]  # the CLI reads tasks from the same store
-    import ahg.cohorts as c2
-    c2.TASK_STORE = env["store"]
+    pipe.cmd_build(ns(cohort="p7_smoke_train", n4_pass=None), reg, ctx)
+    pipe.cmd_label(ns(cohort="p7_smoke_train", state_budget=BUDGET, shard=None), reg, ctx)
     for name, args in (("cmd_n4", ns(smoke=True)), ("cmd_budget", ns(smoke=True)),
                        ("cmd_landscape", ns(smoke=True, state_budget=BUDGET, search_budget=50_000))):
         getattr(pipe, name)(args, reg, ctx)
+    assert len(stores) >= 4 and all(s == store for s in stores)  # build, label, budget, landscape
+    rec = json.loads((pipe.RECORDS / "p7_smoke_train.json").read_text())
+    assert all(co.load_doc(m["digest"], store)["params"]["seed"] == m["seed"] for m in rec["members"])
+    n = len(rec["members"])  # label: both regimes; the landscape pilot adds its own ac-only records
+    assert len(list((labels / "uniform").rglob("*.json.gz"))) == n and len(list((labels / "ac").rglob("*.json.gz"))) >= n
     runs = sorted(p.name for p in pipe.RUNS.iterdir())
-    assert runs == ["budget", "landscape", "n4"]
+    assert runs == ["budget", "label_p7_smoke_train", "landscape", "n4"]
     for r in runs:
         d = next((pipe.RUNS / r).iterdir())
         assert (d / "raw.json.gz").exists() and (d / "report.md").exists() and (d / "provenance.json").exists()

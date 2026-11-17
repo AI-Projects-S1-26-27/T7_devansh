@@ -39,11 +39,11 @@ def commit() -> str:
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def record_path(c: co.Cohort, root: Path = RECORDS) -> Path:
-    return root / f"{c.name}.json"
+def record_path(c: co.Cohort, root: Path | None = None) -> Path:
+    return (RECORDS if root is None else root) / f"{c.name}.json"  # RECORDS looked up now (OQ-P7b-4)
 
 
-def load_record(c: co.Cohort, root: Path = RECORDS) -> dict:
+def load_record(c: co.Cohort, root: Path | None = None) -> dict:
     p = record_path(c, root)
     if not p.exists():
         raise FileNotFoundError(f"{p}: build the cohort first")
@@ -57,12 +57,16 @@ def require_buildable(reg, c: co.Cohort) -> None:
         raise co.BlockedCohort(f"{c.name}: " + "; ".join(why))
 
 
-def access_for(reg, c: co.Cohort, store_log=None) -> dict | None:
+def access_for(reg, c: co.Cohort) -> dict | None:
     """A logged label-generation token for a test cohort; None for the others."""
     if not c.is_test:
         return None
-    kw = {} if store_log is None else {"log": store_log}
-    return co.record_test_read(reg, c.name, LABEL_GENERATION, commit(), dataset_sha256=None, **kw)
+    return co.record_test_read(reg, c.name, LABEL_GENERATION, commit(), dataset_sha256=None, log=co.TEST_ACCESS_LOG)
+
+
+# The task store, label root and test-access log are looked up when a command runs, never bound when a module is
+# imported (a default argument is bound then), so a redirect (a test, a scratch run) reaches every command
+# (OQ-P7b-4, P7c).
 
 
 def cmd_build(a, reg, ctx) -> None:
@@ -70,7 +74,7 @@ def cmd_build(a, reg, ctx) -> None:
     require_buildable(reg, c)
     access = access_for(reg, c)
     n4_pass = None if a.n4_pass is None else {int(x) for x in a.n4_pass.split(",") if x}
-    rec = co.build(ctx, reg, c.name, access=access, n4_pass=n4_pass)
+    rec = co.build(ctx, reg, c.name, store=co.TASK_STORE, access=access, n4_pass=n4_pass, log=co.TEST_ACCESS_LOG)
     RECORDS.mkdir(parents=True, exist_ok=True)
     record_path(c).write_text(json.dumps(rec, sort_keys=True) + "\n")
     print(c.name, rec["by_size"], "shortfall", rec["shortfall"], "dataset", rec["dataset_sha256"][:12])
@@ -83,9 +87,10 @@ def cmd_label(a, reg, ctx) -> None:
     cfg = d28labels.with_budget(d28labels.load_config(), a.state_budget)
     d28labels.check_config(cfg, max_n=max(c.sizes))
     access = access_for(reg, c)
-    docs = [d for _, d in co.open_members(rec, reg, access=access) if d is not None]
+    docs = [d for _, d in co.open_members(rec, reg, store=co.TASK_STORE, access=access, log=co.TEST_ACCESS_LOG)
+            if d is not None]
     shard = None if a.shard is None else tuple(map(int, a.shard.split("/")))
-    summary = d28labels.label_docs(docs, cfg, shard=shard, commit=commit())
+    summary = d28labels.label_docs(docs, cfg, root=d28labels.LABEL_ROOT, shard=shard, commit=commit())
     name = f"label_{c.name}" + (f"_s{shard[0]}of{shard[1]}" if shard else "")
     out = runlog.write_run(name, summary, f"# labels {c.name}\n\n```\n{json.dumps(summary['counts'], indent=1)}\n```\n",
                            [], {"cohort": c.name, "state_budget": cfg["state_budget"], "shard": shard}, root=RUNS)
@@ -95,8 +100,8 @@ def cmd_label(a, reg, ctx) -> None:
 def _training_docs(reg, ctx, smoke: bool) -> tuple[co.Cohort, dict, list[dict]]:
     c = next(x for x in reg.cohorts.values() if x.role == "training" and x.smoke == smoke)
     path = record_path(c)
-    rec = json.loads(path.read_text()) if path.exists() else co.build(ctx, reg, c.name)
-    return c, rec, [d for _, d in co.open_members(rec, reg) if d is not None]
+    rec = json.loads(path.read_text()) if path.exists() else co.build(ctx, reg, c.name, store=co.TASK_STORE)
+    return c, rec, [d for _, d in co.open_members(rec, reg, store=co.TASK_STORE) if d is not None]
 
 
 def cmd_n4(a, reg, ctx) -> None:
@@ -134,8 +139,8 @@ def cmd_landscape(a, reg, ctx) -> None:
         if seen.get(key, 0) < per and d["solvable"]:
             seen[key] = seen.get(key, 0) + 1
             sample.append(d)
-    d28labels.label_docs(sample, {**cfg, "regimes": ["ac"]}, commit=commit())
-    labels = d28labels.load_labels(sample, {**cfg, "regimes": ["ac"]})
+    d28labels.label_docs(sample, {**cfg, "regimes": ["ac"]}, root=d28labels.LABEL_ROOT, commit=commit())
+    labels = d28labels.load_labels(sample, {**cfg, "regimes": ["ac"]}, root=d28labels.LABEL_ROOT)
     from ahg.gen.generate import doc_digest
     rows = [pilots.landscape_task(d, labels[(doc_digest(d), "ac")], a.search_budget) for d in sample
             if labels[(doc_digest(d), "ac")]["certified"]]
@@ -166,7 +171,7 @@ def cmd_evaluate(a, reg, ctx) -> None:
     from ahg import d28eval
     c = reg[a.cohort]
     require_buildable(reg, c)
-    rec = load_record(c, RECORDS)
+    rec = load_record(c)
     cfg = d28eval.with_budget(d28eval.load_config(), a.search_budget)
     cfg |= {k: getattr(a, k) for k in ("repeats", "warmup") if getattr(a, k) is not None}
     lcfg = d28labels.with_budget(d28labels.load_config(), a.state_budget)
