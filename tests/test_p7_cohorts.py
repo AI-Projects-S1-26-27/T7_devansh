@@ -17,7 +17,7 @@ def test_registry_loads_unfrozen_with_the_decided_sets_and_sizes():
     # decided 17 Nov 2026 (decisions.md §19): exim held out; held-out CVEs not drawn yet; training 1,500 and
     # validation 200 solvable per size; test sizes and the generation limit null until the P6 pilot rates.
     assert not REG.frozen and REG.heldout_products == ("exim:exim",)
-    assert REG.heldout_cves is None and REG.heldout_cve_roles == ("training", "validation")
+    assert REG.heldout_cves is None and REG.heldout_cves_kept_by == ("d28_test_cve",)
     assert REG.training.name == "d28_train" and REG.training.per_size * len(REG.training.sizes) == 3000
     assert REG.training.per_size == 1500 and REG.training.max_candidates_per_size is None
     v = REG["d28_val"]
@@ -38,14 +38,32 @@ def test_every_required_cohort_exists_with_its_factor():
 
 
 def test_one_factor_at_a_time_against_in_distribution():
-    base = REG["d28_test_id"].factors()
+    # OQ-P7b-2 (decided 17 Nov 2026): only the unseen-CVE split keeps the held-out CVEs, so it differs from
+    # in-distribution in exactly that factor, and no other split differs in it.
+    base = REG.factors(REG["d28_test_id"])
     expect = {"d28_test_size30": {"sizes"}, "d28_test_size60": {"sizes"}, "d28_test_structure": {"archetype"},
-              "d28_test_temporal": {"gen_cohort"}, "d28_test_product": {"exclude"}, "d28_test_cve": set(),
+              "d28_test_temporal": {"gen_cohort"}, "d28_test_product": {"exclude"},
+              "d28_test_cve": {"heldout_cves_excluded"},
               "d28_test_os25": {"os_linux"}, "d28_test_os75": {"os_linux"}, "d28_test_p075": {"p"},
               "d28_test_p050": {"p"}, "d28_test_p025": {"p"}}
+    assert set(expect) == {c.name for c in TESTS} - {"d28_test_id"}
     for name, factors in expect.items():
-        diff = {k for k, v in REG[name].factors().items() if v != base[k]}
+        diff = {k for k, v in REG.factors(REG[name]).items() if v != base[k]}
         assert diff == factors, name
+
+
+def test_every_cohort_but_the_unseen_cve_split_excludes_the_heldout_cves(tmp_path):
+    real = [c for c in REG.cohorts.values() if not c.smoke]
+    assert {c.name for c in real if not REG.excludes_heldout_cves(c)} == {"d28_test_cve"}
+    assert REG.excludes_heldout_cves(REG.training) and REG.excludes_heldout_cves(REG["d28_val"])
+    assert not any(REG.excludes_heldout_cves(c) for c in REG.cohorts.values() if c.smoke)
+    for bad in ([], ["d28_val"], ["d28_test_nope"], ["p7_smoke_test"]):
+        cfg = json.loads(co.REGISTRY.read_text())
+        cfg["heldout_cves"]["kept_by"] = bad
+        path = tmp_path / "registry.json"
+        path.write_text(json.dumps(cfg))
+        with pytest.raises(ValueError, match="kept_by"):
+            co.load_registry(path)
 
 
 def test_seed_namespaces_are_disjoint_and_never_integers():
@@ -92,7 +110,8 @@ def test_nothing_builds_while_unfrozen(tmp_path):
     assert any("held-out CVEs" in w for w in REG.problems(REG.training))
     assert any("generation limit" in w for w in REG.problems(REG.training))
     assert any("OQ-P7-1" in w for w in REG.problems(REG["d28_test_id"]))
-    assert not any("held-out CVEs" in w for w in REG.problems(REG["d28_test_id"]))
+    for c in TESTS:  # OQ-P7b-2: every test cohort but the unseen-CVE split waits for the exclusion too
+        assert any("held-out CVEs" in w for w in REG.problems(c)) == (c.name != "d28_test_cve"), c.name
     assert any("excluded-CVEs" in w for w in REG.problems(REG["d28_test_cve"]))
     assert REG.excluded(REG["d28_val"]) == frozenset({"exim:exim"})
     assert REG.excluded(REG["d28_test_product"]) == frozenset()

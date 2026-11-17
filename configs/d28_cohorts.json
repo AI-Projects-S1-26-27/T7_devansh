@@ -9,11 +9,10 @@
  "heldout_note": "Held-out product set (Round 10): exim (decided 17 Nov 2026 by Devansh, OQ-P7-5). Every cohort with exclude 'heldout_products' leaves out every CVE touching it; d28_test_product draws from the whole pool.",
  "heldout_cves": {
   "ids": null,
-  "excluded_from_roles": [
-   "training",
-   "validation"
+  "kept_by": [
+   "d28_test_cve"
   ],
-  "note": "Unseen-CVE split (decided 17 Nov 2026 by Devansh, OQ-P7-3/4): the held-out set is every AC:H pool unit plus random AC:L units until it holds 30% of the pool's CVE IDs. Training and validation exclude it; d28_test_cve draws from the held-out CVEs plus the rest of the pool. Drawn through the generator's 'excluded CVEs' parameter (being added on d28-gen); ids stay null and training and validation stay blocked until that parameter is on this branch."
+  "note": "Unseen-CVE split (decided 17 Nov 2026 by Devansh, OQ-P7-3/4): the held-out set is every AC:H pool unit plus random AC:L units until it holds 30% of the pool's CVE IDs. Every cohort except the one(s) in kept_by excludes it, training and validation included (decided 17 Nov 2026, OQ-P7b-2: one factor at a time, Round 10); d28_test_cve draws from the held-out CVEs plus the rest of the pool. Drawn through the generator's 'excluded CVEs' parameter (on d28-gen); ids stay null and every excluding cohort stays blocked until that parameter is on this branch."
  },
  "seed_format": "{namespace}/n{n}/{index}",
  "training_total_solvable": 3000,

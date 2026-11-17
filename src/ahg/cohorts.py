@@ -111,7 +111,7 @@ class Registry:
     training_total_solvable: int
     sha256: str
     heldout_cves: tuple[str, ...] | None = None
-    heldout_cve_roles: tuple[str, ...] = ()
+    heldout_cves_kept_by: tuple[str, ...] = ()  # the cohorts that keep the held-out CVEs (the unseen-CVE split)
 
     def __getitem__(self, name: str) -> Cohort:
         return self.cohorts[name]
@@ -128,6 +128,16 @@ class Registry:
             raise BlockedCohort(f"{c.name}: the held-out product set is not chosen (OQ-P6-8)")
         return frozenset(self.heldout_products)
 
+    def excludes_heldout_cves(self, c: Cohort) -> bool:
+        """OQ-P7b-2 (decided 17 Nov 2026): every cohort except the unseen-CVE split excludes the held-out CVEs,
+        so each shift split differs from in-distribution in one factor only (Round 10). Smoke cohorts are never
+        data and use the whole pool."""
+        return not c.smoke and c.name not in self.heldout_cves_kept_by
+
+    def factors(self, c: Cohort) -> dict:
+        """Cohort.factors plus whether the held-out CVEs are excluded (a factor set by the registry)."""
+        return c.factors() | {"heldout_cves_excluded": self.excludes_heldout_cves(c)}
+
     def problems(self, c: Cohort, prereg: Path = PREREG) -> list[str]:
         """Why cohort c cannot be built now; [] if it can. Smoke cohorts need no freeze."""
         out = [f"blocked by {b}" for b in c.blocked_by]
@@ -139,9 +149,9 @@ class Registry:
             out.append("the cohort size is not set (OQ-P7-1: after the P6 pilot solvability rates)")
         if c.selection == "solvable_quota" and c.max_candidates_per_size is None:
             out.append("the generation limit is not set (OQ-P7-2: after the P6 pilot solvability rates)")
-        if c.role in self.heldout_cve_roles:
-            # OQ-P7-4 (decided 17 Nov 2026): training and validation exclude the held-out CVEs, which reach the
-            # generator through its "excluded CVEs" parameter; that parameter is being added on d28-gen.
+        if self.excludes_heldout_cves(c):
+            # OQ-P7-4 and OQ-P7b-2 (decided 17 Nov 2026): every cohort but the unseen-CVE split excludes the
+            # held-out CVEs, which reach the generator through its "excluded CVEs" parameter (on d28-gen).
             out.append("the held-out CVEs cannot be excluded yet: the generator's excluded-CVEs parameter "
                        "(d28-gen) is not on this branch")
         if c.exclude == "heldout_products" and self.heldout_products is None:
@@ -216,11 +226,13 @@ def load_registry(path: Path = REGISTRY, gen_config: Path | None = None) -> Regi
     validate(cohorts, cfg["training_total_solvable"], p_values)
     held = cfg["heldout_products"]
     cves = cfg["heldout_cves"]
-    if set(cves["excluded_from_roles"]) - set(ROLES):
-        raise ValueError(f"heldout_cves: unknown roles {cves['excluded_from_roles']}")
-    return Registry({c.name: c for c in cohorts}, bool(cfg["frozen"]), None if held is None else tuple(held),
+    by_name = {c.name: c for c in cohorts}
+    kept = tuple(cves["kept_by"])
+    if not kept or any(k not in by_name or not by_name[k].is_test or by_name[k].smoke for k in kept):
+        raise ValueError(f"heldout_cves: kept_by {list(kept)} must name real test cohorts")
+    return Registry(by_name, bool(cfg["frozen"]), None if held is None else tuple(held),
                     cfg["training_total_solvable"], hashlib.sha256(raw).hexdigest(),
-                    None if cves["ids"] is None else tuple(cves["ids"]), tuple(cves["excluded_from_roles"]))
+                    None if cves["ids"] is None else tuple(cves["ids"]), kept)
 
 
 def prereg_frozen(path: Path = PREREG) -> bool:
