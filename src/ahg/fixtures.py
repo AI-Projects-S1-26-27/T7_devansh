@@ -218,13 +218,14 @@ def parse_date(text: str, fmt: str | None = None) -> str:
 
 
 def cpe_split(name: str, split: str | None) -> tuple[str, str]:
-    """(CPE version, CPE update) of a published version, e.g. '9.6p1' -> ('9.6', 'p1') for OpenSSH."""
+    """(CPE version, CPE update) of a published version, e.g. '9.6p1' -> ('9.6', 'p1') for OpenSSH. The
+    update is lower-cased without spaces, as NVD writes it ('15.4.2 Hotfix 1' -> ('15.4.2', 'hotfix1'))."""
     if not split:
         return name, ""
     m = re.fullmatch(split, name)
     if not m:
         raise ValueError(f"release {name!r} does not fit cpe_split {split!r}")
-    return m["version"], (m.groupdict().get("update") or "").lower()
+    return m["version"], (m.groupdict().get("update") or "").lower().replace(" ", "")
 
 
 def parse_listing(page: str, pattern: str) -> list[tuple[str, str | None, str]]:
@@ -269,9 +270,42 @@ def parse_github_releases(page: str, pattern: str) -> list[tuple[str, str | None
     return out
 
 
+def parse_release_page(page: str, name_pattern: str, date_pattern: str, date_format: str | None) -> list[tuple[str, str | None, str]]:
+    """One release from its own release-notes page (Serv-U: "Serv-U 15.2.2 Release Notes" ... "Release
+    date: January 21, 2021"). The version is the first visible line that fits `name_pattern` (group
+    `name`), the date the first line that fits `date_pattern` (group `date`). A page that lacks either
+    yields nothing: an undated page is not a release record (Round 4 records a release date)."""
+    lines = html_text_lines(page)
+    name = next((m for m in (re.search(name_pattern, line) for line in lines) if m), None)
+    date = next((m for m in (re.search(date_pattern, line) for line in lines) if m), None)
+    if not (name and date):
+        return []
+    return [(name["name"], parse_date(date["date"], date_format), f"{name.group(0)[:120]} | {date.group(0)[:80]}")]
+
+
+def parse_github_tags(page: str, pattern: str) -> dict[str, dict]:
+    """Tags on one GitHub /tags API page whose name fits `pattern` (group `name`): {name: {"tag", "commit"}}.
+    Tags carry no date and no release status, so they corroborate a release list; they never make one."""
+    rx = re.compile(pattern)
+    out = {}
+    for t in json.loads(page):
+        m = rx.fullmatch(t.get("name") or "")
+        if m:
+            out[m["name"]] = {"tag": t["name"], "commit": (t.get("commit") or {}).get("sha")}
+    return out
+
+
+UNDATED = "undated"  # release date of a release an official vendor version list names without a date (P5v follow-up, OQ-P5v-2)
+
+
+def _dated(d: str | None) -> bool:
+    return d is not None and d != UNDATED
+
+
 def build_releases(found: list[tuple[str, str | None, str, str]], split: str | None) -> tuple[list[Release], list[str]]:
     """Stable releases (one per version, earliest date kept) sorted by version, plus the pre-release names
-    excluded (P5 decision: stable releases only). `found` holds (name, date, entry, raw_name)."""
+    excluded (P5 decision: stable releases only). `found` holds (name, date, entry, raw_name). A real date
+    always wins over a missing or "undated" one, whichever source lists the release first."""
     by_name: dict[str, Release] = {}
     pre: set[str] = set()
     for name, date, entry, raw in found:
@@ -280,7 +314,7 @@ def build_releases(found: list[tuple[str, str | None, str, str]], split: str | N
             continue
         v, u = cpe_split(name, split)
         old = by_name.get(name)
-        if old is None or (date and (old.date is None or date < old.date)):
+        if old is None or (_dated(date) and (not _dated(old.date) or date < old.date)):
             by_name[name] = Release(name, v, u, date, raw, entry)
     return sorted(by_name.values(), key=lambda r: r.key), sorted(pre)
 
@@ -584,9 +618,12 @@ def _range_key(rg: Range) -> tuple:
     return (rg.criteria, rg.start_incl, rg.start_excl, rg.end_incl, rg.end_excl)
 
 
-def unverified_fixtures(cves: dict[str, list[Range]], nvd_matches: dict[str, set[tuple]]) -> tuple[list[dict], list[dict]]:
-    """Vulnerable fixtures from version strings NVD itself lists as affected, for products with no verified
-    fixture.
+def unverified_fixtures(cves: dict[str, list[Range]], nvd_matches: dict[str, set[tuple]],
+                        only: set[str] | None = None) -> tuple[list[dict], list[dict]]:
+    """Vulnerable fixtures from version strings NVD itself lists as affected, for the CVEs of the listed
+    products that have no verified vulnerable fixture: `only` names those CVEs (None: all of them, a product
+    with no verified fixture). P5v: "a fixture with evidence becomes a normal fixture; one without stays
+    unverified_release". `affected_by` still counts every CVE in `cves`.
 
     Decisions 16 Nov 2026 (Devansh, after P5; rule 13): such fixtures carry "unverified_release": no release
     date, no upstream validation, vulnerable role only, never a fixed fixture; usable in the primary (p = 1)
@@ -601,6 +638,9 @@ def unverified_fixtures(cves: dict[str, list[Range]], nvd_matches: dict[str, set
     fixtures: dict[str, dict] = {}
     dropped: list[dict] = []
     for cve in sorted(cves, key=cve_sort_key):
+        if only is not None and cve not in only:
+            continue
+
         def options(rgs: list[Range]) -> list[tuple[str, str, str, Range]]:
             out = []
             for rg in rgs:
@@ -699,6 +739,150 @@ def windows_fixtures(row: dict, product_names: list[str], builds: dict[str, dict
             continue
         pairs.append({"product": p["name"], "fixed": f, "vulnerable": max(prior, key=version_key)})
     return pairs, dropped
+
+
+# ---------------------------------------------------------------- Windows update history (P5w, decided 16 Nov 2026)
+
+_DATE_TXT = r"[A-Z][a-z]+ \d{1,2}, \d{4}"
+_UH_ENTRY = re.compile(rf"^(?P<date>{_DATE_TXT})(?:, \d{{4}})?\s*[—–-]\s*KB(?P<kb>\d{{6,8}})\s*\((?P<what>[^)]*)\)(?P<tail>.*)$")
+_ROLLUP = re.compile(r"(?P<preview>Preview of )?(?:OS Build )?Monthly Rollup")  # 2017 entries read "(OS Build Monthly Rollup)"
+
+
+def cumulative_release(m: re.Match, build_line: str | None) -> dict | None:
+    """A dated update-history entry or KB-article title as a cumulative release of one Windows version, or
+    None if it is not one. With `build_line` the entry must name an OS build on that line (version
+    "10.0.<line>.<n>", the lower of two); without it (2012 R2), a Monthly Rollup identified by its KB.
+    `preview` marks optional non-security previews ("Preview of Monthly Rollup", a trailing "Preview")."""
+    what, tail = m["what"].strip(), (m.groupdict().get("tail") or "")
+    if build_line:
+        bm = re.fullmatch(r"OS Builds? (.+)", what)
+        builds = [f"10.0.{a}.{b}" for a, b in re.findall(r"(\d+)\.(\d+)", bm.group(1)) if a == build_line] if bm else []
+        if not builds:
+            return None
+        version, preview = min(builds, key=version_key), "Preview" in tail
+    else:
+        rm = _ROLLUP.fullmatch(what)
+        if not rm:
+            return None  # Security-only updates are not cumulative and are not releases
+        builds, version, preview = [], f"KB{m['kb']}", bool(rm["preview"])
+    return {"kb": m["kb"], "date": parse_date(m["date"], "%B %d, %Y"), "version": version, "builds": builds, "kind": what,
+            "preview": preview, "entry": m.group(0)[:200]}  # fmt: skip
+
+
+def parse_update_history(page: str, build_line: str | None) -> list[dict]:
+    """Releases on a Microsoft per-version update-history page (P5w).
+
+    The page's navigation lists every update as a link, "March 12, 2024—KB5035855 (OS Build 17763.5576)"
+    on the Windows 10 / Server 2016+ pages, "June 9, 2026—KB5094041 (Monthly Rollup)" on the 8.1 / Server
+    2012 R2 page; see `cumulative_release` for what counts. One release per KB, earliest listed date kept.
+    Previews are returned with `preview` set; the caller drops them (OQ-P5w-2 as changed 17 Nov 2026).
+    """
+    out: dict[str, dict] = {}
+    for text in re.findall(r"<a\b[^>]*>([^<]*KB\d{6,8}[^<]*)</a>", page):
+        m = _UH_ENTRY.match(re.sub(r"\s+", " ", html.unescape(text)).strip())
+        r = cumulative_release(m, build_line) if m else None
+        if r and (r["kb"] not in out or r["date"] < out[r["kb"]]["date"]):
+            out[r["kb"]] = r
+    return list(out.values())
+
+
+def parse_release_info(page: str, build_line: str) -> dict:
+    """Microsoft's "Windows Server release information" page: per release row (servicing option, update type
+    such as "2018-10 B", availability date, build, KB). Returns {"types": {kb: letter}, "initial": release
+    or None} for the rows on `build_line`; letter A is the version's initial release (no KB), B the monthly
+    security update, C/D optional non-security previews, OOB out-of-band."""
+    types, initial = {}, None
+    for t in html_tables(page):
+        if not t or t[0][:2] != ["Servicing option", "Update type"]:
+            continue
+        for row in t[1:]:
+            if len(row) < 5 or not row[3].startswith(build_line + "."):
+                continue
+            letter = row[1].split()[-1]
+            if row[4]:
+                types[row[4].removeprefix("KB")] = letter
+            if letter == "A":
+                initial = {"kb": None, "date": row[2], "version": f"10.0.{row[3]}", "builds": [f"10.0.{row[3]}"], "kind": "initial release (A)",
+                           "preview": False, "entry": " | ".join(row)[:200]}  # fmt: skip
+    return {"types": types, "initial": initial}
+
+
+def parse_kb_article(page: str) -> dict | None:
+    """The title of an official Microsoft support (KB) article: {"kb", "title", "date"} (date None if the
+    title names none), plus `match` for a "Month D, YYYY—KBn (...)" cumulative-update title."""
+    m = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", page) or re.search(r"(?is)<title>(.*?)</title>", page)
+    if not m:
+        return None
+    title = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", m.group(1)))).strip().removesuffix(" | Microsoft Support")
+    kb = re.search(r"KB(\d{6,8})", title)
+    d = re.search(_DATE_TXT, title)
+    return {"kb": kb.group(1) if kb else None, "title": title[:200], "date": parse_date(d.group(0), "%B %d, %Y") if d else None,
+            "match": _UH_ENTRY.match(title)}  # fmt: skip
+
+
+def parse_kb_body_date(page: str) -> str | None:
+    """A release date the article body states under a label ("Release date: June 14, 2022", "Published ..."),
+    else None; dates in prose (e.g. "SSU released March 14, 2023") belong to other updates and are ignored."""
+    text = re.sub(r"\s+", " ", html.unescape(re.sub(r"(?is)<(script|style)\b.*?</\1>|<[^>]+>", " ", page)))
+    m = re.search(rf"(?:Release date|Released on|Publication date|Published)\s*:?\s*({_DATE_TXT})", text)
+    return parse_date(m.group(1), "%B %d, %Y") if m else None
+
+
+def parse_catalog_date(page: str, kb: str) -> dict | None:
+    """Release date of a KB from a Microsoft Update Catalog search page: the earliest "Last Updated" among the
+    rows whose title names the KB, accepted only if it falls in the title's "YYYY-MM" month (rows revised later
+    carry a later date, so the earliest is the release; a month mismatch means the date is not the release).
+    Returns {"date", "rows", "month"} or None."""
+    rows = []
+    for tr in re.findall(r"(?is)<tr\b.*?</tr>", page):
+        cells = [re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", c))).strip() for c in re.findall(r"(?is)<td\b[^>]*>(.*?)</td>", tr)]
+        if len(cells) >= 5 and f"KB{kb}" in cells[1] and re.match(r"\d{4}-\d{2}\b", cells[1]) and re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", cells[4]):
+            rows.append((cells[1][:7], datetime.strptime(cells[4], "%m/%d/%Y").date().isoformat()))
+    if not rows:
+        return None
+    date = min(d for _, d in rows)
+    month = min(m for m, d in rows if d == date)
+    return {"date": date, "rows": len(rows), "month": month} if date[:7] == month else None
+
+
+def history_order(releases: list[dict], by_build: bool) -> list[dict]:
+    """Releases in servicing order: by OS build where there is one, else by date (then KB); an initial
+    release without KB sorts first among equal keys."""
+    if by_build:
+        return sorted(releases, key=lambda r: (version_key(r["version"]), r["date"], int(r["kb"] or 0)))
+    return sorted(releases, key=lambda r: (r["date"], int(r["kb"] or 0)))
+
+
+def history_pairs(fix_kbs: dict[str, list[str]], ordered: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Vulnerable and fixed releases per CVE on one Windows version (P5w).
+
+    `fix_kbs` maps each CVE to the KBs MSRC lists as its fix for the product; `ordered` is the version's
+    release list in servicing order. The fixed release is the earliest release whose KB is one of the
+    fixing KBs (several KBs, e.g. Monthly Rollup and Security-only: the first in the list); the vulnerable
+    release is the release just before it. Returns (pairs, dropped) keyed by CVE; a pair is
+    {"fixed": i, "vulnerable": i - 1, "kb": KB} as indices into `ordered`.
+    """
+    pos = {r["kb"]: i for i, r in enumerate(ordered) if r["kb"]}
+    pairs, dropped = {}, {}
+    for cve, kbs in fix_kbs.items():
+        hits = sorted(pos[k] for k in set(kbs) if k in pos)
+        if not kbs:
+            dropped[cve] = {"reason": "no_msrc_fix_kb", "fix_kbs": []}
+        elif not hits:
+            dropped[cve] = {"reason": "fix_kb_not_in_update_history", "fix_kbs": sorted(set(kbs))}
+        elif hits[0] == 0:
+            dropped[cve] = {"reason": "no_earlier_release_in_update_history", "fix_kbs": sorted(set(kbs)),
+                            "fixed": ordered[0]["version"]}  # fmt: skip
+        else:
+            pairs[cve] = {"fixed": hits[0], "vulnerable": hits[0] - 1, "kb": ordered[hits[0]]["kb"]}
+    return pairs, dropped
+
+
+def standalone_base(ordered: list[dict], kb_date: str) -> int | None:
+    """Index of the latest cumulative release dated before a standalone KB (its base build), or None."""
+    before = [i for i, r in enumerate(ordered) if r["date"] < kb_date]
+    return max(before, key=lambda i: (ordered[i]["date"], i)) if before else None
+
 
 
 # ---------------------------------------------------------------- eligible view (P5 decision, 16 Nov 2026)

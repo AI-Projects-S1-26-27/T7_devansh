@@ -348,10 +348,126 @@ def test_unverified_bound_must_match_the_raw_nvd_record():
     assert fixtures == [] and dropped[0]["reason"] == "cpe_match_not_in_raw_nvd_record"
 
 
-def test_build_refuses_unverified_fixtures_for_a_product_with_verified_ones():
+def nvd_dir(tmp_path: Path, product: str, cves: dict[str, list]) -> Path:
+    """A raw NVD snapshot as the master was built from: one page of the product's CVEs and its manifest."""
+    d = tmp_path / "nvd"
+    d.mkdir()
+    page = gzip.compress(json.dumps({"url": "u", "fetched_utc": "t", "params": {}, "response": {
+        "vulnerabilities": [{"cve": {"id": c, "configurations": conf}} for c, conf in cves.items()]}}).encode())
+    (d / "p.json.gz").write_bytes(page)
+    (d / "manifest.json").write_text(json.dumps({"files": [{"product": product, "path": "p.json.gz", "url": "https://nvd.example/x",
+                                                            "fetched_utc": "2026-10-21T08:00:00+00:00", "sha256": hashlib.sha256(page).hexdigest()}]}))
+    return d
+
+
+def test_unverified_fixtures_only_for_cves_without_a_verified_one(tmp_path):
+    """P5v: a CVE with a verified vulnerable fixture gets no unverified one; the others keep theirs."""
     bf = load_script("build_fixtures")
+    confs = {"CVE-2020-1": cfg(m("cpe:2.3:a:v:p:1.0:*:*:*:*:*:*:*")), "CVE-2020-2": cfg(m("cpe:2.3:a:v:p:2.0:*:*:*:*:*:*:*"))}
+    info = {"cves": {c: {"row": {"configurations": conf}} for c, conf in confs.items()}}
+    config = {"cpe_part": {"default": "a"}, "unverified_release": {"nvd_raw_dir": str(nvd_dir(tmp_path, "v:p", confs)), "decision": "test"}}
+    verified = {"version": "1.0", "vulnerable_for": [{"cve": "CVE-2020-1"}], "fixed_for": [], "affected_by": ["CVE-2020-1"]}
+    entry = {"product": "v:p", "status": "ok", "fixtures": [verified], "dropped": []}
+    out = bf.add_unverified(entry, info, config)
+    assert out["status"] == "ok" and out["verified_status"] == "ok"
+    assert [(f["version"], f.get("unverified_release", False), [v["cve"] for v in f["vulnerable_for"]]) for f in out["fixtures"]] == [
+        ("1.0", False, ["CVE-2020-1"]), ("2.0", True, ["CVE-2020-2"])]
+    # A product with no verified fixture keeps the old behaviour: every CVE gets its unverified fixture.
+    out = bf.add_unverified({**entry, "status": "dropped", "drop_reason": "x", "fixtures": []}, info, config)
+    assert out["status"] == "unverified_release" and "drop_reason" not in out
+    assert [f["version"] for f in out["fixtures"]] == ["1.0", "2.0"]
+
+
+def test_unverified_version_equal_to_a_verified_release_is_refused(tmp_path):
+    bf = load_script("build_fixtures")
+    confs = {"CVE-2020-1": cfg(m("cpe:2.3:a:v:p:1.0:*:*:*:*:*:*:*")), "CVE-2020-2": cfg(m("cpe:2.3:a:v:p:2.0:*:*:*:*:*:*:*"))}
+    info = {"cves": {c: {"row": {"configurations": conf}} for c, conf in confs.items()}}
+    config = {"cpe_part": {"default": "a"}, "unverified_release": {"nvd_raw_dir": str(nvd_dir(tmp_path, "v:p", confs)), "decision": "test"}}
+    # A verified 2.0 that is not CVE-2020-2's vulnerable fixture: CVE-2020-2's unverified fixture would be a second "2.0".
+    clash = {"version": "2.0", "vulnerable_for": [], "fixed_for": [{"cve": "CVE-2020-1"}], "affected_by": []}
     with pytest.raises(SystemExit):
-        bf.add_unverified({"product": "a:b", "fixtures": [{"version": "1.0"}]}, {"cves": {}}, {})
+        bf.add_unverified({"product": "v:p", "status": "ok", "fixtures": [clash], "dropped": []}, info, config)
+
+
+def test_release_page_needs_version_and_date():
+    page = "<html><body><h1>Serv-U File Server 15.2.2 Release Notes</h1><p>15.2.1 Release Notes</p><p>Release date: January 21, 2021</p></body></html>"
+    pat, dpat = r"^Serv-U (?:File Server )?(?P<name>\d+(?:\.\d+)+) Release Notes$", r"^Release date: (?P<date>[A-Z][a-z]+ \d{1,2}, \d{4})$"
+    assert [(n, d) for n, d, _ in fx.parse_release_page(page, pat, dpat, "%B %d, %Y")] == [("15.2.2", "2021-01-21")]
+    assert fx.parse_release_page(page.replace("Release date", "Updated"), pat, dpat, "%B %d, %Y") == []  # undated: no release
+
+
+def test_github_tags_corroborate_names_only():
+    page = json.dumps([{"name": "mysql-5.7.14", "commit": {"sha": "abc"}}, {"name": "mysql-cluster-7.5.3", "commit": {"sha": "d"}},
+                       {"name": "mysql-5.7.10-2", "commit": {"sha": "e"}}])
+    assert fx.parse_github_tags(page, r"mysql-(?P<name>\d+\.\d+\.\d+)") == {"5.7.14": {"tag": "mysql-5.7.14", "commit": "abc"}}
+
+
+def test_raw_text_reads_gzip_encoded_captures(tmp_path):
+    """Wayback id_ captures keep the origin's gzip encoding; the raw bytes stay as fetched, text is decoded."""
+    bf = load_script("build_fixtures")
+    d = tmp_path / "fixtures_p5v" / "2026-11-16"
+    d.mkdir(parents=True)
+    body = gzip.compress("<p>Changes in MySQL 5.5.62 (2018-10-22, General availability)</p>".encode())
+    (d / "a.html").write_bytes(body)
+    (d / "fetch_log.jsonl").write_text(json.dumps({"name": "a.html", "url": "u", "date_utc": "t", "http": 200, "bytes": len(body),
+                                                   "sha256": hashlib.sha256(body).hexdigest(), "content_type": "text/html",
+                                                   "script": "t", "git_commit": "x", "git_dirty": False}) + "\n")
+    write_manifest(d)
+    raw = bf.Raw([d])
+    assert "5.5.62" in raw.text("a.html") and raw.ref("a.html")["sha256"] == hashlib.sha256(body).hexdigest()
+
+
+# ---------------------------------------------------------------- P5v configuration patterns
+
+
+P5 = json.loads((Path(__file__).resolve().parents[1] / "configs" / "fixtures" / "p5.json").read_text())
+
+
+def releases_from(product: str, page: str) -> list[tuple[str, str]]:
+    found = []
+    for src in P5["products"][product]["releases"]:
+        if src["kind"] == "text":
+            found += [(n, d) for n, d, _ in fx.parse_text_releases(page, src["pattern"], src.get("date_format"))]
+        elif src["kind"] == "page":
+            found += [(n, d) for n, d, _ in fx.parse_release_page(page, src["pattern"], src["date_pattern"], src.get("date_format"))]
+    return sorted(set(found))
+
+
+def test_mysql_release_notes_pattern_keeps_ga_only():
+    page = "\n".join(f"<p>Changes in MySQL {x}</p>" for x in (
+        "5.7.14 (2016-07-29)", "8.0.36 (2024-01-16, General Availability)", "5.5.62 (2018-10-22, General availability)",
+        "8.3.0 (2024-01-16, Innovation Release)", "5.7.8 (2015-08-03, Release Candidate)", "5.7.6 (2015-03-09, Milestone 16)",
+        "8.0.4 (2018-01-23, Development Milestone)", "5.7.0 (Not released, Milestone 10)", "9.7.4.1 (Not yet released)"))
+    for product in ("oracle:mysql", "mysql:mysql"):
+        assert releases_from(product, "<html><body>" + page + "</body></html>") == [
+            ("5.5.62", "2018-10-22"), ("5.7.14", "2016-07-29"), ("8.0.36", "2024-01-16"), ("8.3.0", "2024-01-16")]
+
+
+def test_cerberus_patterns_read_all_dated_formats_and_skip_betas():
+    page = "<html><body>" + "".join(f"<h3>{x}</h3>" for x in (
+        "Version 2026.3 Official Release — 26 August 2026", "Version 2025.1.1 Official Release — March 25 2025",
+        "Version 8.0.10.1 Official Release — 2/09/2017", "Version 12.11.7 Final Release — 4/12/2023",
+        "Version 2.43 Official notes — 3/19/2007", "Version 2.0 BETA 1 notes — 1/02/2003")) + "</body></html>"
+    assert releases_from("cerberusftp:ftp_server", page) == [
+        ("12.11.7", "2023-04-12"), ("2.43", "2007-03-19"), ("2025.1.1", "2025-03-25"), ("2026.3", "2026-08-26"), ("8.0.10.1", "2017-02-09")]
+
+
+def test_servu_release_page_pattern():
+    page = "<html><body><h1>Serv-U 15.1.6 Release Notes</h1><p>Release date: December 7, 2017</p></body></html>"
+    assert releases_from("solarwinds:serv-u", page) == [("15.1.6", "2017-12-07")]
+    rels, _ = fx.build_releases([("15.5.4 Hotfix 1", "2026-06-01", "e", "r"), ("15.5.4", "2026-02-01", "e", "r")], P5["products"]["solarwinds:serv-u"]["cpe_split"])
+    assert [(r.name, r.cpe_version) for r in rels] == [("15.5.4", "15.5.4"), ("15.5.4 Hotfix 1", "15.5.4")]
+
+
+def test_postfix_announcement_pattern_needs_the_db_config_entry():
+    src = P5["products"]["postfix:postfix"]["evidence"][0]
+    text = ("<html><body><h1>Postfix stable release 3.2.2 and legacy releases 3.1.6, 3.0.10 and 2.11.10</h1>"
+            "<p>[An on-line version of this announcement will be available at http://www.postfix.org/announcements/postfix-3.2.2.html ]</p>"
+            "<p>Fixed in all supported releases:</p><p>Security: Berkeley DB versions 2 and later try to read settings from a file DB_CONFIG in the current directory.</p>"
+            "</body></html>")  # fmt: skip
+    docs = [d for p in src["patterns"] for d in fx.ev_page_regex(text, p, P5["products"]["postfix:postfix"]["version_regex"], "n", "CVE-2017-10140", True)]
+    assert sorted(d.version for d in docs) == ["2.11.10", "3.0.10", "3.1.6", "3.2.2"] and {d.cve for d in docs} == {"CVE-2017-10140"}
+    assert not [d for p in src["patterns"] for d in fx.ev_page_regex(text.replace("DB_CONFIG", "X"), p, r"\d+\.\d+\.\d+", "n", "CVE-2017-10140", True)]
 
 
 def test_runs():
@@ -515,9 +631,10 @@ def test_build_end_to_end(tmp_path):
     run = next((tmp_path / "results" / "catalogue").iterdir())
     assert "apache:tomcat" in (run / "report.md").read_text()
     regained = json.loads(gzip.decompress((run / "raw.json.gz").read_bytes()))["unverified_regained"]
-    assert regained == [{"product": "oracle:mysql", "status": "unverified_release", "unverified_fixtures": 1, "candidate_cves": 1,
-                         "candidate_cves_with_fixture": 1, "eligible_remote": 0, "eligible_remote_regained": 0,
-                         "eligible_local": 1, "eligible_local_regained": 1}]  # fmt: skip
+    assert regained == [{"product": "oracle:mysql", "status": "unverified_release", "verified_fixtures": 0, "unverified_fixtures": 1,
+                         "candidate_cves": 1, "candidate_cves_with_fixture": 1, "candidate_cves_with_verified_fixture": 0,
+                         "eligible_remote": 0, "eligible_remote_regained": 0, "eligible_remote_verified": 0,
+                         "eligible_local": 1, "eligible_local_regained": 1, "eligible_local_verified": 0}]  # fmt: skip
     el = json.loads(gzip.decompress((out / "catalogue_eligible.json.gz").read_bytes()))
     assert list(el["linux"]) == ["oracle:mysql"]  # the Tomcat CVE has no eligible label
     assert el["linux"]["oracle:mysql"]["fixtures"][0]["unverified_release"] is True
@@ -595,3 +712,292 @@ def test_eligible_units_is_the_effect_rule_on_every_label_combination():
             for i, (s, lab, role, ac) in enumerate(combos)]
     assert fx.eligible_units(rows) == {(r["cve_id"], "p") for r in rows if effect.eligible(r)}
     assert 0 < len(fx.eligible_units(rows)) < len(rows)
+
+
+# ---------------------------------------------------------------- P5v follow-up (OQ-P5v-1 to -3, decided 16 Nov 2026)
+
+
+def test_a_real_date_wins_over_undated_in_either_order():
+    a = [("10.5.3", "undated", "e", "r1"), ("10.5.3", "2023-08-01", "e", "r2")]
+    for found in (a, a[::-1]):
+        rels, _ = fx.build_releases(found, None)
+        assert [(r.name, r.date, r.raw_name) for r in rels] == [("10.5.3", "2023-08-01", "r2")]
+    rels, _ = fx.build_releases([("11.0.1", "undated", "e", "r")], None)
+    assert rels[0].date == fx.UNDATED
+
+
+def test_cpe_update_is_written_as_nvd_writes_it():
+    split = P5["products"]["solarwinds:serv-u"]["cpe_split"]
+    assert fx.cpe_split("15.4.2 Hotfix 1", split) == ("15.4.2", "hotfix1")
+    assert fx.Range("c", exact="15.4.2", update="hotfix1").contains(*fx.cpe_split("15.4.2 Hotfix 1", split))
+    assert fx.cpe_split("9.6p1", r"(?P<version>\d+\.\d+)(?P<update>p\d+)") == ("9.6", "p1")
+
+
+def test_advisory_hotfix_becomes_the_fixed_release(tmp_path):
+    """OQ-P5v-3: a hotfix the vendor advisory names as the fix is a fixed release, undated, citing the advisory."""
+    bf = load_script("build_fixtures")
+    pc = P5["products"]["solarwinds:serv-u"]
+    adv = "<html><body><p>Fixed Software Release</p><p>SolarWinds Serv-U 15.2.2 HF 1</p></body></html>"
+    notes = "<html><body><h1>Serv-U 15.5.4 Hotfix 1 release notes</h1><p>Release date: June 4, 2026</p></body></html>"
+    adv2 = "<html><body><p>Fixed Software Release</p><p>SolarWinds Serv-U 15.5.4 HF1</p></body></html>"
+    snap = tmp_path / "fixtures_p5v2" / "2026-11-16"
+    write_raw(snap, {"solarwinds__serv-u/sw_advisory/CVE-2021-25276.html": adv, "solarwinds__serv-u/sw_advisory/CVE-2026-28318.html": adv2,
+                     "solarwinds__serv-u/n.html": notes})
+    raw = bf.Raw([snap])
+    small = {**pc, "releases": [{**pc["releases"][0], "id": "n.html"}], "evidence": [pc["evidence"][-1]]}
+    rels, _, _ = bf.product_releases("solarwinds:serv-u", small, raw)
+    docs, _, _ = bf.product_docs("solarwinds:serv-u", small, ["CVE-2021-25276", "CVE-2026-28318"], raw, {})
+    assert sorted((d.cve, d.version) for d in docs) == [("CVE-2021-25276", "15.2.2 Hotfix 1"), ("CVE-2026-28318", "15.5.4 Hotfix 1")]
+    extra = bf.advisory_fix_releases("solarwinds:serv-u", small, docs, rels)
+    assert [(r.name, r.cpe_version, r.cpe_update, r.date, r.raw_name) for r in extra] == [
+        ("15.2.2 Hotfix 1", "15.2.2", "hotfix1", "undated", "solarwinds__serv-u/sw_advisory/CVE-2021-25276.html")]  # 15.5.4 Hotfix 1 has its own page
+    idx = fx.ReleaseIndex(rels + extra + rels_named("15.2.2"))
+    cat = fx.catalogue_product({"CVE-2021-25276": [fx.Range("c", exact="15.2.2", update="-")]}, idx, docs)
+    assert cat.fixtures["15.2.2 Hotfix 1"]["fixed_for"][0]["after"] == "15.2.2"
+    assert cat.fixtures["15.2.2 Hotfix 1"]["release_date"] == "undated"
+
+
+def rels_named(*names):
+    return [fx.Release(n, n, "", "2021-01-21", "r", "e") for n in names]
+
+
+CRUSH_V10 = """<p>10.8.3</p><p>_0:released. password reset link vulnerability fix (CVE-2024-53552 - credit X)</p>
+<p>10.8.2 updates SMB3 library</p><p>10.6.1 / 10.7.1:</p><p>_0: KEX changes (CVE-2023-48795)</p>
+<p>_24:10.5.3:updated SFTP libraries, OpenSSL 3.0.13 and Java 1.13.2</p><p>10.4.0</p>"""
+
+
+def crush_releases(page: str, page_id: str) -> list[tuple[str, str]]:
+    found = []
+    for src in P5["products"]["crushftp:crushftp"]["releases"]:
+        if src["id"] != page_id:
+            continue
+        got = fx.parse_text_releases(page, src["pattern"], src.get("date_format"))
+        found += [(n, d or fx.UNDATED, e, src["id"]) if src.get("undated") else (n, d, e, src["id"]) for n, d, e in got]
+    return [(r.name, r.date) for r in fx.build_releases(found, None)[0]]
+
+
+def test_crushftp_version_pages_give_undated_and_dated_releases():
+    assert crush_releases("<html><body>" + CRUSH_V10 + "</body></html>", "crushftp_version10.html") == [
+        ("10.4.0", "undated"), ("10.5.3", "undated"), ("10.6.1", "undated"), ("10.7.1", "undated"), ("10.8.2", "undated"), ("10.8.3", "undated")]
+    v8 = "<html><body><p>CrushFTP 8.1.0 - 04/11/2017</p><p>8.0.4_0:fix for uploads</p><p>CrushFTP 8.0.4 - 12/03/2016</p></body></html>"
+    assert crush_releases(v8, "crushftp_version8.html") == [("8.0.4", "2016-12-03"), ("8.1.0", "2017-04-11")]
+    pc = P5["products"]["crushftp:crushftp"]
+    sec = next(e for e in pc["evidence"] if e["id"] == "crushftp_version10.html")
+    docs = fx.ev_sections("<html><body>" + CRUSH_V10 + "</body></html>", sec["header"], pc["version_regex"], "n")
+    assert sorted((d.cve, d.version) for d in docs) == [("CVE-2023-48795", "10.6.1"), ("CVE-2023-48795", "10.7.1"), ("CVE-2024-53552", "10.8.3")]
+
+
+def test_crushftp_wiki_fix_statements_stay_in_their_section():
+    pc = P5["products"]["crushftp:crushftp"]
+    wiki11 = ("<html><body><p>July 18th, 2025 - Unauthenticated access (CVE: CVE-2025-54309)</p><p>See more info here</p>"
+              "<p>March 21, 2025 - port access (CVE: CVE-2025-31161)</p><p>This issue ... (CVE-2025-0282 appears to be a copycat)</p>"
+              "<p>10.8.4 and 11.3.1 were published on 3/21/2025</p><p>April 19th, 2024 - (CVE-2024-4040)</p>"
+              "<p>CrushFTP v11 versions below 11.1 have a vulnerability. This has been patched in v11.1.0.</p></body></html>")
+    wiki10 = "<html><body><p>Regarding 10.7.1 and the CrushFTP exploit allowing access to system files <a>CVE-2024-4040</a> .</p></body></html>"
+    got = []
+    for e, page in ((pc["evidence"][-2], wiki11), (pc["evidence"][-1], wiki10)):
+        got += [(d.cve, d.version) for p in e["patterns"] for d in fx.ev_page_regex(page, p, pc["version_regex"], "n")]
+    assert sorted(got) == [("CVE-2024-4040", "10.7.1"), ("CVE-2024-4040", "11.1.0"), ("CVE-2025-31161", "10.8.4"), ("CVE-2025-31161", "11.3.1")]
+
+
+# ---------------------------------------------------------------- P5w: Windows builds from Microsoft update history
+
+
+UH_2019 = """<nav><a href="/a">November 14, 2023—KB5032196 (OS Build 17763.5122)</a>
+<a href="/b">October 10, 2023&#x2014;KB5031361 (OS Build 17763.4974)</a>
+<a href="/c">October 26, 2023—KB5031358 (OS Build 17763.5011) Preview</a>
+<a href="/d">September 14, 2026, 2026—KB5129239 (OS Build 17763.9001) Out-of-band</a>
+<a href="/e">July 30, 2018 - KB4346877 (OS Build 14393.2396)</a>
+<a href="/f">September 13, 2016 — KB3189866 (OS Builds 17763.187 and 17763.189)</a>
+<a href="/g">October 12, 2023—KB5031361 (OS Build 17763.4974)</a></nav>"""
+UH_2012R2 = """<nav><a>June 9, 2026&#x2014;KB5094041 (Monthly Rollup)</a><a>May 19, 2026—KB5090001 (Preview of Monthly Rollup)</a>
+<a>May 12, 2026—KB5087471 (Monthly Rollup)</a><a>May 12, 2026—KB5087000 (Security-only update)</a><a>KB4570006</a></nav>"""
+
+
+def test_update_history_parses_builds_of_one_line_and_rollups():
+    got = {(r["kb"], r["version"], r["date"]) for r in fx.parse_update_history(UH_2019, "17763")}
+    assert got == {("5032196", "10.0.17763.5122", "2023-11-14"), ("5031361", "10.0.17763.4974", "2023-10-10"),  # earliest date kept
+                   ("5031358", "10.0.17763.5011", "2023-10-26"), ("5129239", "10.0.17763.9001", "2026-09-14"),
+                   ("3189866", "10.0.17763.187", "2016-09-13")}  # other build lines skipped; two builds: the lower
+    assert [r["builds"] for r in fx.parse_update_history(UH_2019, "17763") if r["kb"] == "3189866"] == [["10.0.17763.187", "10.0.17763.189"]]
+    roll = fx.history_order(fx.parse_update_history(UH_2012R2, None), by_build=False)
+    assert [(r["version"], r["date"]) for r in roll] == [("KB5087471", "2026-05-12"), ("KB5090001", "2026-05-19"), ("KB5094041", "2026-06-09")]
+
+
+def test_history_pairs_take_the_first_fixing_release_and_the_one_before():
+    ordered = fx.history_order(fx.parse_update_history(UH_2019, "17763"), by_build=True)
+    assert [r["version"] for r in ordered][:3] == ["10.0.17763.187", "10.0.17763.4974", "10.0.17763.5011"]
+    pairs, dropped = fx.history_pairs({"CVE-2023-1": ["5032196", "9999999"], "CVE-2023-2": ["5032196", "5031361"],
+                                       "CVE-2023-3": ["1234567"], "CVE-2023-4": [], "CVE-2016-5": ["3189866"]}, ordered)
+    v = lambda i: ordered[i]["version"]  # noqa: E731
+    assert (v(pairs["CVE-2023-1"]["vulnerable"]), v(pairs["CVE-2023-1"]["fixed"])) == ("10.0.17763.5011", "10.0.17763.5122")
+    assert (v(pairs["CVE-2023-2"]["vulnerable"]), v(pairs["CVE-2023-2"]["fixed"])) == ("10.0.17763.187", "10.0.17763.4974")
+    assert {c: d["reason"] for c, d in dropped.items()} == {"CVE-2023-3": "fix_kb_not_in_update_history", "CVE-2023-4": "no_msrc_fix_kb",
+                                                           "CVE-2016-5": "no_earlier_release_in_update_history"}
+
+
+def win_row(cve, name, kbs, cohort_year="2023", fixed_build=None):
+    return {"cve_id": cve, "nvd": None, "configurations": [], "units": [unit("windows_os", stage="local_candidate", os_="windows", family="os",
+                                                                             cohort="core" if cohort_year < "2024" else "temporal")],
+            "msrc": {"docs": ["2023-Nov"], "initial_release": "2023-11-14T08:00:00", "products": {
+                "1": {"name": name, "fixes": [{"kb": k, "fixed_build": fixed_build, "subtype": "Security Update"} for k in kbs]}}}}
+
+
+def test_build_windows_uses_the_update_history_for_configured_versions(tmp_path):
+    bf = load_script("build_fixtures")
+    rows = [win_row("CVE-2023-1", "Windows Server 2019", ["5032196"], fixed_build="10.0.17763.5122"),
+            win_row("CVE-2023-2", "Windows Server 2019", ["5031361"], fixed_build="10.0.17763.9999"),  # MSRC build disagrees: logged
+            win_row("CVE-2023-3", "Windows Server 2019", ["1234567"])]
+    snap = tmp_path / "fixtures_p5w" / "2026-11-17"
+    write_raw(snap, {"windows_update_history/h2019.html": UH_2019})
+    msrc = tmp_path / "msrc"
+    write_raw(msrc, {"cvrf_2023-Nov.json": "{}"})
+    config = {"windows_products": {"default": {"names": ["Windows Server 2019"]}}, "msrc_fetch_logs": {str(msrc): "fetch_log.jsonl"},
+              "windows_update_history": {"Windows Server 2019": {"id": "h2019.html", "url": "u", "build_line": "17763"}}}
+    out = bf.build_windows(fx.candidate_units(rows), rows, config, bf.Raw([snap]))["Windows Server 2019"]
+    # The labelled preview (17763.5011) is not a release (OQ-P5w-2 as changed 17 Nov 2026).
+    assert out["rule"] == "P5w update history" and out["n_releases"] == 4 and out["previews_excluded"] == ["5031358"]
+    got = [(f["version"], f["kb"], f["release_date"], [i["cve"] for i in f["vulnerable_for"]], [i["cve"] for i in f["fixed_for"]], f["affected_by"])
+           for f in out["fixtures"]]
+    assert got == [("10.0.17763.187", "KB3189866", "2016-09-13", ["CVE-2023-2"], [], ["CVE-2023-1", "CVE-2023-2"]),
+                   ("10.0.17763.4974", "KB5031361", "2023-10-10", ["CVE-2023-1"], ["CVE-2023-2"], ["CVE-2023-1"]),
+                   ("10.0.17763.5122", "KB5032196", "2023-11-14", [], ["CVE-2023-1"], [])]
+    ev = out["fixtures"][2]["fixed_for"][0]
+    assert ev["after"] == "10.0.17763.4974" and ev["cohort"] == "core" and ev["evidence"]["mapped_kb"] == "KB5032196"
+    assert ev["evidence"]["msrc_sources"][0]["sha256"] == hashlib.sha256(b"{}").hexdigest()
+    assert out["fixtures"][0]["release_source"][0]["raw"].endswith("windows_update_history/h2019.html")
+    assert [m["cve"] for m in out["msrc_fixed_build_mismatch"]] == ["CVE-2023-2"]
+    assert [(d["cve"], d["reason"]) for d in out["dropped"]] == [("CVE-2023-3", "fix_kb_not_in_update_history")]
+    assert out["affected_unknown_no_fixed_build"] == ["CVE-2023-3"]
+    rows_table = bf.windows_history_rows({"windows": {"Windows Server 2019": out}})
+    assert rows_table == [{"product": "Windows Server 2019", "cohort": "core", "n_releases": 4, "cves": 3, "cves_with_vulnerable_fixture": 2,
+                           "cves_with_fixed_fixture": 2, "vulnerable_fixtures": 2, "fixed_fixtures": 2, "standalone_kb_cves": 0,
+                           "releases_from_kb_articles": 0, "previews_excluded": 1, "initial_release": None,
+                           "dropped_by_reason": {"fix_kb_not_in_update_history": 1}, "msrc_fixed_build_mismatch": 1}]
+
+
+# ---------------------------------------------------------------- P5w follow-up (decided 17 Nov 2026)
+
+
+RELEASE_INFO = """<table><tr><th>Servicing option</th><th>Update type</th><th>Availability date</th><th>Build</th><th>KB article</th></tr>
+<tr><td>LTSC</td><td>2023-11 B</td><td>2023-11-14</td><td>17763.5122</td><td>KB5032196</td></tr>
+<tr><td>LTSC</td><td>2023-10 D</td><td>2023-10-26</td><td>17763.5011</td><td>KB5031358</td></tr>
+<tr><td>LTSC</td><td>2023-10 C</td><td>2023-10-19</td><td>17763.5000</td><td>KB5031000</td></tr>
+<tr><td>LTSC</td><td>2018-10 A</td><td>2018-10-02</td><td>17763.1</td><td></td></tr>
+<tr><td>LTSC</td><td>2024-01 B</td><td>2024-01-09</td><td>20348.2227</td><td>KB5034129</td></tr></table>"""
+
+
+def kb_page(title):
+    return f"<html><head><title>{title} | Microsoft Support</title></head><body><h1>{title}</h1></body></html>"
+
+
+def test_rollup_title_variants_and_preview_flags():
+    page = ("<a>September 12, 2017—KB4038792 (OS Build Monthly Rollup)</a><a>May 19, 2026—KB5090001 (Preview of Monthly Rollup)</a>"
+            "<a>October 26, 2023—KB5031358 (OS Build 17763.5011) Preview</a>")
+    roll = {r["kb"]: r["preview"] for r in fx.parse_update_history(page, None)}
+    assert roll == {"4038792": False, "5090001": True}
+    assert [(r["kb"], r["preview"]) for r in fx.parse_update_history(page, "17763")] == [("5031358", True)]
+
+
+def test_release_info_types_and_initial_release():
+    info = fx.parse_release_info(RELEASE_INFO, "17763")
+    assert info["types"] == {"5032196": "B", "5031358": "D", "5031000": "C"}
+    assert (info["initial"]["version"], info["initial"]["date"], info["initial"]["kb"]) == ("10.0.17763.1", "2018-10-02", None)
+    assert fx.parse_release_info(RELEASE_INFO, "20348")["initial"] is None
+
+
+def test_kb_article_titles():
+    a = fx.parse_kb_article(kb_page("February 9, 2021—KB4601345 (OS Build 17763.1757) - EXPIRED"))
+    assert a["kb"] == "4601345" and a["date"] == "2021-02-09" and fx.cumulative_release(a["match"], "17763")["version"] == "10.0.17763.1757"
+    b = fx.parse_kb_article(kb_page("MS16-007: Description of the security update for Windows: January 12, 2016 (KB3121918)"))
+    assert (b["kb"], b["date"], b["match"]) == ("3121918", "2016-01-12", None)
+    c = fx.parse_kb_article(kb_page("KB5012170: Security update for Secure Boot DBX"))
+    assert (c["kb"], c["date"]) == ("5012170", None)
+    r = fx.parse_kb_article(kb_page("July 14, 2026—KB5099444 (Monthly Rollup)"))
+    assert fx.cumulative_release(r["match"], None)["version"] == "KB5099444"
+
+
+def test_standalone_base_is_the_latest_release_before_the_kb():
+    ordered = [{"date": "2013-11-25"}, {"date": "2016-10-11"}, {"date": "2016-11-08"}]
+    assert fx.standalone_base(ordered, "2016-11-01") == 1 and fx.standalone_base(ordered, "2013-01-01") is None
+
+
+def test_build_windows_follow_up_rules(tmp_path):
+    """KB-article cumulative release, initial release, previews (C/D) out, standalone KBs with title and MSRC dates."""
+    bf = load_script("build_fixtures")
+    uh = ("<a>November 14, 2023—KB5032196 (OS Build 17763.5122)</a><a>October 19, 2023—KB5031000 (OS Build 17763.5000)</a>"
+          "<a>October 10, 2023—KB5031361 (OS Build 17763.4974)</a>")  # 17763.5000 is unlabelled but type C: a preview
+    rows = [win_row("CVE-2023-1", "Windows Server 2019", ["4601345"]),          # cumulative, only in its KB article
+            win_row("CVE-2023-2", "Windows Server 2019", ["5031361"]),          # fixed in the first listed release
+            win_row("CVE-2023-3", "Windows Server 2019", ["4519337"]),          # standalone, dated title
+            win_row("CVE-2023-4", "Windows Server 2019", ["5012170"]),          # standalone, undated title: MSRC date
+            win_row("CVE-2023-5", "Windows Server 2019", ["4519338"]),          # standalone, title names no KB: the requested one
+            win_row("CVE-2020-6", "Windows Server 2019", ["5012170"])]          # same undated KB, older MSRC record
+    rows[-1]["msrc"]["initial_release"] = "2020-02-11T08:00:00"  # its own date would place the 2023 KB in 2020
+    snap = tmp_path / "fixtures_p5w2" / "2026-11-17"
+    write_raw(snap, {"windows_update_history/h.html": uh, "windows_update_history/ri.html": RELEASE_INFO,
+                     "windows_kb/KB4601345.html": kb_page("February 9, 2021—KB4601345 (OS Build 17763.1757) - EXPIRED"),
+                     "windows_kb/KB4519337.html": kb_page("Compatibility update for installing Windows Server 2019: October 8, 2023 (KB4519337)"),
+                     "windows_kb/KB5012170.html": kb_page("KB5012170: Security update for Secure Boot DBX"),
+                     "windows_kb/KB4519338.html": kb_page("MS23-001: Description of the security update for Windows: October 9, 2023")})
+    msrc = tmp_path / "msrc"
+    write_raw(msrc, {"cvrf_2023-Nov.json": "{}"})
+    config = {"windows_products": {"default": {"names": ["Windows Server 2019"]}}, "msrc_fetch_logs": {str(msrc): "fetch_log.jsonl"},
+              "windows_release_info": {"id": "ri.html", "url": "u"},
+              "windows_update_history": {"Windows Server 2019": {"id": "h.html", "url": "u", "build_line": "17763"}}}
+    out = bf.build_windows(fx.candidate_units(rows), rows, config, bf.Raw([snap]))["Windows Server 2019"]
+    assert out["previews_excluded"] == ["5031000"] and out["n_releases_from_kb_articles"] == 1 and out["initial_release"]["version"] == "10.0.17763.1"
+    assert out["standalone_kb_cves"] == ["CVE-2020-6", "CVE-2023-3", "CVE-2023-4", "CVE-2023-5"] and out["dropped"] == []
+    got = {f["version"]: ([i["cve"] for i in f["vulnerable_for"]], [i["cve"] for i in f["fixed_for"]]) for f in out["fixtures"]}
+    # Servicing order: 17763.1 (initial) < .1757 (KB article, 2021-02-09) < .4974 < .5122. CVE-2023-3's KB is dated
+    # 2023-10-08, before .4974 (2023-10-10), so its base is .1757; CVE-2023-4's MSRC date 2023-11-14 gives .4974.
+    assert got == {"10.0.17763.1": (["CVE-2023-1"], []),
+                   "10.0.17763.1757": (["CVE-2023-2", "CVE-2023-3", "CVE-2023-5"], ["CVE-2023-1"]),
+                   "10.0.17763.1757+KB4519337": ([], ["CVE-2023-3"]),
+                   "10.0.17763.1757+KB4519338": ([], ["CVE-2023-5"]),
+                   "10.0.17763.4974": (["CVE-2020-6", "CVE-2023-4"], ["CVE-2023-2"]),
+                   "10.0.17763.4974+KB5012170": ([], ["CVE-2020-6", "CVE-2023-4"])}  # one KB, one date, one fixture
+    assert [f["version"] for f in out["fixtures"]] == list(got)  # a base+KB fixture follows its base
+    by = {f["version"]: f for f in out["fixtures"]}
+    s = by["10.0.17763.4974+KB5012170"]
+    ev = s["fixed_for"][0]["evidence"]
+    assert (s["release_date"], ev["kb_date_source"], s["standalone_kbs"], s["base"]) == ("2023-11-14", "msrc_latest_initial_release_listing_kb", ["KB5012170"], "10.0.17763.4974")
+    assert by["10.0.17763.1757+KB4519337"]["release_date"] == "2023-10-08" and ev["kb_article"]["raw"].endswith("windows_kb/KB5012170.html") and ev["kb_date_ref"]["raw"].endswith("windows_kb/KB5012170.html")
+    assert s["affected_by"] == [] and s["affected_unknown_standalone"] == ["CVE-2023-3", "CVE-2023-5"]
+    assert by["10.0.17763.1757+KB4519337"]["affected_by"] == ["CVE-2020-6", "CVE-2023-2", "CVE-2023-4", "CVE-2023-5"]
+    assert by["10.0.17763.1757"]["affected_by"] == ["CVE-2020-6", "CVE-2023-2", "CVE-2023-3", "CVE-2023-4", "CVE-2023-5"]
+    assert by["10.0.17763.4974"]["affected_unknown_standalone"] == ["CVE-2023-3", "CVE-2023-5"]  # later than its base: not documented either way
+
+
+CATALOG = """<table><tr><th></th><th>Title</th><th>Products</th><th>Classification</th><th>Last Updated</th><th>Version</th><th>Size</th></tr>
+<tr><td></td><td>2022-08 Security Update for Windows 10 (KB5012170)</td><td>p</td><td>Security Updates</td><td>4/11/2023</td><td>n/a</td><td>1 KB</td></tr>
+<tr><td></td><td>2022-08 Security Update for Windows Server 2019 (KB5012170)</td><td>p</td><td>Security Updates</td><td>8/9/2022</td><td>n/a</td><td>1 KB</td></tr>
+<tr><td></td><td>2022-08 Security Update for Windows 11 (KB9999999)</td><td>p</td><td>Security Updates</td><td>1/1/2020</td><td>n/a</td><td>1 KB</td></tr></table>"""
+
+
+def test_kb_date_from_body_label_and_catalog():
+    assert fx.parse_kb_body_date("<p>Release date: June 14, 2022</p>") == "2022-06-14"
+    assert fx.parse_kb_body_date("<p>install the SSU released March 14, 2023</p>") is None
+    assert fx.parse_catalog_date(CATALOG, "5012170") == {"date": "2022-08-09", "rows": 2, "month": "2022-08"}  # earliest of the KB's own rows
+    assert fx.parse_catalog_date(CATALOG.replace("8/9/2022", "9/9/2022"), "5012170") is None  # not in the title's month: not a release date
+    assert fx.parse_catalog_date(CATALOG, "1234567") is None
+
+
+def test_standalone_kb_date_prefers_catalog_over_msrc(tmp_path):
+    bf = load_script("build_fixtures")
+    uh = "<a>November 14, 2023—KB5032196 (OS Build 17763.5122)</a><a>July 12, 2022—KB5015880 (OS Build 17763.3165)</a><a>September 13, 2022—KB5017315 (OS Build 17763.3406)</a>"
+    rows = [win_row("CVE-2022-1", "Windows Server 2019", ["5012170"]), win_row("CVE-2022-2", "Windows Server 2019", ["5099999"])]
+    snap = tmp_path / "fixtures_p5w4" / "2026-11-17"
+    write_raw(snap, {"windows_update_history/h.html": uh, "windows_kb/KB5012170.html": kb_page("KB5012170: Security update for Secure Boot DBX"),
+                     "windows_kb/catalog_KB5012170.html": CATALOG, "windows_kb/KB5099999.html": kb_page("KB5099999: Some update")})
+    msrc = tmp_path / "msrc"
+    write_raw(msrc, {"cvrf_2023-Nov.json": "{}"})
+    config = {"windows_products": {"default": {"names": ["Windows Server 2019"]}}, "msrc_fetch_logs": {str(msrc): "fetch_log.jsonl"},
+              "windows_update_history": {"Windows Server 2019": {"id": "h.html", "url": "u", "build_line": "17763"}}}
+    out = bf.build_windows(fx.candidate_units(rows), rows, config, bf.Raw([snap]))["Windows Server 2019"]
+    by = {f["version"]: f for f in out["fixtures"]}
+    a = by["10.0.17763.3165+KB5012170"]  # catalog 2022-08-09: base is the July build, not the September one the MSRC date (2023-11-14) would give
+    ev = a["fixed_for"][0]["evidence"]
+    assert (a["release_date"], ev["kb_date_source"]) == ("2022-08-09", "update_catalog") and ev["kb_date_ref"]["raw"].endswith("catalog_KB5012170.html")
+    b = by["10.0.17763.3406+KB5099999"]  # no official date anywhere: MSRC fallback, flagged by its source name
+    assert b["fixed_for"][0]["evidence"]["kb_date_source"] == "msrc_latest_initial_release_listing_kb"
