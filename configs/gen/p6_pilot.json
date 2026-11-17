@@ -1,0 +1,35 @@
+{
+  "decision": "decisions.md §18 item 5 (17 Nov 2026, Devansh): development pilot under seed namespace 'p6-pilot' (disjoint from all split seeds) for every cohort cell, large enough to estimate each solvable rate within +-2 percentage points; measure generation throughput; from the pilot only, propose the candidate budget for 3,000 solvable training networks (rejection sampling in seed order, every candidate logged) and a fixed size per test cohort giving about 200 expected solvable tasks. Proposals only: Devansh decides.",
+  "namespace": "p6-pilot",
+  "seed_format": "p6-pilot/<cell>/n<n>/<k>",
+  "tasks_per_cell": 2401,
+  "tasks_rule": "worst case p = 0.5: 1.96 * sqrt(0.25 / 2401) = 0.0200, so every cell's 95% interval half-width is at most 2 percentage points whatever its rate",
+  "registry": "cohort parameters mirrored from configs/d28_cohorts.json on d28-pipe 79697c4 (P7); d28_test_ac is left out (Round 10: no AC-shift split; OQ-P7-3)",
+  "heldout_products": ["exim:exim"],
+  "cve_holdout": "configs/gen/cve_holdout.json",
+  "exclusion_modes": {
+    "products": {"heldout": "exclude the held-out products (Round 10)", "none": "exclude nothing"},
+    "cves": {"holdout": "exclude the unseen-CVE holdout (Round 10)", "none": "exclude no CVE",
+             "training": "exclude every training-pool CVE (core pool, no held-out product, minus the holdout): only held-out CVEs can become actions"}
+  },
+  "training": {"cell": "id", "solvable_per_size": 1500, "shortfall_probability": 0.001,
+               "rule": "budget per size = smallest N with P(Binomial(N, r_low) >= 1500) >= 0.999, r_low the cell's Wilson 95% lower bound; 1,500 per size at n = 12 and 20 (registry) = 3,000"},
+  "test_expected_solvable": 200,
+  "test_rule": "fixed size per test cohort and size = ceil(200 / r), r the pilot cell's solvable rate (expected solvable 200)",
+  "workers": 8,
+  "cells": [
+    {"name": "id", "cohorts": ["d28_train", "d28_val", "d28_test_id"], "archetype": "tree", "sizes": [12, 20], "cohort": "core", "os_linux": 0.5, "p": 1.0, "products": "heldout", "cves": "holdout"},
+    {"name": "size30", "cohorts": ["d28_test_size30"], "archetype": "tree", "sizes": [30], "cohort": "core", "os_linux": 0.5, "p": 1.0, "products": "heldout", "cves": "holdout"},
+    {"name": "size60", "cohorts": ["d28_test_size60"], "archetype": "tree", "sizes": [60], "cohort": "core", "os_linux": 0.5, "p": 1.0, "products": "heldout", "cves": "holdout"},
+    {"name": "structure", "cohorts": ["d28_test_structure"], "archetype": "chain", "sizes": [12, 20], "cohort": "core", "os_linux": 0.5, "p": 1.0, "products": "heldout", "cves": "holdout"},
+    {"name": "temporal", "cohorts": ["d28_test_temporal"], "archetype": "tree", "sizes": [12, 20], "cohort": "temporal", "os_linux": 0.5, "p": 1.0, "products": "heldout", "cves": "holdout"},
+    {"name": "product", "cohorts": ["d28_test_product"], "archetype": "tree", "sizes": [12, 20], "cohort": "core", "os_linux": 0.5, "p": 1.0, "products": "none", "cves": "holdout"},
+    {"name": "cve_all", "cohorts": ["d28_test_cve"], "variant": "held-out and training CVEs both allowed (OQ-P6-21)", "archetype": "tree", "sizes": [12, 20], "cohort": "core", "os_linux": 0.5, "p": 1.0, "products": "heldout", "cves": "none"},
+    {"name": "cve_only", "cohorts": ["d28_test_cve"], "variant": "only held-out CVEs allowed (OQ-P6-21)", "archetype": "tree", "sizes": [12, 20], "cohort": "core", "os_linux": 0.5, "p": 1.0, "products": "heldout", "cves": "training"},
+    {"name": "os25", "cohorts": ["d28_test_os25"], "archetype": "tree", "sizes": [12, 20], "cohort": "core", "os_linux": 0.25, "p": 1.0, "products": "heldout", "cves": "holdout"},
+    {"name": "os75", "cohorts": ["d28_test_os75"], "archetype": "tree", "sizes": [12, 20], "cohort": "core", "os_linux": 0.75, "p": 1.0, "products": "heldout", "cves": "holdout"},
+    {"name": "p075", "cohorts": ["d28_test_p075"], "archetype": "tree", "sizes": [12, 20], "cohort": "core", "os_linux": 0.5, "p": 0.75, "products": "heldout", "cves": "holdout"},
+    {"name": "p050", "cohorts": ["d28_test_p050"], "archetype": "tree", "sizes": [12, 20], "cohort": "core", "os_linux": 0.5, "p": 0.5, "products": "heldout", "cves": "holdout"},
+    {"name": "p025", "cohorts": ["d28_test_p025"], "archetype": "tree", "sizes": [12, 20], "cohort": "core", "os_linux": 0.5, "p": 0.25, "products": "heldout", "cves": "holdout"}
+  ]
+}
