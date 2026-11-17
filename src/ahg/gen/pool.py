@@ -153,18 +153,29 @@ def cve_set_sha256(cves) -> str:
     return hashlib.sha256("".join(f"{c}\n" for c in sorted(cves, key=cve_key)).encode()).hexdigest()
 
 
-def cve_holdout(units: list[Unit], share: float, seed: str) -> tuple[list[str], dict]:
-    """The unseen-CVE holdout (Round 10; decisions.md §18 item 6, 17 Nov 2026): every CVE with an AC:H pool
-    unit, plus AC:L-only CVEs drawn at random until the holdout is `share` of the pool's CVE IDs.
+def cve_holdout(units: list[Unit], share: float, seed: str, ach_share: float = 1.0,
+                ach_seed: str | None = None) -> tuple[list[str], dict]:
+    """The unseen-CVE holdout (Round 10): `ach_share` of the CVEs with an AC:H pool unit, plus AC:L-only CVEs
+    drawn at random until the holdout is `share` of the pool's CVE IDs.
+
+    ach_share = 1 is the P6c rule (§18 item 6: every AC:H CVE, no AC:H draw; configs/gen/cve_holdout.json).
+    ach_share = 0.5 with ach_seed "cve-holdout-ach" is the P6d rule (§18 P6d item 1, 17 Nov 2026): a random
+    half of the AC:H CVEs is held out, so training keeps AC:H actions and the `ac` regime stays non-degenerate
+    there (OQ-P6-21).
 
     Grouped by canonical CVE ID: a CVE is one item whatever its number of product units, and a CVE with any
-    AC:H unit counts as AC:H. The target size is round_half_up(share * IDs) (halves up, as OQ-P6-1). The
-    AC:L draw is random.Random(seed).sample over the AC:L-only IDs in numeric order, so it depends on the
-    seed and the pool only. Raises if the AC:H CVEs alone exceed the target (the rule cannot hold).
-    Returns (held-out IDs in numeric order, counts)."""
+    AC:H unit counts as AC:H. Both sizes round halves up (round_half_up(share * IDs) and
+    round_half_up(ach_share * AC:H IDs), as OQ-P6-1 and OQ-P6-20). Each draw is random.Random(seed).sample
+    over its IDs in numeric order, so it depends on its seed and the pool only; the two draws use separate
+    seeds, so the AC:L draw is not shifted by the AC:H one. Raises if the AC:H part alone exceeds the target
+    (the rule cannot hold). Returns (held-out IDs in numeric order, counts)."""
     import math
     import random
 
+    if not 0 <= ach_share <= 1:
+        raise ValueError(f"ach_share must be in [0, 1], not {ach_share}")
+    if ach_share < 1 and ach_seed is None:
+        raise ValueError("a partial AC:H holdout needs its own seed (ach_seed)")
     acs: dict[str, set[str]] = {}
     for u in units:
         acs.setdefault(u.cve_id, set()).add(u.ac)
@@ -172,10 +183,14 @@ def cve_holdout(units: list[Unit], share: float, seed: str) -> tuple[list[str], 
     high = [c for c in ids if "H" in acs[c]]
     low = [c for c in ids if acs[c] == {"L"}]
     target = math.floor(share * len(ids) + 0.5)
-    if len(high) > target:
-        raise ValueError(f"{len(high)} AC:H CVEs exceed the {share:.0%} target of {target} of {len(ids)} CVE IDs")
-    drawn = random.Random(seed).sample(low, target - len(high))
-    held = sorted(set(high) | set(drawn), key=cve_key)
-    return held, {"pool_cve_ids": len(ids), "target": target, "ac_h_cves": len(high),
-                  "ac_h_cves_with_an_ac_l_unit": sum(acs[c] == {"H", "L"} for c in high),
-                  "ac_l_only_cves": len(low), "ac_l_drawn": len(drawn)}
+    high_held = high if ach_share == 1 else random.Random(ach_seed).sample(high, math.floor(ach_share * len(high) + 0.5))
+    if len(high_held) > target:
+        raise ValueError(f"{len(high_held)} AC:H CVEs exceed the {share:.0%} target of {target} of {len(ids)} CVE IDs")
+    drawn = random.Random(seed).sample(low, target - len(high_held))
+    held = sorted(set(high_held) | set(drawn), key=cve_key)
+    counts = {"pool_cve_ids": len(ids), "target": target, "ac_h_cves": len(high),
+              "ac_h_cves_with_an_ac_l_unit": sum(acs[c] == {"H", "L"} for c in high),
+              "ac_l_only_cves": len(low), "ac_l_drawn": len(drawn)}
+    if ach_share < 1:  # the P6c counts (ach_share = 1) keep their stored shape (configs/gen/cve_holdout.json)
+        counts |= {"ac_h_share": ach_share, "ac_h_drawn": len(high_held)}
+    return held, counts
