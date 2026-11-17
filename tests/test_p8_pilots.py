@@ -112,3 +112,79 @@ def test_n4_runs_before_the_freeze_on_training_seeds_with_trainings_exclusions(t
     assert raw["results"]["12"]["verdict"] in ("PASS", "FAIL") and raw["results"]["12"]["confusion"]["labels"] == ["chain", "tree"]
     assert set(raw["feature_summary"]) == {"chain|12", "tree|12"}
     assert set(raw["feature_summary"]["tree|12"]) == set(n4.FEATURES)
+
+
+# ------------------------------------------------------------------ P8c/d: the pilots after the freeze (17 Nov 2026)
+
+def test_landscape_uniform_column_uses_uniform_labels_and_reports_plan_length():
+    from ahg import d28labels as dl, pilots
+    from p7_helpers import tiny_doc
+    cfg = {"walk_cap": 20, "walks_per_sample": 3, "successor_cap": 50, "oracle_all_max_n": 60, "oracle_states": 20,
+           "oracle_max_pops": 10000, "enum_cap": 1000, "regimes": ["ac", "uniform"], "state_budget": 1000}
+    d = tiny_doc()
+    ac = pilots.landscape_task(d, dl.label_doc(d, "ac", cfg), 10000)
+    un = pilots.landscape_task(d, dl.label_doc(d, "uniform", cfg), 10000, "uniform")
+    assert (ac["regime"], un["regime"]) == ("ac", "uniform") and un["hstar"] == 3 and ac["hstar"] == 12
+    with pytest.raises(ValueError, match="certified uniform"):
+        pilots.landscape_task(d, dl.label_doc(d, "ac", cfg), 10000, "uniform")
+    with pytest.raises(ValueError, match="neither ac"):
+        pilots.landscape_task(d, dl.label_doc(d, "ac", cfg), 10000, "other")
+    s = pilots.landscape_summary([ac, ac, {**ac, "plan_actions": 0, "R": {h: None for h in ac["R"]}}])["tree|3"]
+    assert s["plan_actions_histogram"] == {0: 1, 3: 2} and s["plan_actions"]["median"] == 3
+
+
+def test_budget_sample_covers_every_training_size():
+    pipe = load("d28_pipe")
+    docs = [{"params": {"n": n}, "i": i} for n in (8, 9, 10) for i in range(5)]
+    got = pipe.stratified(docs, 7)  # ceil(7 / 3) = 3 per size
+    assert [(d["params"]["n"], d["i"]) for d in got] == [(n, i) for n in (8, 9, 10) for i in range(3)]
+    assert pipe.stratified(docs, 200) == docs and pipe.stratified([], 5) == []
+
+
+def test_registry_takes_per_size_test_sizes_and_generation_caps():
+    """P8 freeze: test cohort sizes and training/validation caps differ by size, so the registry takes either one
+    number or a {size: number} mapping that names exactly the cohort's sizes."""
+    from dataclasses import replace
+    raw = {"name": "d28_x", "role": "test", "analysis": "primary", "hypothesis": "H-ID", "namespace": "d28.x",
+           "archetype": "tree", "sizes": [12, 20], "gen_cohort": "core", "os_linux": 0.5, "p": 1.0,
+           "exclude": "heldout_products", "selection": "fixed", "per_size": {"12": 650, "20": 674},
+           "max_candidates_per_size": None, "requires": [], "blocked_by": []}
+    c = co._cohort(raw, smoke=False)
+    assert (c.size_at(12), c.size_at(20), c.cap_at(12)) == (650, 674, None)
+    with pytest.raises(ValueError, match="names sizes"):
+        co._cohort({**raw, "per_size": {"12": 650}}, smoke=False)
+    t = replace(REG.training, max_candidates_per_size={n: 300 + n for n in REG.training.sizes})
+    others = [x for x in REG.cohorts.values() if x.name != t.name]
+    co.validate([t, c] + others, REG.totals, [1.0, .75, .5, .25])
+    assert t.cap_at(8) == 308 and t.size_at(8) == 231
+    with pytest.raises(ValueError, match="generation limit"):
+        co.validate([replace(t, max_candidates_per_size={**t.max_candidates_per_size, 8: 230})] + others, REG.totals,
+                    [1.0, .75, .5, .25])
+    with pytest.raises(ValueError, match="one equal quota"):
+        co.validate([replace(t, per_size={n: 231 for n in t.sizes})] + others, REG.totals, [1.0, .75, .5, .25])
+    with pytest.raises(ValueError, match="positive per_size"):
+        co.validate([replace(c, per_size={12: 650, 20: 0})] + list(REG.cohorts.values()), REG.totals,
+                    [1.0, .75, .5, .25])
+
+
+def test_build_uses_the_size_specific_cap(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from ahg.gen import generate as gen
+    seen = []
+
+    def fake(ctx, arch, seed, n, **kw):
+        seen.append(seed)
+        return {"seed": seed, "solvable": False, "unsolvable_reason": "x", "flags": {"unverified_release": False}}
+
+    monkeypatch.setattr(gen, "generate", fake)
+    monkeypatch.setattr(co, "store_doc", lambda doc, store: doc["seed"])
+    monkeypatch.setattr(co.Registry, "problems", lambda self, c, prereg=None: [])
+    t = replace(REG.training, sizes=(8, 9), per_size=2, max_candidates_per_size={8: 3, 9: 5})
+    reg = replace(REG, cohorts={**REG.cohorts, t.name: t})
+
+    class Ctx:
+        input_hashes: dict = {}
+
+    rec = co.build(Ctx(), reg, t.name, store=tmp_path)
+    assert rec["by_size"]["8"]["candidates"] == 3 and rec["by_size"]["9"]["candidates"] == 5
+    assert rec["shortfall"] == {8: 2, 9: 2} and len(seen) == 8

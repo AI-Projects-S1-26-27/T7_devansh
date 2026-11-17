@@ -149,14 +149,39 @@ def cmd_landscape(a, reg, ctx) -> None:
         if seen.get(key, 0) < per and d["solvable"]:
             seen[key] = seen.get(key, 0) + 1
             sample.append(d)
-    d28labels.label_docs(sample, {**cfg, "regimes": ["ac"]}, root=d28labels.LABEL_ROOT, commit=commit())
-    labels = d28labels.load_labels(sample, {**cfg, "regimes": ["ac"]}, root=d28labels.LABEL_ROOT)
+    # ac is the pilot (Round 12); uniform is the descriptive extra column (P8, hypotheses §4). Both are labelled
+    # with the same config, so the uniform labels are the ones training will reuse.
+    regimes = [pilots.LANDSCAPE_REGIME, *pilots.LANDSCAPE_EXTRA_REGIMES]
+    lab = {**cfg, "regimes": regimes}
+    counts = d28labels.label_docs(sample, lab, root=d28labels.LABEL_ROOT, commit=commit())["counts"]
+    labels = d28labels.load_labels(sample, lab, root=d28labels.LABEL_ROOT)
     from ahg.gen.generate import doc_digest
-    rows = [pilots.landscape_task(d, labels[(doc_digest(d), "ac")], a.search_budget) for d in sample
-            if labels[(doc_digest(d), "ac")]["certified"]]
-    summ = pilots.landscape_summary(rows)
-    md = "# Landscape pilot (ac)\n\n```\n" + json.dumps(summ, indent=1, default=str) + "\n```\n"
-    print(runlog.write_run("landscape", {"summary": summ, "rows": rows}, md, [], {"per_stratum": per, "smoke": a.smoke}, root=RUNS))
+    rows, summ, uncertified = {}, {}, {}
+    for r in regimes:
+        rows[r] = [pilots.landscape_task(d, labels[(doc_digest(d), r)], a.search_budget, r) for d in sample
+                   if labels[(doc_digest(d), r)]["certified"]]
+        uncertified[r] = len(sample) - len(rows[r])  # counted and excluded (hypotheses §4)
+        summ[r] = pilots.landscape_summary(rows[r])
+    out = {"summary": summ, "rows": rows, "sample": len(sample), "uncertified": uncertified, "label_counts": counts,
+           "primary_regime": pilots.LANDSCAPE_REGIME}
+    md = ("# Landscape pilot (ac; uniform = extra descriptive column)\n\n```\n"
+          + json.dumps({"sample": len(sample), "uncertified": uncertified, "summary": summ}, indent=1, default=str) + "\n```\n")
+    print(runlog.write_run("landscape", out, md, [], {"per_stratum": per, "smoke": a.smoke, "state_budget": cfg["state_budget"],
+                                                       "search_budget": a.search_budget, "regimes": regimes}, root=RUNS))
+
+
+def stratified(docs: list[dict], k: int) -> list[dict]:
+    """The budget pilot's sample (P8, OQ-P8-4): the first ceil(k / sizes) solvable training tasks of each size, in
+    record order, so every training size is in it (the first k of the record would all have the smallest n)."""
+    sizes = sorted({d["params"]["n"] for d in docs})
+    per = -(-k // len(sizes)) if sizes else 0
+    out, seen = [], {}
+    for d in docs:
+        n = d["params"]["n"]
+        if seen.get(n, 0) < per:
+            seen[n] = seen.get(n, 0) + 1
+            out.append(d)
+    return out
 
 
 def cmd_budget(a, reg, ctx) -> None:
@@ -164,7 +189,7 @@ def cmd_budget(a, reg, ctx) -> None:
     base = json.loads(co.REGISTRY.read_text())["budget_pilot"]
     cfg = d28labels.load_config()
     lcfg = {k: v for k, v in cfg.items() if k not in ("regimes", "state_budget")}
-    sample = [d for d in docs if d["solvable"]][: base["smoke_tasks" if a.smoke else "tasks"]]
+    sample = stratified([d for d in docs if d["solvable"]], base["smoke_tasks" if a.smoke else "tasks"])
     rows = [pilots.budget_task(d, r, base["cap"], lcfg) for d in sample for r in cfg["regimes"]]
     summ = pilots.budget_summary(rows, base["candidates"], base["cap"], base["target"])
     md = f"# Budget feasibility pilot\n\nProposed per-state budget: {summ['proposed_state_budget']}\n"

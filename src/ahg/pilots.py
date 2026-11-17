@@ -11,13 +11,15 @@ under which at least `target` of all sampled states certify, in both regimes (OQ
 reaches it. Oracle checks that hit the pop limit are counted: Round 9 makes infeasible per-state oracle
 checking a BLOCKED item, so the count is reported with the proposal.
 
-Landscape pilot (Round 12, P0b/P0c/P0d), regime `ac`:
+Landscape pilot (Round 12, P0b/P0c/P0d), regime `ac`; the same metrics under `uniform` are an extra descriptive
+column (decided 17 Nov 2026, P8; hypotheses §4), computed by the same functions on `uniform` labels:
 - canonical optimal plan = the A*+LM-cut plan under the D3 tie rule (f, h, FIFO);
 - R_h = expansions of A*+h from s0 / the number of actions in the canonical plan, for h in
   h0, h_max, h_add, h_FF, LM-cut, h_sp (P0d); tasks whose plan is empty are counted and left out;
 - LM-cut absolute and relative gap (h* - LM-cut) / h* at s0 and at the labelled states (h* > 0);
 - AND-arity distribution: the number of preconditions of each action;
-- local escalation: the canonical plan has an action generated from an AV:L CVE (a "local" action).
+- local escalation: the canonical plan has an action generated from an AV:L CVE (a "local" action);
+- plan length: the distribution of the canonical plan's number of actions per size (P8, hypotheses §4).
 Aggregation: per archetype x size, median and IQR (P0b); per task, its sampled-state relative gaps are
 summarised by their median first (OQ-P7-9). Near-exact = median LM-cut relative gap at s0 <= 0.05 AND median
 R_LM-cut <= 1.5 (P0b, P0d).
@@ -36,7 +38,8 @@ from .search import astar
 
 LANDSCAPE_HEURISTICS = ("h0", "hmax", "hadd", "hff", "lmcut", "hsp")
 NEAR_EXACT_GAP, NEAR_EXACT_R = 0.05, 1.5
-LANDSCAPE_REGIME = "ac"  # Round 5 amendment: the pilot runs under the primary regime
+LANDSCAPE_REGIME = "ac"  # Round 5 amendment: the pilot's result is under the primary regime
+LANDSCAPE_EXTRA_REGIMES = ("uniform",)  # P8: descriptive extra column, never replaces ac
 
 
 def quantiles(xs: list[float]) -> dict | None:
@@ -105,12 +108,14 @@ def budget_summary(rows: list[dict], candidates: list[int], cap: int, target: fl
 
 # ------------------------------------------------------------------ landscape pilot
 
-def landscape_task(doc: dict, label: dict, budget: int) -> dict:
-    """The Round 12 metrics of one solvable, labelled training task under `ac`."""
+def landscape_task(doc: dict, label: dict, budget: int, regime: str = LANDSCAPE_REGIME) -> dict:
+    """The Round 12 metrics of one solvable, labelled training task under `regime` (ac, or the uniform extra)."""
     from .gen.generate import to_task
-    task = to_task(doc, LANDSCAPE_REGIME)
-    if label["regime"] != LANDSCAPE_REGIME or not label["certified"]:
-        raise ValueError("the landscape pilot uses certified ac labels only")
+    if regime not in (LANDSCAPE_REGIME, *LANDSCAPE_EXTRA_REGIMES):
+        raise ValueError(f"landscape regime {regime!r} is neither ac nor a declared extra")
+    task = to_task(doc, regime)
+    if label["regime"] != regime or not label["certified"]:
+        raise ValueError(f"the landscape pilot uses certified {regime} labels of the same regime only")
     hstar = label["hstar_init"]
     canon = astar(task, lmcut, max_expansions=budget, tie_break="fifo")
     if canon.budget_hit or canon.cost != hstar:
@@ -123,7 +128,8 @@ def landscape_task(doc: dict, label: dict, budget: int) -> dict:
     R = {h: (None if n_act == 0 or v["budget_hit"] else v["expanded"] / n_act) for h, v in runs.items()}
     lm0 = lmcut(task, task.init)
     gaps = [(h - lmcut(task, int(s, 16))) / h for s, h, _ in label["rows"] if h > 0]
-    return {"n": doc["params"]["n"], "archetype": doc["params"]["archetype"], "hstar": hstar, "plan_actions": n_act,
+    return {"n": doc["params"]["n"], "archetype": doc["params"]["archetype"], "regime": regime, "hstar": hstar,
+            "plan_actions": n_act,
             "runs": runs, "R": R, "gap_abs_init": hstar - lm0, "gap_rel_init": (hstar - lm0) / hstar if hstar else None,
             "gap_rel_states_median": statistics.median(gaps) if gaps else None, "gap_states": len(gaps),
             "and_arity": dict(Counter(len(a.pre) for a in task.actions)),
@@ -147,6 +153,8 @@ def landscape_summary(rows: list[dict]) -> dict:
             "gap_rel_states": quantiles([r["gap_rel_states_median"] for r in live if r["gap_rel_states_median"] is not None]),
             "and_arity": dict(sorted(arity.items())),
             "local_escalation_fraction": sum(r["local_escalation"] for r in live) / len(live) if live else None,
+            "plan_actions": quantiles([r["plan_actions"] for r in rs]),
+            "plan_actions_histogram": dict(sorted(Counter(r["plan_actions"] for r in rs).items())),
             "near_exact": (gap0 is not None and R["lmcut"] is not None and gap0["median"] <= NEAR_EXACT_GAP
                            and R["lmcut"]["median"] <= NEAR_EXACT_R)}
     return out

@@ -79,8 +79,10 @@ class Cohort:
     p: float
     exclude: str
     selection: str
-    per_size: int | None  # null: not set yet (test cohorts until the P6 pilot rates, decided 17 Nov 2026)
-    max_candidates_per_size: int | None
+    # Either one number for every size or, per size, {n: number} (the P8 freeze: test sizes and generation caps
+    # differ by size). per_size null: not set yet (test cohorts until the P6 pilot rates, decided 17 Nov 2026).
+    per_size: int | dict[int, int] | None
+    max_candidates_per_size: int | dict[int, int] | None
     requires: tuple[str, ...]
     blocked_by: tuple[str, ...]
     smoke: bool = False
@@ -89,6 +91,14 @@ class Cohort:
         if n not in self.sizes:
             raise ValueError(f"{self.name} has no size {n}")
         return f"{self.namespace}/n{n}/{k}"
+
+    def size_at(self, n: int) -> int | None:
+        """per_size at size n: the solvable quota (training, validation) or the fixed size (test)."""
+        return _at(self.per_size, n)
+
+    def cap_at(self, n: int) -> int | None:
+        """The generation limit (candidates) at size n of a solvable-quota cohort."""
+        return _at(self.max_candidates_per_size, n)
 
     @property
     def os_mix(self) -> dict[str, float]:
@@ -181,13 +191,29 @@ class Registry:
         return out
 
 
+def _at(v: int | dict[int, int] | None, n: int) -> int | None:
+    return v[n] if isinstance(v, dict) else v
+
+
+def _per_n(name: str, field: str, v, sizes: list[int]):
+    """A per-size mapping from the registry ({"12": 650, ...}) as {12: 650, ...}; it must name exactly the sizes."""
+    if not isinstance(v, dict):
+        return v
+    if sorted(v) != sorted(str(n) for n in sizes):
+        raise ValueError(f"cohort {name}: {field} names sizes {sorted(v)}, not exactly {sizes}")
+    return {int(k): x for k, x in v.items()}
+
+
 def _cohort(d: dict, smoke: bool) -> Cohort:
     keys = {"name", "role", "analysis", "hypothesis", "namespace", "archetype", "sizes", "gen_cohort", "os_linux",
             "p", "exclude", "selection", "per_size", "max_candidates_per_size", "requires", "blocked_by"}
     if set(d) != keys:
         raise ValueError(f"cohort {d.get('name')}: keys {sorted(set(d) ^ keys)} missing or unknown")
     return Cohort(**{**d, "sizes": tuple(d["sizes"]), "requires": tuple(d["requires"]),
-                     "blocked_by": tuple(d["blocked_by"])}, smoke=smoke)
+                     "blocked_by": tuple(d["blocked_by"]),
+                     "per_size": _per_n(d["name"], "per_size", d["per_size"], d["sizes"]),
+                     "max_candidates_per_size": _per_n(d["name"], "max_candidates_per_size",
+                                                       d["max_candidates_per_size"], d["sizes"])}, smoke=smoke)
 
 
 def equal_quota(total: int, n_sizes: int) -> int:
@@ -221,17 +247,23 @@ def validate(cohorts: list[Cohort], totals: dict[str, int], p_values: list[float
             raise ValueError(f"{c.name}: p {c.p} or OS mix {c.os_linux} outside the generator's values")
         if not c.sizes or len(set(c.sizes)) != len(c.sizes):
             raise ValueError(f"{c.name}: sizes are required")
-        # A test cohort's size may be null until set (OQ-P7-1); problems() then refuses to build it.
-        if not (c.per_size is None and c.role == "test") and (not isinstance(c.per_size, int) or c.per_size < 1):
+        # A test cohort's size may be null until set (OQ-P7-1); problems() then refuses to build it. A test
+        # cohort may give one fixed size per n (P8 freeze); training and validation keep one equal quota (P7d).
+        sizes_ok = all(isinstance(c.size_at(n), int) and not isinstance(c.size_at(n), bool) and c.size_at(n) >= 1
+                       for n in c.sizes)
+        if not (c.per_size is None and c.role == "test") and not sizes_ok:
             raise ValueError(f"{c.name}: a positive per_size is required")
+        if c.role != "test" and not isinstance(c.per_size, int):
+            raise ValueError(f"{c.name}: {c.role} has one equal quota for every size (P7d), not one per size")
         if c.role in ("training", "validation"):
             # Round 9 (training) and OQ-P7-1 (validation, decided 17 Nov 2026): a quota of solvable networks per
             # size, n <= 20. The generation limit may be null until set (OQ-P7-2); problems() then refuses.
             if c.selection != "solvable_quota" or max(c.sizes) > TRAINING_MAX_N:
                 raise ValueError(f"{c.name}: {c.role} selects solvable networks with n <= {TRAINING_MAX_N}")
             lim = c.max_candidates_per_size
-            if lim is not None and (not isinstance(lim, int) or lim < c.per_size):
-                raise ValueError(f"{c.name}: {c.role} needs a generation limit >= its quota")
+            if lim is not None and not all(isinstance(c.cap_at(n), int) and c.cap_at(n) >= c.per_size
+                                           for n in c.sizes):
+                raise ValueError(f"{c.name}: {c.role} needs a generation limit >= its quota at every size")
             if not c.smoke and c.per_size != equal_quota(totals[c.role], len(c.sizes)):
                 raise ValueError(f"{c.name}: {len(c.sizes)} equal quotas of {c.per_size} are not {totals[c.role]} "
                                  f"networks rounded half up per size ({equal_quota(totals[c.role], len(c.sizes))})")
@@ -415,12 +447,12 @@ def build(ctx, registry: Registry, name: str, *, store: Path = TASK_STORE, acces
     candidates, members, shortfall = [], [], {}
     for n in sizes:
         if c.selection == "fixed":
-            rows = [_candidate(ctx, c, n, k, excluded, store, excluded_cves) for k in range(c.per_size)]
+            rows = [_candidate(ctx, c, n, k, excluded, store, excluded_cves) for k in range(c.size_at(n))]
             candidates += rows
             members += rows
             continue
         got = 0
-        for k in range(c.max_candidates_per_size):
+        for k in range(c.cap_at(n)):
             row = _candidate(ctx, c, n, k, excluded, store, excluded_cves)
             candidates.append(row)
             if row["solvable"]:
