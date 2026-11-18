@@ -175,7 +175,8 @@ def to_task(doc: dict, regime: str) -> Task:
     """The planner's Task under one cost regime (reads only the planner-visible "task" block)."""
     check_regime(regime)
     t = doc["task"]
-    acts = [Action(a["name"], tuple(a["pre"]), tuple(a["add"]), a["cost"][regime]) for a in t["actions"]]
+    acts = [Action(a["name"], tuple(a["pre"]), tuple(a["add"]), a["cost"][regime], tuple(a.get("del", ())))
+            for a in t["actions"]]  # "del" exists only on M3 access-loss documents (ahg.loss)
     return Task(list(t["facts"]), acts, to_mask(t["init"]), tuple(t["goal"]))
 
 
@@ -185,7 +186,8 @@ def neutral(doc: dict, regime: str) -> dict:
     f = t["facts"]
     return {"facts": list(f), "init": [f[i] for i in t["init"]], "goal": [f[i] for i in t["goal"]],
             "actions": [{"name": a["name"], "pre": [f[i] for i in a["pre"]], "add": [f[i] for i in a["add"]],
-                         "cost": a["cost"][regime]} for a in t["actions"]]}
+                         "cost": a["cost"][regime]} | ({"del": [f[i] for i in a["del"]]} if a.get("del") else {})
+                        for a in t["actions"]]}
 
 
 def export_pddl(doc: dict, regime: str) -> tuple[str, str]:
