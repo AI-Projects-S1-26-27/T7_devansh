@@ -4,7 +4,8 @@ Per instance:
 - the optimal plan of the M3 task (A*+LM-cut, checked at s0 against the independent oracle);
 - expansions per plan action for A* and GBFS with h_max, h_add, h_FF and LM-cut;
 - the evaluated states, their h* and h_max, with the h_max < h* count;
-- the route-change components (a) to (d) against the M0 task.
+- the route-change components (a) to (d) against the M0 task;
+- the AL2 structural metrics (ahg.agmetrics) and the LM-cut < h* count over the evaluated states.
 
 Evaluated states (plan §3b): every reachable state when the reachable set fits under enum_cap. Otherwise,
 the states A*+h_max expands from s0, plus walk_states seeded random-walk states.
@@ -15,7 +16,7 @@ import math
 import random
 import statistics
 
-from ahg import oracle, refsolver
+from ahg import agmetrics, oracle, refsolver
 from ahg.gen.generate import doc_digest, neutral, to_task
 from ahg.heuristics import hadd, hff, hmax, lmcut
 from ahg.measure import HardFailure
@@ -82,7 +83,8 @@ def instance(m0: dict, m3: dict, cfg: dict) -> dict:
     t0, t3 = to_task(m0, reg), to_task(m3, reg)
     r0 = astar(t0, lmcut, max_expansions=cfg["search_budget"])
     r3 = astar(t3, lmcut, max_expansions=cfg["search_budget"])
-    row = {"seed": m0["params"]["seed"], "n": m0["params"]["n"], "hstar_m0": r0.cost, "hstar_m3": r3.cost,
+    row = {"seed": m0["params"]["seed"], "n": m0["params"]["n"], "archetype": m0["params"]["archetype"],
+           "hstar_m0": r0.cost, "hstar_m3": r3.cost,
            "budget_hit": r3.budget_hit, "solvable": r3.plan is not None and r3.cost < INF,
            "loss": {k: m3.get("loss", {}).get(k) for k in ("monitored_share", "loss_actions_total",
                                                            "deleted_facts_total", "recovery_actions")}}
@@ -124,6 +126,9 @@ def instance(m0: dict, m3: dict, cfg: dict) -> dict:
                 "recovery_used": recovery, "revisit": revisit,
                 "route": {"a_cost_up": r3.cost > r0.cost, "b_recovery": recovery > 0, "c_revisit": revisit,
                           "d_not_m0_optimal": proj_cost > r0.cost}})
+    met = agmetrics.metrics(t3, r3.cost, hs)
+    row["lmcut_gap_states"] = met.pop("lmcut_gap_states")
+    row["metrics"] = met
     return row
 
 
@@ -134,6 +139,7 @@ def aggregate(rows: list[dict]) -> dict:
         "instances": len(rows), "solvable": len(sol),
         "solvable_share": len(sol) / len(rows) if rows else None,
         "gap_state_share": sum(r["gap_states"] for r in sol) / ev if ev else None,
+        "lmcut_gap_state_share": sum(r["lmcut_gap_states"] for r in sol) / ev if ev else None,
         "gap_instance_share": sum(r["gap_states"] > 0 for r in sol) / len(sol) if sol else None,
         "median_best_classical_ratio": statistics.median(r["best_ratio"] for r in sol) if sol else None,
         "recovery_or_revisit_plan_share": (sum(r["recovery_used"] > 0 or r["revisit"] for r in sol) / len(sol)
@@ -150,6 +156,13 @@ def aggregate(rows: list[dict]) -> dict:
         rows[0]["loss"]["monitored_share"] is not None else None,
         "median_ratio_by": {k: statistics.median(r["ratios"][k] for r in sol) for k in sol[0]["ratios"]} if sol else {},
     }
+    # per-metric medians over solvable instances; a metric that is None on a row (no evaluated states) is left out
+    out["metric_medians"] = {k: _median([r["metrics"][k] for r in sol]) for k in sol[0]["metrics"]} if sol else {}
     if sol:
         out["geomean_best_ratio"] = math.exp(statistics.fmean(math.log(r["best_ratio"]) for r in sol))
     return out
+
+
+def _median(xs: list) -> float | None:
+    xs = [x for x in xs if x is not None]
+    return statistics.median(xs) if xs else None

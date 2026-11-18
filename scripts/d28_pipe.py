@@ -6,6 +6,7 @@
   n4        [--smoke]                               N4 pilot (training seeds only)
   landscape [--smoke]                               landscape pilot (training tasks, certified ac labels)
   budget    [--smoke]                               budget feasibility pilot; proposes the frozen budget
+  gap       [--config C] [--archetype tree|chain] [--per-size K] [--smoke]   AL1/AL2 classical gap pilot
   ac-counts                                         eligible AC:L / AC:H counts per cohort (environment check)
   evaluate  <cohort> --state-budget B --search-budget S --checkpoint P [...] [--eval-root R] [--permitted-by D]
                                                     every baseline and model, both regimes and tie rules, FD
@@ -196,19 +197,48 @@ def cmd_budget(a, reg, ctx) -> None:
     print(runlog.write_run("budget", {"summary": summ, "rows": rows}, md, [], {**base, "smoke": a.smoke}, root=RUNS))
 
 
+def _chain_docs(reg, ctx, cfg: dict, per: int) -> tuple[list[dict], dict]:
+    """AL2 chain documents, generated exactly as cmd_n4 does (training's exclusions, namespace al2-chain), the
+    first `per` solvable ones of each size by index. Unsolvable ones are skipped and counted with their reason
+    (integrity rule 10); a size stops after chain_max_attempts_per_size documents (shortfall recorded)."""
+    from ahg.gen import generate as gen
+    excluded, excluded_cves = reg.excluded(reg.training), reg.excluded_cves(reg.training)
+    sample, selection = [], {}
+    for n in cfg["sizes"]:
+        got, skipped = 0, {}
+        k = 0
+        while got < per and k < cfg["chain_max_attempts_per_size"]:
+            d = gen.generate(ctx, "chain", f"al2-chain/n{n}/{k}", n, cohort="core", os_mix=reg.training.os_mix,
+                             p=1.0, excluded=excluded, excluded_cves=excluded_cves)
+            k += 1
+            if d["solvable"]:
+                got += 1
+                sample.append(d)
+            else:
+                skipped[d["unsolvable_reason"]] = skipped.get(d["unsolvable_reason"], 0) + 1
+        selection[n] = {"generated": k, "kept": got, "unsolvable": skipped, "shortfall": per - got}
+    return sample, selection
+
+
 def cmd_gap(a, reg, ctx) -> None:
-    """AL1 classical-only gap pilot (decisions.md §21): M0 and every (mechanism set, level) on training documents."""
+    """AL1 classical-only gap pilot (decisions.md §21): M0 and every (mechanism set, level) on the same documents.
+    --archetype tree: the frozen training cohort (AL1 behaviour). --archetype chain: generated chain documents
+    (AL2). With a decision_rule in the config, its mechanical go/stop is recorded (binding on its archetype only)."""
     from ahg import al1gate, al1pilot, loss
     cfg = json.loads(Path(a.config).read_text())
     gate = al1gate.load_gate()
-    _, _, docs = _training_docs(reg, ctx, False)  # the frozen training cohort: training seeds only
-    per = cfg["smoke_per_size" if a.smoke else "per_size"]
-    sample, seen = [], {}
-    for d in docs:
-        n = d["params"]["n"]
-        if n in cfg["sizes"] and d["solvable"] and seen.get(n, 0) < per:
-            seen[n] = seen.get(n, 0) + 1
-            sample.append(d)
+    per = a.per_size if a.per_size is not None else cfg["smoke_per_size" if a.smoke else "per_size"]
+    if a.archetype == "chain":
+        sample, selection = _chain_docs(reg, ctx, cfg, per)
+    else:
+        _, _, docs = _training_docs(reg, ctx, False)  # the frozen training cohort: training seeds only
+        sample, seen = [], {}
+        for d in docs:
+            n = d["params"]["n"]
+            if n in cfg["sizes"] and d["solvable"] and seen.get(n, 0) < per:
+                seen[n] = seen.get(n, 0) + 1
+                sample.append(d)
+        selection = {n: {"kept": seen.get(n, 0), "shortfall": per - seen.get(n, 0)} for n in cfg["sizes"]}
     rows, summary = {}, {}
     rows["M0"] = [al1pilot.instance(d, d, cfg) for d in sample]
     summary["M0"] = al1pilot.aggregate(rows["M0"])
@@ -221,9 +251,17 @@ def cmd_gap(a, reg, ctx) -> None:
             summary[key] = al1pilot.aggregate(rows[key])
             summary[key]["gate"] = al1gate.verdict(summary[key], gate)
             print(key, json.dumps({k: summary[key][k] for k in al1gate.RULES}, default=str), flush=True)
-    md = "# AL1 gap pilot\n\n```\n" + json.dumps(summary, indent=1, default=str) + "\n```\n"
-    print(runlog.write_run("al1_gap", {"summary": summary, "rows": rows, "sample": len(sample)}, md, [],
-                           {**cfg, "smoke": a.smoke, "config_path": a.config}, root=RUNS))
+    out = {"summary": summary, "rows": rows, "sample": len(sample), "archetype": a.archetype, "selection": selection}
+    if "decision_rule" in cfg:
+        rule = cfg["decision_rule"]
+        out["decision"] = {**al1gate.decision(summary, rule), "archetype": a.archetype,
+                           "binding": a.archetype == rule["archetype"]}
+        print("decision", json.dumps(out["decision"], default=str), flush=True)
+    md = (f"# AL1 gap pilot ({a.archetype})\n\n```\n"
+          + json.dumps({k: out[k] for k in ("summary", "selection", "decision") if k in out}, indent=1, default=str)
+          + "\n```\n")
+    print(runlog.write_run("al1_gap", out, md, [], {**cfg, "smoke": a.smoke, "config_path": a.config,
+                                                    "archetype": a.archetype, "per_size_used": per}, root=RUNS))
 
 
 def cmd_ac_counts(a, reg, ctx) -> None:
@@ -283,6 +321,8 @@ def main(argv=None) -> None:
     p = sub.add_parser("gap")
     p.add_argument("--config", default="configs/gen/al1_pilot.json")
     p.add_argument("--smoke", action="store_true")
+    p.add_argument("--archetype", choices=("tree", "chain"), default="tree")
+    p.add_argument("--per-size", type=int, help="documents per size; overrides the config's per_size")
     sub.add_parser("ac-counts")
     p = sub.add_parser("evaluate")
     p.add_argument("cohort")

@@ -8,6 +8,7 @@ from ahg import al1pilot
 def row(gap=0, ev=10, best=1.0, rec=0, revisit=False, route=None, solvable=True, share=0.4):
     return {"solvable": solvable, "gap_states": gap, "eval_states": ev, "best_ratio": best, "recovery_used": rec,
             "revisit": revisit, "loss_actions_on_path": 0, "eval_method": "sampled", "eval_skipped": 0,
+            "lmcut_gap_states": 0, "metrics": {},  # AL2 keys (ahg.agmetrics); tested in test_al2_metrics.py
             "oracle_s0": "agree", "loss": {"monitored_share": share},
             "ratios": {"astar_hmax": best}, "route": route or {k: False for k in
                                                                ("a_cost_up", "b_recovery", "c_revisit", "d_not_m0_optimal")}}

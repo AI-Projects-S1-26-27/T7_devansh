@@ -1,0 +1,27 @@
+{
+  "_doc": "AL2 structural-complexity diagnostic (decisions.md §21). Same pilot as configs/gen/al1_pilot.json over n = 8..20, 10 solvable documents per size. --archetype tree: the frozen training cohort documents (training seeds only). --archetype chain: documents generated as N4 does, namespace al2-chain, training's exclusions, solvable ones kept. M0 = the document itself; the same documents go through every (mechanism set, level).",
+  "schema": "al1-pilot/1",
+  "sizes": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+  "per_size": 10,
+  "smoke_per_size": 2,
+  "regime": "ac",
+  "levels": ["low", "medium", "high"],
+  "mechanism_sets": {
+    "all": ["process_kill", "service_restart", "signature_block"],
+    "kill_crash": ["process_kill", "service_restart"]
+  },
+  "restart_cost": {"ac": 4, "uniform": 1},
+  "retool_cost": {"ac": 7, "uniform": 1},
+  "enum_cap": 100000,
+  "walk_states": 200,
+  "search_budget": 200000,
+  "oracle_max_pops": 200000,
+  "chain_max_attempts_per_size": 100,
+  "decision_rule": {
+    "_doc": "Fixed 18 Nov 2026 before any AL2 run; never tuned after one. Binding on the chain run only: go (build the AL3 diversified multi-role archetype) iff, for config all|medium, at least one any_of bound holds and every all_of bound holds; otherwise stop (keep the frozen null). Bounds are inclusive lower bounds; a missing metric fails.",
+    "archetype": "chain",
+    "config": "all|medium",
+    "any_of": {"gap_state_share_min": 0.05, "route_change_instance_share_min": 0.10},
+    "all_of": {"lmcut_gap_state_share_min": 0.05}
+  }
+}
