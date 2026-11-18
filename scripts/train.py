@@ -88,7 +88,16 @@ def run_name(cfg: dict) -> str:
 
 
 def load_batches(cfg):
-    return ([open_batch(ROOT / p) for p in cfg["train_batches"]], [open_batch(ROOT / p) for p in cfg["val_batches"]])
+    """D19 batch paths, or "cohort:<name>" entries for D28 cohorts (built in memory under cfg's cost_regime)."""
+    from ahg import d28batches
+
+    def load(entries):
+        if all(d28batches.is_cohort_ref(e) for e in entries):
+            return d28batches.load_cohort_batches(entries, cfg["cost_regime"])
+        if any(d28batches.is_cohort_ref(e) for e in entries):
+            raise ValueError(f"cannot mix cohort references and D19 batch paths: {entries}")
+        return [open_batch(ROOT / p) for p in entries]
+    return load(cfg["train_batches"]), load(cfg["val_batches"])
 
 
 def cmd_run(args):

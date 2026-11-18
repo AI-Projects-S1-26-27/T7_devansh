@@ -1,0 +1,6 @@
+{
+ "search_budget": 200000,
+ "state_budget": 100,
+ "oracle_max_pops": 200000,
+ "enum_cap": 20000
+}
