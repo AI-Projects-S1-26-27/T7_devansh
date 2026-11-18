@@ -1,0 +1,21 @@
+{
+  "_doc": "AL1 classical-only gap gate (decisions.md §21). Fixed 18 Nov 2026 before any pilot run; never tuned after one. A level passes only if every criterion holds. Training seeds only.",
+  "schema": "al1-gate/1",
+  "criteria": {
+    "gap_state_share_min": 0.25,
+    "gap_instance_share_min": 0.30,
+    "median_best_classical_ratio_min": 1.5,
+    "solvable_share_min": 0.90,
+    "recovery_or_revisit_plan_share_min": 0.20,
+    "route_change_instance_share_min": 0.10
+  },
+  "definitions": {
+    "gap_state_share": "pooled over evaluated non-goal states with finite h*: share with h_max(s) < h*(s)",
+    "gap_instance_share": "share of solvable instances with at least one evaluated state where h_max(s) < h*(s)",
+    "median_best_classical_ratio": "median over solvable instances of min over {A*, GBFS} x {h_max, h_add, h_FF, LM-cut} of expansions / optimal plan length",
+    "solvable_share": "share of generated instances that are solvable",
+    "recovery_or_revisit_plan_share": "share of optimal plans that use a recovery action or revisit a host",
+    "route_change_instance_share": "share of instances with any of: (a) h*_M3(s0) > h*_M0(s0); (b) recovery used; (c) revisit; (d) the M3 plan's projection is not M0-optimal"
+  },
+  "primary_level": "medium"
+}
