@@ -10,9 +10,14 @@ state to the goal, or INF if the goal is unreachable.
     hff    cost of one relaxed plan                   inadmissible
     lmcut  sum of disjoint action landmarks           admissible
 
-Our tasks are already delete-free, so the "relaxed" problem is the real
+Every frozen D28 task is delete-free, so the "relaxed" problem is the real
 problem: h+ (optimal relaxed cost) equals h* (true optimal cost). Every
 heuristic here is a cheap approximation of that NP-hard quantity.
+
+On M3 access-loss tasks (AL1) actions also have delete effects. Nothing here
+reads them (only pre, add and cost), so each heuristic is exactly its
+delete-relaxation definition: h_max and LM-cut stay admissible, but now
+h+ <= h* and the gap is what the AL1 gap gate measures.
 """
 
 import heapq

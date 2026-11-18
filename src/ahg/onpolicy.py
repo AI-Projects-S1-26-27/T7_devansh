@@ -137,7 +137,7 @@ def label_states(task, states: list[int], protocol: dict) -> dict:
         st, rest = s, r.cost
         for ai in r.plan:
             known.setdefault(st, rest)
-            st, rest = st | task.actions[ai].add_mask, rest - task.actions[ai].cost
+            st, rest = task.actions[ai].apply(st), rest - task.actions[ai].cost
         known.setdefault(st, 0)
     labels = {s: known[s] for s in sorted(set(states)) if s in known}
     label_s = time.perf_counter() - t0

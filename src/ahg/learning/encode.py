@@ -124,7 +124,7 @@ def plan_open_pairs(task) -> tuple[list[int], list[tuple[int, int, float]]]:
     r = astar(task, lmcut)
     path, g = [task.init], [0]
     for ai in r.plan:
-        path.append(path[-1] | task.actions[ai].add_mask)
+        path.append(task.actions[ai].apply(path[-1]))
         g.append(g[-1] + task.actions[ai].cost)
     on_plan = set(path)
     states = path[1:]

@@ -75,7 +75,7 @@ def collect_states(task: Task, key: str, cfg: dict):
     path = [s]
     for ai in r_lm.plan:
         known[s] = rest
-        s, rest = s | task.actions[ai].add_mask, rest - task.actions[ai].cost
+        s, rest = task.actions[ai].apply(s), rest - task.actions[ai].cost
         path.append(s)
     known[s] = 0
     add(path, "optimal_path")
@@ -117,7 +117,7 @@ def label_instance(task: Task, key: str, n_hosts: int, cfg: dict) -> dict:
             st, rest = s, r.cost
             for ai in r.plan:  # every state on this optimal plan gets its suffix cost
                 known.setdefault(st, rest)
-                st, rest = st | task.actions[ai].add_mask, rest - task.actions[ai].cost
+                st, rest = task.actions[ai].apply(st), rest - task.actions[ai].cost
             known.setdefault(st, 0)
         rows.append([s, known[s], sorted(sources[s])])
     label_s = time.perf_counter() - t_label

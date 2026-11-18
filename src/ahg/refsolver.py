@@ -7,14 +7,16 @@ add_mask, successors), not search.py, not heuristics.py. It works on a
 neutral serialized task, a plain dict that names facts by string:
 
     {"facts":   ["f0", "f1", ...],
-     "actions": [{"name": "a0", "pre": ["f0"], "add": ["f1"], "cost": 3}, ...],
+     "actions": [{"name": "a0", "pre": ["f0"], "add": ["f1"], "cost": 3}, ...],   # optional "del": [...]
      "init":    ["f0"],
      "goal":    ["f1"]}
 
 A state is a frozenset of fact names. An action is applicable in s iff its
-preconditions are a subset of s; applying it gives s | add. Nothing here
-assumes the task is delete-free beyond the format having no delete lists:
-there is no "useless action" pruning and no use of state-size ordering.
+preconditions are a subset of s; applying it gives (s - del) | add, where
+"del" is an optional delete list (absent on every delete-free task; the M3
+access-loss model, AL1, uses it). Nothing here assumes the task is
+delete-free: there is no "useless action" pruning beyond skipping exact
+self-loops, and no use of state-size ordering.
 
 The algorithm is exhaustive Dijkstra: it explores every state reachable from
 the start before answering, rather than stopping at the first goal popped,
@@ -41,7 +43,9 @@ def validate(stask: dict) -> None:
     for a in stask["actions"]:
         if a["cost"] < 0:
             raise ReferenceTaskError(f"action {a['name']} has negative cost {a['cost']}")
-        for f in (*a["pre"], *a["add"]):
+        if set(a["add"]) & set(a.get("del", ())):
+            raise ReferenceTaskError(f"action {a['name']} both adds and deletes a fact")
+        for f in (*a["pre"], *a["add"], *a.get("del", ())):
             if f not in known:
                 raise ReferenceTaskError(f"action {a['name']} names unknown fact {f!r}")
     for f in (*stask["init"], *stask["goal"]):
@@ -51,13 +55,14 @@ def validate(stask: dict) -> None:
 
 def _compiled(stask: dict):
     validate(stask)
-    return [(frozenset(a["pre"]), frozenset(a["add"]), a["cost"]) for a in stask["actions"]], frozenset(stask["goal"])
+    return ([(frozenset(a["pre"]), frozenset(a["add"]), frozenset(a.get("del", ())), a["cost"]) for a in stask["actions"]],
+            frozenset(stask["goal"]))
 
 
 def _successors(acts, s):
-    for k, (pre, add, cost) in enumerate(acts):
+    for k, (pre, add, dele, cost) in enumerate(acts):
         if pre <= s:
-            s2 = s | add
+            s2 = (s - dele) | add
             if s2 != s:  # a self-loop never shortens a path; skipping it changes no distance
                 yield k, s2, cost
 
@@ -148,15 +153,21 @@ def hstar_all(stask: dict, cap: int | None = None) -> dict[frozenset, float] | N
 def serialize(task, start=None) -> dict:
     """The neutral format of an ahg Task (duck-typed, so this module still imports nothing from ahg).
 
-    Reads only the data fields facts, actions[i].name/.pre/.add/.cost, init and
-    goal. The init (or start) bitmask is decoded here by plain bit tests, not by
-    any task.py helper.
+    Reads only the data fields facts, actions[i].name/.pre/.add/.cost/.dele, init
+    and goal. The init (or start) bitmask is decoded here by plain bit tests, not
+    by any task.py helper. "del" is written only for actions that delete
+    something, so a delete-free task serializes exactly as before.
     """
     names = list(task.facts)
     bits = task.init if start is None else start
+
+    def act(a):
+        d = {"name": a.name, "pre": [names[i] for i in a.pre], "add": [names[i] for i in a.add], "cost": a.cost}
+        dele = getattr(a, "dele", ())
+        return d | ({"del": [names[i] for i in dele]} if dele else {})
+
     return {"facts": names,
-            "actions": [{"name": a.name, "pre": [names[i] for i in a.pre], "add": [names[i] for i in a.add],
-                         "cost": a.cost} for a in task.actions],
+            "actions": [act(a) for a in task.actions],
             "init": [names[i] for i in range(len(names)) if bits >> i & 1],
             "goal": [names[i] for i in task.goal]}
 

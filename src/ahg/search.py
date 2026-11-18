@@ -1,4 +1,5 @@
-"""Best-first search over the state space of a delete-free task.
+"""Best-first search over the state space of a task (delete-free, or with M3 delete effects: successors
+come from Task.successors either way, and nothing below assumes states only grow).
 
 One function covers every algorithm in the study, because they differ only in
 how a node's priority f is computed from its path cost g and heuristic h:
