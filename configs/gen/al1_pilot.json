@@ -1,0 +1,19 @@
+{
+  "_doc": "AL1 classical-only gap pilot (decisions.md §21). Training cohort documents only (d28_train, tree, n = 8..12), the first per_size solvable documents of each size in record order. M0 = the frozen document itself.",
+  "schema": "al1-pilot/1",
+  "sizes": [8, 9, 10, 11, 12],
+  "per_size": 20,
+  "smoke_per_size": 2,
+  "regime": "ac",
+  "levels": ["low", "medium", "high"],
+  "mechanism_sets": {
+    "all": ["process_kill", "service_restart", "signature_block"],
+    "kill_crash": ["process_kill", "service_restart"]
+  },
+  "restart_cost": {"ac": 4, "uniform": 1},
+  "retool_cost": {"ac": 7, "uniform": 1},
+  "enum_cap": 100000,
+  "walk_states": 200,
+  "search_budget": 200000,
+  "oracle_max_pops": 200000
+}

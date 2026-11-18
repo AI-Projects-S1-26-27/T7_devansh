@@ -196,6 +196,36 @@ def cmd_budget(a, reg, ctx) -> None:
     print(runlog.write_run("budget", {"summary": summ, "rows": rows}, md, [], {**base, "smoke": a.smoke}, root=RUNS))
 
 
+def cmd_gap(a, reg, ctx) -> None:
+    """AL1 classical-only gap pilot (decisions.md §21): M0 and every (mechanism set, level) on training documents."""
+    from ahg import al1gate, al1pilot, loss
+    cfg = json.loads(Path(a.config).read_text())
+    gate = al1gate.load_gate()
+    _, _, docs = _training_docs(reg, ctx, False)  # the frozen training cohort: training seeds only
+    per = cfg["smoke_per_size" if a.smoke else "per_size"]
+    sample, seen = [], {}
+    for d in docs:
+        n = d["params"]["n"]
+        if n in cfg["sizes"] and d["solvable"] and seen.get(n, 0) < per:
+            seen[n] = seen.get(n, 0) + 1
+            sample.append(d)
+    rows, summary = {}, {}
+    rows["M0"] = [al1pilot.instance(d, d, cfg) for d in sample]
+    summary["M0"] = al1pilot.aggregate(rows["M0"])
+    for mname, mechs in cfg["mechanism_sets"].items():
+        for level in cfg["levels"]:
+            lc = {"level": level, "mechanisms": mechs, "restart_cost": cfg["restart_cost"],
+                  "retool_cost": cfg["retool_cost"]}
+            key = f"{mname}|{level}"
+            rows[key] = [al1pilot.instance(d, loss.apply_m3(d, lc, ctx.master), cfg) for d in sample]
+            summary[key] = al1pilot.aggregate(rows[key])
+            summary[key]["gate"] = al1gate.verdict(summary[key], gate)
+            print(key, json.dumps({k: summary[key][k] for k in al1gate.RULES}, default=str), flush=True)
+    md = "# AL1 gap pilot\n\n```\n" + json.dumps(summary, indent=1, default=str) + "\n```\n"
+    print(runlog.write_run("al1_gap", {"summary": summary, "rows": rows, "sample": len(sample)}, md, [],
+                           {**cfg, "smoke": a.smoke, "config_path": a.config}, root=RUNS))
+
+
 def cmd_ac_counts(a, reg, ctx) -> None:
     from collections import Counter
     cnt = Counter((u.cohort, u.os, u.kind, u.ac) for u in ctx.units)
@@ -250,6 +280,9 @@ def main(argv=None) -> None:
         if name == "landscape":
             p.add_argument("--state-budget", type=int)
             p.add_argument("--search-budget", type=int, default=200_000)
+    p = sub.add_parser("gap")
+    p.add_argument("--config", default="configs/gen/al1_pilot.json")
+    p.add_argument("--smoke", action="store_true")
     sub.add_parser("ac-counts")
     p = sub.add_parser("evaluate")
     p.add_argument("cohort")
@@ -273,7 +306,7 @@ def main(argv=None) -> None:
         from ahg.gen.generate import Context
         ctx = Context.load()
     {"build": cmd_build, "label": cmd_label, "n4": cmd_n4, "landscape": cmd_landscape, "budget": cmd_budget,
-     "ac-counts": cmd_ac_counts, "evaluate": cmd_evaluate, "report": cmd_report}[a.cmd](a, reg, ctx)
+     "gap": cmd_gap, "ac-counts": cmd_ac_counts, "evaluate": cmd_evaluate, "report": cmd_report}[a.cmd](a, reg, ctx)
 
 
 if __name__ == "__main__":
