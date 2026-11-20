@@ -35,8 +35,10 @@ Families: `flat`, `tiered`, `hub_and_spoke`. Options: `--n` hosts (default 20), 
 
 ### Visual demo (recommended for presenting)
 
-Runs the same searches, draws the network, the attack and the states each search expanded, and opens a
-click-through slideshow in the browser (arrow keys move between slides). Needs internet once, for matplotlib.
+Runs the same searches and opens a click-through slideshow in the browser: the network with the optimal attack,
+animated races (normal A* vs the GNN, h_max vs the GNN) on one shared expansion counter, and one animation per
+heuristic showing the states it expands and the attack it returns. Arrow keys move between slides; `r` replays
+the animation. Takes about 30 s to build. Needs internet once, for matplotlib.
 
 ```bash
 uv run --with matplotlib python scripts/visual_demo.py --family hub_and_spoke --seed 90129

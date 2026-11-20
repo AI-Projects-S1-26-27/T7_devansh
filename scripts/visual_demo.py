@@ -4,13 +4,12 @@
   uv run --with matplotlib python scripts/visual_demo.py --family tiered --seed 90214
   uv run --with matplotlib python scripts/visual_demo.py --family flat --random
 
-Writes demo_out/<family>-<seed>/slides.html (one self-contained file, images embedded) and opens it in the browser.
-Arrow keys or the buttons move between slides. Seeds >= 90000 are outside every train/validation/test split.
+Writes demo_out/<family>-<seed>/slides.html with animated GIFs of every search next to it, and opens it in the
+browser. Arrow keys or the buttons move between slides; 'r' replays the animation on the current slide. Seeds >= 90000 are outside every train/validation/test split.
 Network drawing code is draw_demo.py (same figures as presentation/demo.pdf).
 """
 
 import argparse
-import base64
 import html
 import json
 import random
@@ -22,6 +21,7 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
+import animate_demo  # noqa: E402
 import draw_demo  # noqa: E402
 
 from ahg.attack_graph import KnobInfeasible, UnreachableGoal, make_instance  # noqa: E402
@@ -85,10 +85,6 @@ def run_all(inst, learned):
     return runs
 
 
-def img(path):
-    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--family", default="hub_and_spoke", choices=["flat", "tiered", "hub_and_spoke"])
@@ -129,47 +125,80 @@ def main():
     order = [k for k in draw_demo.ORDER if k in runs]
     names = {"h0": "normal A* (h0)", "hsp": "h_sp", "hmax": "h_max", "hadd": "h_add (inadmissible)",
              "lmcut": "LM-cut", "A": "GNN Model A", "B": "GNN Model B"}
-    slides = []
-    steps = "".join(f"<li>{html.escape(s)}</li>" for s in runs["lmcut"]["plan"])
-    slides.append(
-        f"<h1>A fresh network: {args.family.replace('_', '-')}, seed {seed}</h1>"
-        f"<div class=row><img src='{img(out / 'overview.png')}'><div>"
-        f"<p>{len(net.hosts) - 1} hosts, {len(task.actions)} possible actions, {len(inst.coupled or {})} coupled "
-        f"exploits. Seed {seed} is outside every train / validation / test split.</p>"
-        f"<p><b>Cheapest attack ({len(runs['lmcut']['plan'])} steps, certified optimal by A*+LM-cut):</b></p>"
-        f"<ol class=steps>{steps}</ol><p class=small>Blue: exploit steps. Purple dashed: the exploit also needs "
-        f"control of a third host (AND). Orange: credentials harvested for the next tier.</p></div></div>")
+    races = [("h0", "A"), ("hmax", "A")]
+    print("drawing animations ...", flush=True)
+    for a, b in races:
+        animate_demo.animate(rec, draw_demo.layout(rec), [a, b], out / f"race-{a}-{b}.gif", opt, (15, 7.6))
+    for k in order:
+        animate_demo.animate(rec, draw_demo.layout(rec), [k], out / f"anim-{k}.gif", opt, (8.4, 7.6))
+
+    def path(plan, title):
+        """The attack as readable steps, under the figure."""
+        items = []
+        for i, s, g in draw_demo.parse(plan):
+            if g.get("cve"):
+                need = f" <span class=need>(also needs {g['need']})</span>" if g.get("need") else ""
+                items.append(f"<li><b>{g['src']} &rarr; {g['dst']}</b>: {g['cve']} ({g['fam']}){need}</li>")
+            elif g.get("k"):
+                items.append(f"<li class=cred>harvest cred({g['k']}) on <b>{g['at']}</b></li>")
+            else:
+                items.append(f"<li>{html.escape(s)}</li>")
+        return f"<div class=path><h2>{title}</h2><ol>{''.join(items)}</ol></div>"
+
+    def tag(k):
+        c = runs[k]["cost"]
+        return f"cost {c} = optimal" if c == opt else f"cost {c} = {c / opt:.2f}x optimal ({opt})"
+
+    best = path(runs["lmcut"]["plan"], f"Optimal attack: {len(runs['lmcut']['plan'])} steps, cost {opt} "
+                                       f"(certified by A*+LM-cut)")
+    slides = [f"<h1>A fresh network: {args.family.replace('_', '-')}, seed {seed}</h1>"
+              f"<p class=sub>{len(net.hosts) - 1} hosts, {len(task.actions)} possible actions, "
+              f"{len(inst.coupled or {})} coupled exploits; seed outside every train / validation / test split</p>"
+              f"<img class=big src='overview.png'>{best}"]
+    for a, b in races:
+        slides.append(f"<h1>{names[a]} vs {names[b]}: {runs[a]['expanded']:,} vs {runs[b]['expanded']:,} states</h1>"
+                      f"<p class=sub>Same counter on both sides. Red halo: share of expanded states holding that host; "
+                      f"red ring: the state being expanded now; blue: the attack returned.</p>"
+                      f"<img class=race src='race-{a}-{b}.gif'>"
+                      + path(runs[b]["plan"], f"Attack found by {names[b]} ({tag(b)})"))
     for k in order:
         r = runs[k]
-        tag = "optimal" if r["cost"] == opt else f"{r['cost'] / opt:.2f}x optimal"
-        slides.append(
-            f"<h1>A* with {names[k]}: {r['expanded']:,} states</h1><img class=wide src='{img(out / f'search-{k}.png')}'>"
-            f"<p>{CAPTION[k]}</p><p class=small>Plan {tag}. Time {r['ms']:.1f} ms. Blue: the attack this search "
-            f"returned. Red halo: how often a host appears in the states it expanded.</p>")
+        slides.append(f"<h1>A* with {names[k]}: {r['expanded']:,} states</h1><p class=sub>{CAPTION[k]}</p>"
+                      f"<img class=big src='anim-{k}.gif'>"
+                      + path(r["plan"], f"Attack returned ({tag(k)}, {r['ms']:.1f} ms)"))
     rows = "".join(
-        f"<tr class='{'ours' if k in 'AB' and len(k) == 1 else ''}'><td>{names[k]}</td><td>{runs[k]['expanded']:,}</td>"
+        f"<tr class='{'ours' if k in ('A', 'B') else ''}'><td>{names[k]}</td><td>{runs[k]['expanded']:,}</td>"
         f"<td>{runs[k]['cost'] / opt:.3f}</td><td>{runs[k]['ms']:.1f}</td></tr>" for k in order)
     slides.append(f"<h1>Summary on this network</h1><table><tr><th>search</th><th>states expanded</th>"
                   f"<th>plan cost / optimum</th><th>time (ms)</th></tr>{rows}</table>"
-                  f"<p class=small>Over all test networks (report, Table I): Model A expands 0.59x the nodes of "
-                  f"A*+h_max and ties LM-cut; it is slower than h_max in wall-clock time because each GNN call costs "
-                  f"more than one h_max pass.</p>")
+                  f"<p class=sub>Over all test networks (report, Table I): Model A expands 0.59x the nodes of "
+                  f"A*+h_max; against LM-cut no difference is shown after Holm correction. It is slower than h_max in "
+                  f"wall-clock time because each GNN call costs more than one h_max pass.</p>")
     page = ("<!doctype html><meta charset=utf-8><title>Live demo</title><style>"
             "body{font-family:Helvetica,Arial,sans-serif;margin:0;background:#fff;color:#111}"
-            ".s{display:none;padding:18px 40px}.s.on{display:block}h1{color:#0a5aa0;font-size:28px;margin:0 0 10px}"
-            "img{max-width:100%}img.wide{max-height:62vh;display:block;margin:auto}.row{display:flex;gap:24px}"
-            ".row img{max-width:48%;max-height:75vh}.steps{font-size:14px;padding-left:22px}.small{font-size:13px;"
-            "color:#555}p{font-size:18px}table{border-collapse:collapse;font-size:20px;margin:20px 0}"
-            "td,th{border-bottom:1px solid #ccc;padding:6px 22px;text-align:right}td:first-child,th:first-child"
+            ".s{display:none;padding:14px 30px 60px;text-align:center}.s.on{display:block}"
+            "h1{color:#0a5aa0;font-size:30px;margin:0 0 4px}.sub{font-size:16px;color:#444;margin:0 0 8px}"
+            "img.big{height:72vh;max-width:95vw;display:block;margin:0 auto}"
+            "img.race{width:95vw;max-height:72vh;object-fit:contain;display:block;margin:0 auto}"
+            ".path{display:inline-block;text-align:left;margin-top:10px}.path h2{font-size:20px;margin:6px 0}"
+            ".path ol{columns:2;column-gap:48px;font-size:16px;margin:0;padding-left:24px}.path li{margin:3px 0}"
+            ".need{color:#8a2be2}.cred{color:#b35900}"
+            "table{border-collapse:collapse;font-size:22px;margin:24px auto}"
+            "td,th{border-bottom:1px solid #ccc;padding:8px 26px;text-align:right}td:first-child,th:first-child"
             "{text-align:left}tr.ours{background:#e8f1fb;font-weight:bold}.nav{position:fixed;bottom:8px;right:16px;"
             "font-size:14px;color:#555}button{font-size:16px}</style>"
             + "".join(f"<div class=s>{s}</div>" for s in slides)
             + "<div class=nav><button onclick=go(-1)>&larr;</button> <span id=c></span> "
               "<button onclick=go(1)>&rarr;</button></div><script>"
-              "var S=document.querySelectorAll('.s'),i=0;function show(){S.forEach((s,j)=>s.classList.toggle('on',j==i));"
+              "var S=document.querySelectorAll('.s'),i=0;"
+              "function show(){S.forEach((s,j)=>s.classList.toggle('on',j==i));"
+              # restart the animation on the slide being shown, so it plays from the first expansion
+              "S[i].querySelectorAll('img').forEach(m=>{var u=m.getAttribute('src').split('?')[0];"
+              "m.src=u.endsWith('.gif')?u+'?'+Date.now():u});"
               "document.getElementById('c').textContent=(i+1)+' / '+S.length}"
               "function go(d){i=Math.max(0,Math.min(S.length-1,i+d));show()}"
-              "document.onkeydown=e=>{if(e.key=='ArrowRight'||e.key==' ')go(1);if(e.key=='ArrowLeft')go(-1)};show()"
+              "document.onkeydown=e=>{if(e.key=='ArrowRight'||e.key==' ')go(1);if(e.key=='ArrowLeft')go(-1);"
+              "if(e.key=='r')show()};show()"
               "</script>")
     (out / "slides.html").write_text(page)
     print(f"wrote {out / 'slides.html'}")
