@@ -27,3 +27,4 @@ results/training/**/wl-*/**/model.pt
 docs/ai_usage_log.md
 third_party/
 logs/
+demo_out/

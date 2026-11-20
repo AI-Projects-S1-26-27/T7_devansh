@@ -33,6 +33,19 @@ uv run python scripts/live_demo.py --family flat --random                # a bra
 Families: `flat`, `tiered`, `hub_and_spoke`. Options: `--n` hosts (default 20), `--D` credential tiers
 (default 3). Costs are printed as exact integers C = 38 c (Sec. III of the report).
 
+### Visual demo (recommended for presenting)
+
+Runs the same searches, draws the network, the attack and the states each search expanded, and opens a
+click-through slideshow in the browser (arrow keys move between slides). Needs internet once, for matplotlib.
+
+```bash
+uv run --with matplotlib python scripts/visual_demo.py --family hub_and_spoke --seed 90129
+uv run --with matplotlib python scripts/visual_demo.py --family tiered --seed 90214
+uv run --with matplotlib python scripts/visual_demo.py --family flat --random
+```
+
+Output is written to `demo_out/<family>-<seed>/slides.html` (open it by hand if no browser starts).
+
 Small example of every heuristic and search algorithm on a toy network:
 
 ```bash
