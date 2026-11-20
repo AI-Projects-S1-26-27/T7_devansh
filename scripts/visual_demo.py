@@ -151,19 +151,21 @@ def main():
 
     best = path(runs["lmcut"]["plan"], f"Optimal attack: {len(runs['lmcut']['plan'])} steps, cost {opt} "
                                        f"(certified by A*+LM-cut)")
-    slides = [f"<h1>A fresh network: {args.family.replace('_', '-')}, seed {seed}</h1>"
-              f"<p class=sub>{len(net.hosts) - 1} hosts, {len(task.actions)} possible actions, "
-              f"{len(inst.coupled or {})} coupled exploits; seed outside every train / validation / test split</p>"
-              f"<img class=big src='overview.png'>{best}"]
+    slides = []
     for a, b in races:
         slides.append(f"<h1>{names[a]} vs {names[b]}: {runs[a]['expanded']:,} vs {runs[b]['expanded']:,} states</h1>"
                       f"<p class=sub>Same counter on both sides. Red halo: share of expanded states holding that host; "
                       f"red ring: the state being expanded now; blue: the attack returned.</p>"
                       f"<img class=race src='race-{a}-{b}.gif'>"
                       + path(runs[b]["plan"], f"Attack found by {names[b]} ({tag(b)})"))
+    overview = [f"<h1>A fresh network: {args.family.replace('_', '-')}, seed {seed}</h1>"
+              f"<p class=sub>{len(net.hosts) - 1} hosts, {len(task.actions)} possible actions, "
+              f"{len(inst.coupled or {})} coupled exploits; seed outside every train / validation / test split</p>"
+              f"<img class=big src='overview.png'>{best}"]
+    slides += overview
     for k in order:
         r = runs[k]
-        slides.append(f"<h1>A* with {names[k]}: {r['expanded']:,} states</h1><p class=sub>{CAPTION[k]}</p>"
+        slides.append(f"<h1>{names[k] if k == 'h0' else 'A* with ' + names[k]}: {r['expanded']:,} states</h1><p class=sub>{CAPTION[k]}</p>"
                       f"<img class=big src='anim-{k}.gif'>"
                       + path(r["plan"], f"Attack returned ({tag(k)}, {r['ms']:.1f} ms)"))
     rows = "".join(
@@ -186,15 +188,14 @@ def main():
             "table{border-collapse:collapse;font-size:22px;margin:24px auto}"
             "td,th{border-bottom:1px solid #ccc;padding:8px 26px;text-align:right}td:first-child,th:first-child"
             "{text-align:left}tr.ours{background:#e8f1fb;font-weight:bold}.nav{position:fixed;bottom:8px;right:16px;"
-            "font-size:14px;color:#555}button{font-size:16px}</style>"
+            "font-size:16px;color:#555}button{font-size:20px}</style>"
             + "".join(f"<div class=s>{s}</div>" for s in slides)
             + "<div class=nav><button onclick=go(-1)>&larr;</button> <span id=c></span> "
-              "<button onclick=go(1)>&rarr;</button></div><script>"
+              "<button onclick=go(1)>&rarr;</button> &nbsp;next: &rarr; key, replay: r</div><script>"
               "var S=document.querySelectorAll('.s'),i=0;"
               "function show(){S.forEach((s,j)=>s.classList.toggle('on',j==i));"
               # restart the animation on the slide being shown, so it plays from the first expansion
-              "S[i].querySelectorAll('img').forEach(m=>{var u=m.getAttribute('src').split('?')[0];"
-              "m.src=u.endsWith('.gif')?u+'?'+Date.now():u});"
+              "S[i].querySelectorAll('img').forEach(m=>{var u=m.getAttribute('src');m.src='';m.src=u});"
               "document.getElementById('c').textContent=(i+1)+' / '+S.length}"
               "function go(d){i=Math.max(0,Math.min(S.length-1,i+d));show()}"
               "document.onkeydown=e=>{if(e.key=='ArrowRight'||e.key==' ')go(1);if(e.key=='ArrowLeft')go(-1);"
